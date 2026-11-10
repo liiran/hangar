@@ -1,0 +1,122 @@
+[
+  {
+    "mode": "direct",
+    "agent": "claude",
+    "sessions": 3,
+    "servers": [
+      "playwright",
+      "context7",
+      "memory",
+      "sequential-thinking",
+      "filesystem"
+    ],
+    "session_ready_ms": [
+      6573,
+      6496,
+      6466
+    ],
+    "failures": [],
+    "mcp": {
+      "processes": 78,
+      "private_bytes": 2559496192,
+      "working_set": 2610110464,
+      "cpu_ms": 19654
+    },
+    "agents": {
+      "processes": 3,
+      "private_bytes": 1336725504,
+      "working_set": 701460480,
+      "cpu_ms": 3403
+    },
+    "breakdown": {
+      "agent": {
+        "processes": 3,
+        "private_bytes": 1336725504,
+        "working_set": 701460480,
+        "cpu_ms": 3403
+      },
+      "server": {
+        "processes": 78,
+        "private_bytes": 2559496192,
+        "working_set": 2610110464,
+        "cpu_ms": 19654
+      }
+    },
+    "cpu_ms": 25547,
+    "leftovers": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "leftover_names": [],
+    "warm_ready_ms": [],
+    "wall_ms": 14714
+  },
+  {
+    "mode": "pooled",
+    "agent": "claude",
+    "sessions": 3,
+    "servers": [
+      "playwright",
+      "context7",
+      "memory",
+      "sequential-thinking",
+      "filesystem"
+    ],
+    "session_ready_ms": [
+      2103,
+      2118,
+      2102
+    ],
+    "failures": [],
+    "mcp": {
+      "processes": 38,
+      "private_bytes": 637030400,
+      "working_set": 772517888,
+      "cpu_ms": 4541
+    },
+    "agents": {
+      "processes": 3,
+      "private_bytes": 1366564864,
+      "working_set": 705601536,
+      "cpu_ms": 3310
+    },
+    "breakdown": {
+      "agent": {
+        "processes": 3,
+        "private_bytes": 1366564864,
+        "working_set": 705601536,
+        "cpu_ms": 3310
+      },
+      "daemon": {
+        "processes": 1,
+        "private_bytes": 14954496,
+        "working_set": 19841024,
+        "cpu_ms": 312
+      },
+      "server": {
+        "processes": 22,
+        "private_bytes": 603729920,
+        "working_set": 672616448,
+        "cpu_ms": 3817
+      },
+      "shim": {
+        "processes": 15,
+        "private_bytes": 18345984,
+        "working_set": 80060416,
+        "cpu_ms": 412
+      }
+    },
+    "cpu_ms": 8173,
+    "leftovers": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "leftover_names": [],
+    "warm_ready_ms": [],
+    "wall_ms": 10264
+  }
+]

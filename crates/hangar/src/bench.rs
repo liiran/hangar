@@ -165,6 +165,11 @@ pub struct RunConfig {
     /// Sim agent: every session opens a page in its browser and checks that
     /// it sees only its own page.
     pub browse: bool,
+    /// Pooled runs: disable the npx fast path (to measure sharing alone).
+    pub fast_npx: bool,
+    /// Claude agent: end sessions by killing claude.exe (a crash) instead of
+    /// closing its stdin.
+    pub kill_agents: bool,
 }
 
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -178,7 +183,7 @@ pub async fn run_once(cfg: RunConfig) -> Result<RunResult> {
     let cfg = Arc::new(cfg);
 
     let pool = match cfg.mode {
-        Mode::Pooled => Some(start_pool(&cfg.workdir).await?),
+        Mode::Pooled => Some(start_pool(&cfg.workdir, cfg.fast_npx).await?),
         Mode::Direct => None,
     };
     let pool = Arc::new(pool);
@@ -261,7 +266,7 @@ pub async fn run_once(cfg: RunConfig) -> Result<RunResult> {
 
     // End every session the way an agent does, then look for survivors.
     for s in sessions.into_iter().flatten().chain(warm_sessions) {
-        s.close().await;
+        s.close(cfg.kill_agents).await;
     }
     tokio::time::sleep(Duration::from_secs(5)).await;
     let snap = procs::snapshot();
@@ -307,9 +312,12 @@ struct Pool {
     shim: PathBuf,
 }
 
-async fn start_pool(workdir: &Path) -> Result<Pool> {
+async fn start_pool(workdir: &Path, fast_npx: bool) -> Result<Pool> {
     let home = workdir.join(format!("home-{}", std::process::id()));
     std::fs::create_dir_all(&home)?;
+    if !fast_npx {
+        std::fs::write(home.join("config.toml"), "[pool]\nfast_npx = false\n")?;
+    }
     let exe = std::env::current_exe()?;
     let shim = exe.with_file_name(if cfg!(windows) { "hangar-shim.exe" } else { "hangar-shim" });
     if !shim.is_file() {
@@ -344,12 +352,16 @@ impl Session {
         }
     }
 
-    async fn close(self) {
+    async fn close(self, kill: bool) {
         match self {
             Session::Sim { clients, .. } => {
                 for c in &clients {
                     c.shutdown_like_agent().await;
                 }
+            }
+            Session::Claude { mut child, .. } if kill => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
             }
             Session::Claude { mut child, .. } => {
                 drop(child.stdin.take());
@@ -583,6 +595,8 @@ pub struct BenchOpts {
     pub out: Option<PathBuf>,
     pub claude_bin: Option<PathBuf>,
     pub browse: bool,
+    pub fast_npx: bool,
+    pub kill_agents: bool,
 }
 
 /// Runs every (sessions, mode) combination, each in a fresh child process.
@@ -629,6 +643,12 @@ pub async fn run(opts: BenchOpts) -> Result<Vec<RunResult>> {
             }
             if opts.browse {
                 cmd.arg("--browse");
+            }
+            if !opts.fast_npx {
+                cmd.arg("--no-fast-npx");
+            }
+            if opts.kill_agents {
+                cmd.args(["--teardown", "kill"]);
             }
             if let Some(c) = &opts.claude_bin {
                 cmd.arg("--claude-bin").arg(c);
@@ -734,7 +754,12 @@ pub fn render_markdown(results: &[RunResult], opts: &BenchOpts, servers: &Server
         "## hangar bench: {} agent, preset `{}`{}\n\nServers: {}. Machine: {} RAM, {} logical CPUs, {}.\n\n",
         opts.agent,
         opts.preset,
-        if opts.browse { ", every session opens a page in its browser" } else { "" },
+        format!(
+            "{}{}{}",
+            if opts.browse { ", every session opens a page in its browser" } else { "" },
+            if opts.fast_npx { "" } else { ", npx fast path off" },
+            if opts.kill_agents { ", sessions end by killing the agent" } else { "" }
+        ),
         servers.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
         fmt_bytes(total),
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),

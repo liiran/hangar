@@ -180,24 +180,30 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     }
     write_line(&mut wr, &Welcome { ok: true, direct: false, mode: Some(decision.share.as_str().into()), error: None }).await?;
 
-    // The first message must be the client's initialize request, unless the
-    // shim is reconnecting and hands it to us in the hello.
+    // Wait for the client's initialize request (a reconnecting shim hands it
+    // to us in the hello). Clients may probe first: Claude Code sends
+    // `server/discover` from a newer protocol revision and falls back to
+    // initialize when the server does not know it. Pooling works over the
+    // initialize handshake, so answer probes the way today's servers do.
     let (init, respond_init) = match hello.resume.clone() {
         Some(v) => (v, false),
-        None => {
+        None => loop {
             let mut line = String::new();
             let n = tokio::time::timeout(Duration::from_secs(120), reader.read_line(&mut line)).await.context("no initialize")??;
             if n == 0 {
                 return Ok(());
             }
-            (serde_json::from_str::<Value>(line.trim()).context("initialize is not JSON")?, true)
-        }
+            let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else { continue };
+            match crate::jsonrpc::classify(&msg) {
+                crate::jsonrpc::Kind::Request { method: "initialize", .. } => break (msg, true),
+                crate::jsonrpc::Kind::Request { id, method } => {
+                    let err = crate::jsonrpc::error(id.clone(), crate::jsonrpc::METHOD_NOT_FOUND, format!("Method not found: {method}"));
+                    write_line(&mut wr, &err).await?;
+                }
+                _ => {} // notifications before initialize mean nothing yet
+            }
+        },
     };
-    if init.get("method").and_then(Value::as_str) != Some("initialize") {
-        let id = init.get("id").cloned().unwrap_or(Value::Null);
-        write_line(&mut wr, &crate::jsonrpc::error(id, crate::jsonrpc::INVALID_REQUEST, "the first message must be initialize")).await?;
-        return Ok(());
-    }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     let writer = tokio::spawn(async move {

@@ -61,6 +61,12 @@ enum Command {
         /// Sim agent: every session opens a page in its browser (and checks isolation).
         #[arg(long)]
         browse: bool,
+        /// Pooled runs: turn off the npx fast path, to measure sharing alone.
+        #[arg(long)]
+        no_fast_npx: bool,
+        /// How sessions end: `close` (stdin) or `kill` (crash; Claude agent).
+        #[arg(long, default_value = "close")]
+        teardown: String,
     },
     /// One measured run (used internally by `bench`).
     #[command(hide = true)]
@@ -85,6 +91,10 @@ enum Command {
         claude_bin: Option<PathBuf>,
         #[arg(long)]
         browse: bool,
+        #[arg(long)]
+        no_fast_npx: bool,
+        #[arg(long, default_value = "close")]
+        teardown: String,
     },
 }
 
@@ -99,7 +109,7 @@ async fn main() -> Result<()> {
             daemon::send_control(&home, "stop", json!({})).await?;
             println!("hangar daemon stopping");
         }
-        Command::Bench { sessions, preset, modes, agent, settle_ms, warm_wave, no_warmup, reserve_gb, out, claude_bin, browse } => {
+        Command::Bench { sessions, preset, modes, agent, settle_ms, warm_wave, no_warmup, reserve_gb, out, claude_bin, browse, no_fast_npx, teardown } => {
             bench::run(bench::BenchOpts {
                 sessions,
                 preset,
@@ -112,10 +122,12 @@ async fn main() -> Result<()> {
                 out,
                 claude_bin,
                 browse,
+                fast_npx: !no_fast_npx,
+                kill_agents: teardown == "kill",
             })
             .await?;
         }
-        Command::BenchRun { mode, agent, sessions, preset, workdir, json, settle_ms, warm_wave, claude_bin, browse } => {
+        Command::BenchRun { mode, agent, sessions, preset, workdir, json, settle_ms, warm_wave, claude_bin, browse, no_fast_npx, teardown } => {
             let servers = bench::preset(&preset, &workdir)?;
             let result = bench::run_once(bench::RunConfig {
                 mode,
@@ -127,6 +139,8 @@ async fn main() -> Result<()> {
                 warm_wave,
                 claude_bin,
                 browse,
+                fast_npx: !no_fast_npx,
+                kill_agents: teardown == "kill",
             })
             .await?;
             std::fs::write(&json, serde_json::to_vec_pretty(&result)?)?;

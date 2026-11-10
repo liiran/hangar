@@ -350,3 +350,16 @@ async fn status_lists_servers_and_sessions() {
     assert_eq!(pids.len(), 1);
     d.shutdown().await;
 }
+
+#[tokio::test]
+async fn probes_before_initialize_get_method_not_found() {
+    // Claude Code 2.1.3xx sends `server/discover` first and falls back to initialize.
+    let home = temp_home("probe");
+    let d = start_daemon(&home, config(&[("fake", Share::Global)])).await;
+    let c = McpClient::spawn(shim_cmd(&home, "fake", &[]), vec![]).unwrap();
+    let probe = c.request_with_id(json!("server-discover-probe-1"), "server/discover", json!({"_meta": {}}), T).await.unwrap();
+    assert_eq!(probe["error"]["code"], jsonrpc::METHOD_NOT_FOUND);
+    c.initialize("t", T).await.unwrap();
+    assert_eq!(tool(&c, "echo", json!({"text": "after probe"})).await.unwrap(), "after probe");
+    d.shutdown().await;
+}
