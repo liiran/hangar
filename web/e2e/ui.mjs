@@ -1,0 +1,213 @@
+// End-to-end check of the web app in a real browser against a real daemon.
+// Claude is the scriptable fake from crates/testkit, so it costs nothing and
+// needs no network.
+//
+//   cargo build --workspace && cd web && npm run e2e
+//
+// Uses an installed Chrome (E2E_CHANNEL=msedge for Edge). Screenshots go to
+// E2E_SHOTS if set.
+import { execFileSync, spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { chromium } from "playwright-core";
+
+const root = path.resolve(import.meta.dirname, "../..");
+const exe = (name) => path.join(root, "target", process.env.E2E_PROFILE ?? "debug", name + (process.platform === "win32" ? ".exe" : ""));
+const [hangar, shim, fakeClaude, fakeMcp] = ["hangar", "hangar-shim", "fake-claude", "fake-mcp"].map(exe);
+for (const f of [hangar, shim, fakeClaude, fakeMcp]) if (!fs.existsSync(f)) throw new Error(`${f} is missing: run cargo build --workspace first`);
+
+// A fresh state dir, and a project folder with settings of its own.
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hangar-e2e-"));
+const home = path.join(tmp, "home");
+const proj = path.join(tmp, "proj");
+fs.mkdirSync(home);
+fs.mkdirSync(path.join(proj, ".claude"), { recursive: true });
+fs.writeFileSync(path.join(home, "config.toml"), '[servers.fake]\nshare = "global"\n');
+fs.writeFileSync(
+  path.join(proj, ".claude", "settings.json"),
+  JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./scripts/check.sh" }] }] }, permissions: { allow: ["Bash(npm test)"] } }),
+);
+fs.writeFileSync(path.join(proj, ".mcp.json"), JSON.stringify({ mcpServers: { docs: { command: "node", args: ["docs-server.js"] } } }));
+const shots = process.env.E2E_SHOTS;
+if (shots) fs.mkdirSync(shots, { recursive: true });
+const shot = (page, name) => (shots ? page.screenshot({ path: path.join(shots, `${name}.png`) }) : Promise.resolve());
+
+const env = { ...process.env, HANGAR_HOME: home, HANGAR_CLAUDE: fakeClaude };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const up = () => execFileSync(hangar, ["up", "--no-open"], { env, encoding: "utf8" }).trim().split(/\r?\n/).pop();
+const errors = [];
+const results = [];
+let restarting = false; // connection errors are expected while the daemon restarts
+function check(name, ok, detail = "") {
+  results.push(ok);
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
+}
+
+const clients = [];
+const browser = await chromium.launch({ channel: process.env.E2E_CHANNEL ?? "chrome", headless: true });
+try {
+  const pairUrl = up();
+  const base = new URL(pairUrl).origin;
+  const info = JSON.parse(fs.readFileSync(path.join(home, "daemon.json"), "utf8"));
+  check("hangar up prints a one-time pairing URL", /\/#pair=[0-9a-f]{32}$/.test(pairUrl));
+  check("the URL does not contain the daemon token", !pairUrl.includes(info.token));
+
+  // Three agent-like clients sharing one server through the shim.
+  for (let i = 0; i < 3; i++) {
+    const p = spawn(shim, ["--name", "fake", "--", fakeMcp], { env: { ...env, HANGAR_NO_AUTOSTART: "1" }, stdio: ["pipe", "pipe", "ignore"] });
+    p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "1" } } }) + "\n");
+    clients.push(p);
+  }
+
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: process.env.E2E_SCHEME ?? "dark" });
+  const page = await ctx.newPage();
+  const external = [];
+  page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
+  page.on("console", (m) => {
+    if (m.type() !== "error") return;
+    if (restarting && /ERR_CONNECTION_REFUSED|Authentication failed|401/.test(m.text())) return;
+    if (/status of 401/.test(m.text())) return; // the signed-out probe
+    errors.push("console: " + m.text());
+  });
+  page.on("request", (r) => !r.url().startsWith(base) && !r.url().startsWith("data:") && external.push(r.url()));
+
+  // ---- sign-in
+  await page.goto(pairUrl);
+  await page.waitForSelector("text=Run all your agents from one place");
+  check("pairing signs the window in", true);
+  check("the code is removed from the address bar", !page.url().includes("pair="), page.url());
+  await shot(page, "1-welcome");
+
+  // ---- a new session in an untrusted folder
+  const dialog = page.locator('[role="dialog"]');
+  await page.keyboard.press("Control+n");
+  await dialog.waitFor();
+  await page.fill('input[list="hangar-projects"]', proj);
+  await page.fill('[role="dialog"] textarea', "Refactor the auth module into smaller functions and add tests");
+  await page.waitForSelector("text=New folder");
+  const startBtn = dialog.locator('button:has-text("Start session"), button:has-text("Queue session")');
+  check("an untrusted folder must be confirmed first", await startBtn.isDisabled());
+  const notice = await dialog.innerText();
+  check("the notice lists the folder's hooks, allowed tools and MCP servers", ["./scripts/check.sh", "Bash(npm test)", "docs: node"].every((s) => notice.includes(s)));
+  await shot(page, "0-trust");
+  await page.check("text=I trust this folder");
+  check("confirming enables Start", await startBtn.isEnabled());
+  await page.keyboard.press("Control+Enter");
+  await dialog.waitFor({ state: "detached" });
+  await page.waitForSelector("text=echo: Refactor the auth module");
+
+  async function newSession(prompt) {
+    await page.keyboard.press("Control+n");
+    await dialog.waitFor();
+    await page.fill('input[list="hangar-projects"]', proj);
+    await page.fill('[role="dialog"] textarea', prompt);
+    await sleep(500); // the trust lookup
+    check(`a trusted folder asks nothing again (${prompt.slice(0, 16)}…)`, (await page.locator("text=New folder").count()) === 0);
+    await page.keyboard.press("Control+Enter");
+    await dialog.waitFor({ state: "detached" });
+  }
+  await newSession("Audit dependencies, then use tool to list the repo");
+  await page.waitForSelector("text=Claude wants to use Bash");
+  check("the session-scoped approval is offered", (await page.locator("button:has-text('Allow for session')").count()) === 1);
+  await newSession("Write release notes for v0.4 from the changelog");
+  await sleep(800);
+
+  // ---- drafts survive switching sessions
+  const composer = "main textarea[data-composer]";
+  await page.fill(composer, "half-written thought");
+  await page.click("aside nav >> text=Audit dependencies");
+  await page.waitForSelector("text=Claude wants to use Bash");
+  await page.click("aside nav >> text=Write release notes");
+  await sleep(200);
+  check("a draft survives switching sessions", (await page.inputValue(composer)) === "half-written thought");
+  await page.fill(composer, "");
+
+  // ---- the menu closes on Escape without side effects
+  await page.click("aside nav >> text=Audit dependencies");
+  await page.waitForSelector("text=Claude wants to use Bash");
+  await sleep(2500); // the 2 s system tick delivers pool and memory numbers
+  await shot(page, "2-needs-you");
+  await page.click('button[aria-label="More"]');
+  await page.waitForSelector('[role="menu"]');
+  await page.keyboard.press("Escape");
+  await sleep(200);
+  check("Escape closes the menu", (await page.locator('[role="menu"]').count()) === 0);
+  check("…and leaves the permission request alone", (await page.locator("text=Claude wants to use Bash").count()) === 1);
+
+  await page.click("button:has-text('Allow') >> nth=0");
+  await page.waitForSelector("text=allow: ls");
+  await shot(page, "3-allowed");
+
+  // ---- follow-ups and per-turn cost
+  await page.fill(composer, "Great. Now summarize what you found in two bullets.");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("text=echo: Great. Now summarize");
+  await sleep(300);
+  const costs = await page.locator("main >> text=/Done in .*\\$/").allInnerTexts();
+  check("each turn shows its own cost, not a running total", costs.length >= 2 && costs.every((c) => c.includes("$0.010")), costs.join(" / "));
+
+  // ---- model output cannot load remote images
+  await page.fill(composer, "look ![pixel](http://example.invalid/track.png)");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("text=[image: pixel]");
+  check("images in replies become links", (await page.locator("main img").count()) === 0);
+  check("no request left the machine", external.length === 0, external.join(", "));
+
+  // ---- a crash says why, once
+  await page.fill(composer, "crash");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("text=Stopped with an error");
+  const mainText = await page.locator("main").innerText();
+  check("an error shows its reason and how to continue", /exited with code 5/.test(mainText) && /Send a message to resume/.test(mainText));
+  check("…once, not twice", (mainText.match(/exited with code 5/g) ?? []).length === 1);
+  check("the window title counts sessions that need you", (await page.title()).startsWith("("), await page.title());
+  await shot(page, "5-error");
+
+  // ---- the pool panel
+  await page.click("text=MCP pool");
+  const pool = page.locator('[aria-label="MCP pool"]');
+  await pool.waitFor();
+  await sleep(2200);
+  const poolText = await pool.innerText();
+  check("one shared server serves all three clients", /fake[\s\S]*Shared[\s\S]*Sessions\s*3/.test(poolText), poolText.replace(/\n+/g, " | ").slice(0, 120));
+  await shot(page, "4-pool");
+  await page.keyboard.press("Escape");
+  await sleep(200);
+  check("Escape closes the pool panel", (await pool.count()) === 0);
+
+  // ---- reload keeps the sign-in; the used link signs in nobody else
+  await page.reload();
+  await page.waitForSelector("aside nav >> text=Audit dependencies");
+  check("reloading stays signed in", true);
+  const other = await browser.newContext();
+  const p2 = await other.newPage();
+  await p2.goto(pairUrl);
+  await p2.waitForSelector("text=Open hangar from your terminal");
+  check("a used pairing link signs nobody else in", (await p2.innerText("body")).includes("expired or was already used"));
+  check("the API refuses requests without the token", (await p2.evaluate(async () => (await fetch("/api/state")).status)) === 401);
+  await other.close();
+
+  // ---- a restarted daemon has a new token: the window asks to sign in again
+  restarting = true;
+  execFileSync(hangar, ["stop"], { env });
+  await page.waitForSelector("text=Lost the daemon", { timeout: 10000 });
+  check("losing the daemon is visible", true);
+  const fresh = up();
+  await page.waitForSelector("text=Open hangar from your terminal", { timeout: 20000 });
+  check("a restarted daemon asks this window to sign in again", true);
+  await page.goto(fresh); // same page, new hash
+  await page.waitForSelector("aside nav >> text=Audit dependencies");
+  check("the new link signs it back in, sessions intact", true);
+} finally {
+  for (const c of clients) c.kill();
+  await browser.close();
+  try {
+    execFileSync(hangar, ["stop"], { env, stdio: "ignore" });
+  } catch {}
+}
+
+const failed = results.filter((ok) => !ok).length;
+console.log(errors.length ? `\nPAGE ERRORS:\n${errors.join("\n")}` : "\nno page errors");
+console.log(`${results.length - failed}/${results.length} checks passed`);
+process.exit(failed || errors.length ? 1 : 0);

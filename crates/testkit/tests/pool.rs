@@ -327,6 +327,30 @@ async fn failing_server_reports_an_error_instead_of_hanging() {
 }
 
 #[tokio::test]
+async fn served_totals_outlive_the_upstreams_that_served_them() {
+    let home = temp_home("served");
+    let d = start_daemon(&home, config(&[("own", Share::Session)])).await;
+    for _ in 0..2 {
+        let c = client(&home, "own", &[]).await;
+        tool(&c, "echo", json!({"text": "x"})).await.unwrap();
+        c.shutdown_like_agent().await;
+    }
+    // Both per-session servers exit; the totals remain.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let v = loop {
+        let v = hangar::daemon::send_control(&home, "status", json!({})).await.unwrap();
+        if v["servers"].as_array().unwrap().is_empty() {
+            break v;
+        }
+        assert!(std::time::Instant::now() < deadline, "per-session servers stop when their session leaves");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    // One tools/call per session (initialize is part of attaching).
+    assert_eq!(v["served"]["own"], 2, "{}", v["served"]);
+    d.shutdown().await;
+}
+
+#[tokio::test]
 async fn status_lists_servers_and_sessions() {
     let home = temp_home("status");
     let d = start_daemon(&home, config(&[("fake", Share::Global)])).await;

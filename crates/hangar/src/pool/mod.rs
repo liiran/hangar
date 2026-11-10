@@ -100,6 +100,9 @@ pub struct Pool {
     next_conn: AtomicU64,
     next_upstream: AtomicU64,
     on_exit: Arc<OnExit>,
+    /// Requests forwarded to servers, by server name, across every upstream
+    /// that ever ran (an upstream's own count ends with it).
+    served: Mutex<HashMap<String, Arc<AtomicU64>>>,
 }
 
 impl Pool {
@@ -115,7 +118,7 @@ impl Pool {
                 }
             }
         });
-        Arc::new(Pool { opts, upstreams, next_conn: AtomicU64::new(1), next_upstream: AtomicU64::new(1), on_exit })
+        Arc::new(Pool { opts, upstreams, next_conn: AtomicU64::new(1), next_upstream: AtomicU64::new(1), on_exit, served: Mutex::default() })
     }
 
     pub fn options(&self) -> &PoolOptions {
@@ -162,6 +165,7 @@ impl Pool {
                                 env: req.env.clone(),
                                 opts: self.opts.clone(),
                                 on_exit: Arc::downgrade(&self.on_exit),
+                                served: self.served_counter(&req.name),
                             })
                         } else {
                             upstream::start(upstream::Spawn {
@@ -175,6 +179,7 @@ impl Pool {
                                 client_init: client_init.clone(),
                                 opts: self.opts.clone(),
                                 on_exit: Arc::downgrade(&self.on_exit),
+                                served: self.served_counter(&req.name),
                             })
                         };
                         map.insert(key.clone(), u.clone());
@@ -219,6 +224,15 @@ impl Pool {
     }
 
     /// Stats of every upstream that answers within a second.
+    fn served_counter(&self, name: &str) -> Arc<AtomicU64> {
+        self.served.lock().unwrap().entry(name.to_string()).or_default().clone()
+    }
+
+    /// Requests forwarded to servers since the pool started, by server name.
+    pub fn served(&self) -> std::collections::BTreeMap<String, u64> {
+        self.served.lock().unwrap().iter().map(|(name, n)| (name.clone(), n.load(Ordering::Relaxed))).collect()
+    }
+
     pub async fn stats(&self) -> Vec<UpstreamStats> {
         let mut out = Vec::new();
         for u in self.upstreams() {

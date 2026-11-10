@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "node e2e/ui.mjs",
+    "e2e:claude": "node e2e/real-claude.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.70.0",
@@ -23,6 +25,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.2.0",
+    "playwright-core": "^1.65.0",
     "tailwindcss": "^4.3.5",
     "typescript": "^5.9.3",
     "vite": "^7.3.8",

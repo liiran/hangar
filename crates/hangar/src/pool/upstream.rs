@@ -178,6 +178,8 @@ pub struct Spawn {
     pub client_init: Value,
     pub opts: PoolOptions,
     pub on_exit: Weak<super::OnExit>,
+    /// The pool's running total for this server name.
+    pub served: Arc<std::sync::atomic::AtomicU64>,
 }
 
 pub fn start(spawn: Spawn) -> Upstream {
@@ -610,6 +612,7 @@ impl Actor {
             return;
         };
         self.requests += 1;
+        self.s.served.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut kind = PendingKind::Normal;
         if shared {
             match method.as_str() {

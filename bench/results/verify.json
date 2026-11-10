@@ -1,0 +1,386 @@
+{
+  "parity": [
+    {
+      "server": "memory",
+      "step": "served by the pool",
+      "outcome": "confirmed",
+      "detail": null
+    },
+    {
+      "server": "memory",
+      "step": "tools/list",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "memory",
+      "step": "1. create_entities",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "memory",
+      "step": "2. open_nodes",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "memory",
+      "step": "3. search_nodes",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "memory",
+      "step": "4. delete_entities",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "memory",
+      "step": "5. read_graph",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "filesystem",
+      "step": "served by the pool",
+      "outcome": "confirmed",
+      "detail": null
+    },
+    {
+      "server": "filesystem",
+      "step": "tools/list",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "filesystem",
+      "step": "1. list_allowed_directories",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "filesystem",
+      "step": "2. list_directory",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "filesystem",
+      "step": "3. read_text_file",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "filesystem",
+      "step": "4. search_files",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "sequential-thinking",
+      "step": "served by the pool",
+      "outcome": "confirmed",
+      "detail": null
+    },
+    {
+      "server": "sequential-thinking",
+      "step": "tools/list",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "sequential-thinking",
+      "step": "1. sequentialthinking",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "sequential-thinking",
+      "step": "2. sequentialthinking",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "playwright",
+      "step": "served by the pool",
+      "outcome": "confirmed",
+      "detail": null
+    },
+    {
+      "server": "playwright",
+      "step": "tools/list",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "playwright",
+      "step": "1. browser_navigate",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "playwright",
+      "step": "2. browser_snapshot",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "playwright",
+      "step": "3. browser_evaluate",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "playwright",
+      "step": "4. browser_tabs",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "context7",
+      "step": "served by the pool",
+      "outcome": "confirmed",
+      "detail": null
+    },
+    {
+      "server": "context7",
+      "step": "tools/list",
+      "outcome": "identical",
+      "detail": null
+    },
+    {
+      "server": "context7",
+      "step": "1. resolve-library-id",
+      "outcome": "both succeeded",
+      "detail": null
+    }
+  ],
+  "latency": [
+    {
+      "server": "memory",
+      "call": "read_graph",
+      "direct_p50_ms": 0.3809,
+      "direct_p95_ms": 0.6363,
+      "pooled_p50_ms": 0.4872,
+      "pooled_p95_ms": 0.8083
+    },
+    {
+      "server": "filesystem",
+      "call": "list_allowed_directories",
+      "direct_p50_ms": 0.1199,
+      "direct_p95_ms": 0.2394,
+      "pooled_p50_ms": 0.2193,
+      "pooled_p95_ms": 0.3813
+    },
+    {
+      "server": "playwright",
+      "call": "browser_tabs",
+      "direct_p50_ms": 2.715,
+      "direct_p95_ms": 4.0311,
+      "pooled_p50_ms": 3.6581,
+      "pooled_p95_ms": 5.2688
+    }
+  ],
+  "tasks": [
+    {
+      "task": "memory: store and recall",
+      "mode": "direct",
+      "run": 1,
+      "success": true,
+      "turns": 3,
+      "cost_usd": 0.00026665,
+      "duration_ms": 2866,
+      "answer": "shares MCP servers between sessions",
+      "via_pool": null
+    },
+    {
+      "task": "memory: store and recall",
+      "mode": "direct",
+      "run": 2,
+      "success": true,
+      "turns": 3,
+      "cost_usd": 0.00026665,
+      "duration_ms": 2969,
+      "answer": "shares MCP servers between sessions",
+      "via_pool": null
+    },
+    {
+      "task": "memory: store and recall",
+      "mode": "direct",
+      "run": 3,
+      "success": true,
+      "turns": 3,
+      "cost_usd": 0.00026665,
+      "duration_ms": 2197,
+      "answer": "shares MCP servers between sessions",
+      "via_pool": null
+    },
+    {
+      "task": "memory: store and recall",
+      "mode": "pooled",
+      "run": 1,
+      "success": true,
+      "turns": 3,
+      "cost_usd": 0.00032348,
+      "duration_ms": 2015,
+      "answer": "shares MCP servers between sessions",
+      "via_pool": true
+    },
+    {
+      "task": "memory: store and recall",
+      "mode": "pooled",
+      "run": 2,
+      "success": true,
+      "turns": 3,
+      "cost_usd": 0.00026665,
+      "duration_ms": 3876,
+      "answer": "shares MCP servers between sessions",
+      "via_pool": true
+    },
+    {
+      "task": "memory: store and recall",
+      "mode": "pooled",
+      "run": 3,
+      "success": true,
+      "turns": 3,
+      "cost_usd": 0.00026665,
+      "duration_ms": 2399,
+      "answer": "shares MCP servers between sessions",
+      "via_pool": true
+    },
+    {
+      "task": "filesystem: read a file",
+      "mode": "direct",
+      "run": 1,
+      "success": true,
+      "turns": 2,
+      "cost_usd": 0.0001947,
+      "duration_ms": 1720,
+      "answer": "hello from hangar verify",
+      "via_pool": null
+    },
+    {
+      "task": "filesystem: read a file",
+      "mode": "direct",
+      "run": 2,
+      "success": true,
+      "turns": 2,
+      "cost_usd": 0.0001947,
+      "duration_ms": 2135,
+      "answer": "hello from hangar verify",
+      "via_pool": null
+    },
+    {
+      "task": "filesystem: read a file",
+      "mode": "direct",
+      "run": 3,
+      "success": true,
+      "turns": 2,
+      "cost_usd": 0.0001947,
+      "duration_ms": 2270,
+      "answer": "hello from hangar verify",
+      "via_pool": null
+    },
+    {
+      "task": "filesystem: read a file",
+      "mode": "pooled",
+      "run": 1,
+      "success": true,
+      "turns": 2,
+      "cost_usd": 0.0001947,
+      "duration_ms": 1575,
+      "answer": "hello from hangar verify",
+      "via_pool": true
+    },
+    {
+      "task": "filesystem: read a file",
+      "mode": "pooled",
+      "run": 2,
+      "success": true,
+      "turns": 2,
+      "cost_usd": 0.0001947,
+      "duration_ms": 1793,
+      "answer": "hello from hangar verify",
+      "via_pool": true
+    },
+    {
+      "task": "filesystem: read a file",
+      "mode": "pooled",
+      "run": 3,
+      "success": true,
+      "turns": 2,
+      "cost_usd": 0.0001947,
+      "duration_ms": 2111,
+      "answer": "hello from hangar verify",
+      "via_pool": true
+    },
+    {
+      "task": "playwright: read a page",
+      "mode": "direct",
+      "run": 1,
+      "success": true,
+      "turns": 3,
+      "cost_usd": 0.00037396,
+      "duration_ms": 2070,
+      "answer": "7319",
+      "via_pool": null
+    },
+    {
+      "task": "playwright: read a page",
+      "mode": "direct",
+      "run": 2,
+      "success": true,
+      "turns": 2,
+      "cost_usd": 0.00031726,
+      "duration_ms": 2000,
+      "answer": "7319",
+      "via_pool": null
+    },
+    {
+      "task": "playwright: read a page",
+      "mode": "direct",
+      "run": 3,
+      "success": true,
+      "turns": 3,
+      "cost_usd": 0.00037396,
+      "duration_ms": 2416,
+      "answer": "7319",
+      "via_pool": null
+    },
+    {
+      "task": "playwright: read a page",
+      "mode": "pooled",
+      "run": 1,
+      "success": true,
+      "turns": 3,
+      "cost_usd": 0.00037396,
+      "duration_ms": 2020,
+      "answer": "7319",
+      "via_pool": true
+    },
+    {
+      "task": "playwright: read a page",
+      "mode": "pooled",
+      "run": 2,
+      "success": true,
+      "turns": 2,
+      "cost_usd": 0.00031726,
+      "duration_ms": 2147,
+      "answer": "7319",
+      "via_pool": true
+    },
+    {
+      "task": "playwright: read a page",
+      "mode": "pooled",
+      "run": 3,
+      "success": true,
+      "turns": 3,
+      "cost_usd": 0.00037396,
+      "duration_ms": 2184,
+      "answer": "7319",
+      "via_pool": true
+    }
+  ]
+}

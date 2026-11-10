@@ -384,7 +384,7 @@ async fn control(cmd: &str, req: &Value, shared: &Shared) -> Value {
                 })
                 .collect();
             let daemon = snap.iter().find(|p| p.pid == shared.info.pid).map(|p| procs::Usage::of([p])).unwrap_or_default();
-            json!({"ok": true, "daemon": public_info(&shared.info), "daemon_memory": daemon, "servers": servers})
+            json!({"ok": true, "daemon": public_info(&shared.info), "daemon_memory": daemon, "servers": servers, "served": shared.pool.served()})
         }
         "stop" => {
             let _ = shared.shutdown_tx.send(true);

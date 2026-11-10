@@ -21,6 +21,9 @@ use std::time::{Duration, Instant};
 
 const T: Duration = Duration::from_secs(90);
 
+/// The parity step that proves pooled calls went through the pool.
+const POOL_CHECK: &str = "served by the pool";
+
 #[derive(Debug, Clone)]
 pub struct VerifyOpts {
     pub calls: usize,
@@ -88,6 +91,9 @@ pub struct TaskResult {
     pub cost_usd: Option<f64>,
     pub duration_ms: Option<u64>,
     pub answer: String,
+    /// Pooled runs: the pool really served the calls (the shim falls back to
+    /// starting servers itself when the pool is unreachable).
+    pub via_pool: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,7 +106,7 @@ pub struct Report {
 impl Report {
     /// Every compared answer matched and every agent task succeeded both ways.
     pub fn all_matched(&self) -> bool {
-        self.parity.iter().all(|p| p.outcome != "differs") && self.tasks.iter().all(|t| t.success)
+        self.parity.iter().all(|p| !matches!(p.outcome.as_str(), "differs" | "not pooled")) && self.tasks.iter().all(|t| t.success)
     }
 }
 
@@ -287,6 +293,17 @@ pub async fn run(opts: VerifyOpts) -> Result<Report> {
         let _ = std::fs::remove_file(workdir.join("memory.jsonl"));
         let pooled = spawn(server, &workdir, Some(&pool))?;
         let p = run_script(&pooled, server).await.with_context(|| format!("{} (pooled)", server.name))?;
+        // Prove the pooled answers came through the pool, not a fallback.
+        // (Tool calls only: the pool may answer tools/list from its cache.)
+        let calls = p.iter().filter(|(label, v, _)| label != "tools/list" && v.is_some()).count() as u64;
+        let served = pool_requests(&pool, server.name).await.unwrap_or(0);
+        let (outcome, detail) = if served >= calls && served > 0 {
+            ("confirmed".to_string(), None)
+        } else {
+            ("not pooled".to_string(), Some(format!("the pool forwarded {served} requests for {calls} tool calls")))
+        };
+        println!("  {:<20} {:<28} {}", server.name, POOL_CHECK, outcome);
+        parity.push(StepResult { server: server.name.into(), step: POOL_CHECK.into(), outcome, detail });
         for ((label, dv, dn), (_, pv, pn)) in d.into_iter().zip(p) {
             let expect =
                 server.script.iter().enumerate().find(|(i, _)| label.starts_with(&format!("{}.", i + 1))).map(|(_, s)| s.expect).unwrap_or(Expect::Identical);
@@ -385,6 +402,7 @@ async fn agent_tasks(opts: &VerifyOpts, workdir: &Path, servers: &[Server], pool
                 for s in servers.iter().filter(|s| task.servers.contains(&s.name)) {
                     table.insert(s.name.into(), bench::mcp_config_entry(s.name, &s.spec, if mode == Mode::Pooled { Some(pool) } else { None }));
                 }
+                let before = pooled_requests(pool, task.servers).await;
                 let cfg = workdir.join(format!("task-{mode}.json"));
                 std::fs::write(&cfg, serde_json::to_vec(&json!({"mcpServers": table}))?)?;
                 let allowed: Vec<String> = task.servers.iter().map(|s| format!("mcp__{s}")).collect();
@@ -403,7 +421,11 @@ async fn agent_tasks(opts: &VerifyOpts, workdir: &Path, servers: &[Server], pool
                 let output = tokio::time::timeout(Duration::from_secs(300), cmd.output()).await.context("claude timed out")??;
                 let v: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
                 let answer = v["result"].as_str().unwrap_or_default().to_string();
-                let success = v["is_error"] == json!(false) && answer.to_lowercase().contains(task.expect);
+                let via_pool = match mode {
+                    Mode::Pooled => Some(pooled_requests(pool, task.servers).await > before),
+                    Mode::Direct => None,
+                };
+                let success = v["is_error"] == json!(false) && answer.to_lowercase().contains(task.expect) && via_pool != Some(false);
                 println!("  {:<28} {:<6} run {run}: {}", task.name, mode, if success { "ok" } else { "FAILED" });
                 out.push(TaskResult {
                     task: task.name.into(),
@@ -414,6 +436,7 @@ async fn agent_tasks(opts: &VerifyOpts, workdir: &Path, servers: &[Server], pool
                     cost_usd: v["total_cost_usd"].as_f64(),
                     duration_ms: v["duration_ms"].as_u64(),
                     answer: answer.chars().take(200).collect(),
+                    via_pool,
                 });
             }
         }
@@ -421,15 +444,34 @@ async fn agent_tasks(opts: &VerifyOpts, workdir: &Path, servers: &[Server], pool
     Ok(out)
 }
 
+/// Requests the pool has forwarded to servers named `name` since it started.
+async fn pool_requests(pool: &bench::Pool, name: &str) -> Option<u64> {
+    let status = crate::daemon::send_control(&pool.home, "status", json!({})).await.ok()?;
+    status["served"][name].as_u64()
+}
+
+async fn pooled_requests(pool: &bench::Pool, names: &[&str]) -> u64 {
+    let mut total = 0;
+    for name in names {
+        total += pool_requests(pool, name).await.unwrap_or(0);
+    }
+    total
+}
+
 fn render(r: &Report) -> String {
     let mut s = String::from("## hangar verify\n\n### Tool parity (direct vs pooled)\n\n| Server | Step | Result |\n|---|---|---|\n");
     for p in &r.parity {
         s.push_str(&format!("| {} | {} | {} |\n", p.server, p.step, p.outcome));
     }
-    let same = r.parity.iter().filter(|p| p.outcome == "identical" || p.outcome == "both succeeded").count();
-    let compared = r.parity.iter().filter(|p| p.outcome != "skipped").count();
+    let answers = r.parity.iter().filter(|p| p.step != POOL_CHECK && p.outcome != "skipped");
+    let compared = answers.clone().count();
+    let same = answers.filter(|p| p.outcome == "identical" || p.outcome == "both succeeded").count();
+    let checks = r.parity.iter().filter(|p| p.step == POOL_CHECK);
+    let confirmed = checks.clone().filter(|p| p.outcome == "confirmed").count();
     s.push_str(&format!(
-        "\n**{same} of {compared} answers matched.** Timestamps and long numbers are masked before comparing; network answers only need to both succeed.\n"
+        "\n**{same} of {compared} answers matched**, and the pool provably served the pooled calls for {confirmed} of {} servers. \
+         Timestamps and long numbers are masked before comparing; network answers only need to both succeed.\n",
+        checks.count()
     ));
     if !r.latency.is_empty() {
         s.push_str("\n### Latency per tool call\n\n| Server | Call | Direct p50 | Pooled p50 | Direct p95 | Pooled p95 |\n|---|---|---:|---:|---:|---:|\n");

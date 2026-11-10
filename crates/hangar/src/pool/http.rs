@@ -53,6 +53,8 @@ pub struct HttpSpawn {
     pub env: BTreeMap<String, String>,
     pub opts: PoolOptions,
     pub on_exit: Weak<super::OnExit>,
+    /// The pool's running total for this server name.
+    pub served: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Where sessions can reach the server.
@@ -262,6 +264,7 @@ impl HttpActor {
                 if let Some(s) = self.sessions.get(&conn) {
                     if matches!(jsonrpc::classify(&msg), Kind::Request { .. }) {
                         self.requests += 1;
+                        self.s.served.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     let _ = s.tx.send(msg);
                 }
