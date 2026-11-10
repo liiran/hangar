@@ -1,0 +1,98 @@
+[
+  {
+    "mode": "direct",
+    "agent": "sim",
+    "sessions": 1,
+    "servers": [
+      "playwright",
+      "context7",
+      "memory",
+      "sequential-thinking",
+      "filesystem"
+    ],
+    "session_ready_ms": [
+      2278
+    ],
+    "failures": [],
+    "mcp": {
+      "processes": 25,
+      "private_bytes": 855924736,
+      "working_set": 854777856,
+      "cpu_ms": 5733
+    },
+    "agents": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "breakdown": {
+      "server": {
+        "processes": 25,
+        "private_bytes": 855924736,
+        "working_set": 854777856,
+        "cpu_ms": 5733
+      }
+    },
+    "cpu_ms": 6282,
+    "leftovers": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "leftover_names": [],
+    "warm_ready_ms": [],
+    "wall_ms": 10321
+  },
+  {
+    "mode": "direct",
+    "agent": "sim",
+    "sessions": 5,
+    "servers": [
+      "playwright",
+      "context7",
+      "memory",
+      "sequential-thinking",
+      "filesystem"
+    ],
+    "session_ready_ms": [
+      10874,
+      10819,
+      10756,
+      10794,
+      10421
+    ],
+    "failures": [],
+    "mcp": {
+      "processes": 125,
+      "private_bytes": 4122976256,
+      "working_set": 4220051456,
+      "cpu_ms": 35691
+    },
+    "agents": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "breakdown": {
+      "server": {
+        "processes": 125,
+        "private_bytes": 4122976256,
+        "working_set": 4220051456,
+        "cpu_ms": 35691
+      }
+    },
+    "cpu_ms": 38845,
+    "leftovers": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "leftover_names": [],
+    "warm_ready_ms": [],
+    "wall_ms": 19174
+  }
+]

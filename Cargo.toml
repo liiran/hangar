@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/hangar-proto", "crates/hangar-shim", "crates/hangar", "crates/testkit"]
+default-members = ["crates/hangar-proto", "crates/hangar-shim", "crates/hangar"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.89"
+
+[workspace.dependencies]
+hangar-proto = { path = "crates/hangar-proto" }
+hangar-shim = { path = "crates/hangar-shim" }
+hangar = { path = "crates/hangar" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_SystemInformation",
+] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# The shim runs once per MCP server per agent session, so keep it small.
+[profile.release.package.hangar-shim]
+opt-level = "s"

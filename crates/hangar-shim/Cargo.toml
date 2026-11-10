@@ -1,0 +1,20 @@
+[package]
+name = "hangar-shim"
+description = "Stand-in an MCP client launches instead of a real stdio server; forwards to the hangar pool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "hangar-shim"
+path = "src/main.rs"
+
+[dependencies]
+hangar-proto.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "testkit"
+description = "Fake MCP servers and agents for hangar's integration tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+hangar.workspace = true
+hangar-proto.workspace = true
+hangar-shim.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
