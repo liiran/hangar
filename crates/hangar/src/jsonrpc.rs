@@ -1,6 +1,6 @@
 //! Small helpers for JSON-RPC 2.0 messages as used by MCP.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;

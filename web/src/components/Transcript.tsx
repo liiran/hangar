@@ -8,6 +8,9 @@ import { relative, toRows, toolSummary, type Row } from "../transcript";
 import { Markdown } from "./Markdown";
 import { Button, cx } from "./ui";
 
+/** Statuses in which a tool call without a result is still running. */
+const LIVE = new Set(["working", "starting", "needs_you"]);
+
 const TOOL_ICONS: Record<string, typeof Hammer> = {
   Bash: SquareTerminal,
   Read: FileText,
@@ -22,6 +25,13 @@ const TOOL_ICONS: Record<string, typeof Hammer> = {
 
 export function Transcript({ session, events }: { session: Session; events: SessionEvent[] | undefined }) {
   const rows = useMemo(() => toRows(events ?? []), [events]);
+  const lastError = useMemo(() => {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = rows[i];
+      if (r.kind === "error") return r.message;
+    }
+    return undefined;
+  }, [rows]);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
 
@@ -59,14 +69,28 @@ export function Transcript({ session, events }: { session: Session; events: Sess
         )}
         {session.status === "queued" && (
           <div className="rounded-xl border border-dashed border-line-strong px-4 py-3 text-[13px] text-muted">
-            <span className="font-medium text-fg">Waiting for memory.</span> {session.status_detail ?? "This session starts as soon as there is room."}
+            <span className="font-medium text-fg">Waiting for memory{session.queue_position != null && ` (#${session.queue_position} in line)`}.</span>{" "}
+            {session.status_detail ?? "This session starts as soon as there is room."}
           </div>
         )}
+        {(session.status === "error" || session.status === "stopped") && <Stopped session={session} shownError={lastError} />}
         {session.status === "hibernated" && (
           <p className="text-center text-[12.5px] text-faint">Paused to free memory. Send a message to pick up where it left off.</p>
         )}
       </div>
     </div>
+  );
+}
+
+/** How a stopped session can continue, and why it stopped if no row said so. */
+function Stopped({ session, shownError }: { session: Session; shownError: string | undefined }) {
+  const detail = session.status_detail && session.status_detail !== shownError ? session.status_detail : null;
+  const what = session.status === "error" ? "Stopped with an error" : "The process is stopped";
+  return (
+    <p className="text-center text-[12.5px] text-faint">
+      {what}
+      {detail ? `: ${detail}` : ""}. Send a message to {session.claude_session_id ? "resume where it left off" : "start it again"}.
+    </p>
   );
 }
 
@@ -87,7 +111,7 @@ function RowView({ row, session }: { row: Row; session: Session }) {
     case "thinking":
       return <Collapsible icon={<Brain className="size-3.5" />} label="Thinking" body={row.text} />;
     case "tool":
-      return <ToolRow row={row} cwd={session.cwd} />;
+      return <ToolRow row={row} cwd={session.cwd} live={LIVE.has(session.status)} />;
     case "permission":
       return <PermissionRow row={row} session={session} />;
     case "result":
@@ -180,7 +204,7 @@ function Collapsible({ icon, label, body, mono }: { icon: React.ReactNode; label
   );
 }
 
-function ToolRow({ row, cwd }: { row: Extract<Row, { kind: "tool" }>; cwd: string }) {
+function ToolRow({ row, cwd, live }: { row: Extract<Row, { kind: "tool" }>; cwd: string; live: boolean }) {
   const [open, setOpen] = useState(false);
   const Icon = TOOL_ICONS[row.name] ?? Hammer;
   const summary = toolSummary(row.name, row.input, cwd);
@@ -192,7 +216,8 @@ function ToolRow({ row, cwd }: { row: Extract<Row, { kind: "tool" }>; cwd: strin
         <Icon className="size-3.5 shrink-0 text-muted" />
         <span className="shrink-0 text-[12.5px] font-medium">{row.name.replace(/^mcp__/, "").replace(/__/g, " · ")}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-faint">{summary}</span>
-        {!row.result && <span className="size-1.5 shrink-0 animate-soft-pulse rounded-full bg-sky-400" title="Running" />}
+        {!row.result && live && <span className="size-1.5 shrink-0 animate-soft-pulse rounded-full bg-sky-400" title="Running" />}
+        {!row.result && !live && <span className="shrink-0 text-[11px] text-faint">no result</span>}
         {failed && <X className="size-3.5 shrink-0 text-rose-400" />}
       </button>
       {open && (
@@ -209,9 +234,16 @@ function ToolRow({ row, cwd }: { row: Extract<Row, { kind: "tool" }>; cwd: strin
   );
 }
 
+const DECISIONS: Record<string, string> = {
+  allow: "Allowed",
+  allow_always: "Allowed for the session",
+  deny: "Denied",
+  cancelled: "Withdrawn",
+};
+
 function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission" }>; session: Session }) {
   const [busy, setBusy] = useState(false);
-  const live = row.decision == null && session.pending.some((p) => p.request_id === row.requestId);
+  const pending = row.decision == null ? session.pending.find((p) => p.request_id === row.requestId) : undefined;
   const decide = async (behavior: "allow" | "allow_always" | "deny") => {
     setBusy(true);
     try {
@@ -222,8 +254,8 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
     }
   };
   const summary = toolSummary(row.tool, row.input, session.cwd);
-  if (!live) {
-    const label = row.decision === "deny" ? "Denied" : row.decision === "allow_always" ? "Always allowed" : row.decision ? "Allowed" : "Expired";
+  if (!pending) {
+    const label = DECISIONS[row.decision ?? ""] ?? "Expired";
     return (
       <div className="flex items-center gap-2 text-[12px] text-faint">
         <ShieldQuestion className="size-3.5" />
@@ -245,9 +277,11 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
         <Button variant="primary" disabled={busy} onClick={() => decide("allow")}>
           <Check className="size-4" /> Allow
         </Button>
-        <Button disabled={busy} onClick={() => decide("allow_always")} title="Allow this kind of call for the rest of the session">
-          Always allow
-        </Button>
+        {pending.can_remember && (
+          <Button disabled={busy} onClick={() => decide("allow_always")} title="Allow calls like this for the rest of this session">
+            Allow for session
+          </Button>
+        )}
         <Button variant="ghost" disabled={busy} onClick={() => decide("deny")}>
           <X className="size-4" /> Deny
         </Button>

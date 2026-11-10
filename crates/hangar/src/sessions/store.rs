@@ -29,18 +29,18 @@ impl Store {
     }
 
     pub fn save_meta(&self, meta: &SessionMeta) {
-        if let Ok(bytes) = serde_json::to_vec_pretty(meta) {
-            if let Err(e) = write_private(&self.dir(&meta.id).join("meta.json"), &bytes) {
-                tracing::warn!(session = %meta.id, "could not save session: {e}");
-            }
+        if let Ok(bytes) = serde_json::to_vec_pretty(meta)
+            && let Err(e) = write_private(&self.dir(&meta.id).join("meta.json"), &bytes)
+        {
+            tracing::warn!(session = %meta.id, "could not save session: {e}");
         }
     }
 
     pub fn append(&self, id: &str, event: &Event) {
-        if let Ok(line) = serde_json::to_string(event) {
-            if let Err(e) = append_private(&self.dir(id).join("events.jsonl"), &line) {
-                tracing::warn!(session = %id, "could not save an event: {e}");
-            }
+        if let Ok(line) = serde_json::to_string(event)
+            && let Err(e) = append_private(&self.dir(id).join("events.jsonl"), &line)
+        {
+            tracing::warn!(session = %id, "could not save an event: {e}");
         }
     }
 

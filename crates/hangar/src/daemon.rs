@@ -15,10 +15,10 @@ use crate::policy::{self, Share};
 use crate::pool::{AttachRequest, Pool, PoolOptions};
 use crate::procs;
 use crate::util::{constant_time_eq, make_private, now_ms, random_hex, write_private};
-use anyhow::{bail, Context, Result};
-use hangar_proto::{Challenge, DaemonInfo, Hello, Proof, Welcome, WIRE_VERSION};
+use anyhow::{Context, Result, bail};
+use hangar_proto::{Challenge, DaemonInfo, Hello, Proof, WIRE_VERSION, Welcome};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -126,7 +126,14 @@ impl Daemon {
             Some(l) => Some(l.local_addr()?.port()),
             None => None,
         };
-        let info = DaemonInfo { pid: std::process::id(), shim_port: port, ui_port, token: token.clone(), version: env!("CARGO_PKG_VERSION").into(), started_at_ms: now_ms() };
+        let info = DaemonInfo {
+            pid: std::process::id(),
+            shim_port: port,
+            ui_port,
+            token: token.clone(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            started_at_ms: now_ms(),
+        };
 
         let p = &opts.config.pool;
         let pool = Pool::new(PoolOptions {
@@ -144,7 +151,8 @@ impl Daemon {
             let state = crate::api::AppState::new(sessions.clone(), pool.clone(), random_hex(24), pairing.clone(), ui_port.unwrap_or(0));
             tokio::spawn(crate::api::serve(l, state, shutdown_tx.subscribe()))
         });
-        let shared = Arc::new(Shared { pool: pool.clone(), config: opts.config, token, info: info.clone(), pairing: pairing.clone(), shutdown_tx: shutdown_tx.clone() });
+        let shared =
+            Arc::new(Shared { pool: pool.clone(), config: opts.config, token, info: info.clone(), pairing: pairing.clone(), shutdown_tx: shutdown_tx.clone() });
         // Announce ourselves only once everything is listening.
         write_info(&opts.home, &info)?;
 
@@ -227,7 +235,11 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     let first = read_limited(&mut reader, MAX_CHALLENGE, Duration::from_secs(10)).await?;
     let challenge: Challenge = serde_json::from_str(first.trim()).context("expected a challenge")?;
     if challenge.hangar != WIRE_VERSION {
-        write_line(&mut wr, &Welcome { ok: false, error: Some(format!("client speaks wire version {}, daemon speaks {WIRE_VERSION}", challenge.hangar)), ..Default::default() }).await?;
+        write_line(
+            &mut wr,
+            &Welcome { ok: false, error: Some(format!("client speaks wire version {}, daemon speaks {WIRE_VERSION}", challenge.hangar)), ..Default::default() },
+        )
+        .await?;
         return Ok(());
     }
     write_line(&mut wr, &Proof { proof: hangar_proto::proof(&shared.token, &challenge.challenge) }).await?;

@@ -76,10 +76,10 @@ impl Budget {
         if available < need {
             return Err(format!(
                 "waiting for memory: needs about {} free (session ~{} + reserve {}), {} available",
-                crate::bench::fmt_bytes(need),
-                crate::bench::fmt_bytes(self.estimate()),
-                crate::bench::fmt_bytes(self.reserve_bytes),
-                crate::bench::fmt_bytes(available)
+                crate::util::fmt_bytes(need),
+                crate::util::fmt_bytes(self.estimate()),
+                crate::util::fmt_bytes(self.reserve_bytes),
+                crate::util::fmt_bytes(available)
             ));
         }
         Ok(())

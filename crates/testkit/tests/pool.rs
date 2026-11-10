@@ -5,10 +5,10 @@ mod common;
 
 use common::*;
 use hangar::client::McpClient;
-use hangar::jsonrpc;
 use hangar::config::Config;
+use hangar::jsonrpc;
 use hangar::policy::Share;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -104,7 +104,9 @@ async fn progress_only_reaches_the_session_that_asked() {
     let a = std::sync::Arc::new(client(&home, "fake", &[]).await);
     let b = std::sync::Arc::new(client(&home, "fake", &[]).await);
     let call = |c: std::sync::Arc<McpClient>, tag: &'static str| async move {
-        c.call("tools/call", json!({"name": "slow", "arguments": {"ms": 300, "steps": 3, "tag": tag}, "_meta": {"progressToken": "same-token"}}), T).await.unwrap()
+        c.call("tools/call", json!({"name": "slow", "arguments": {"ms": 300, "steps": 3, "tag": tag}, "_meta": {"progressToken": "same-token"}}), T)
+            .await
+            .unwrap()
     };
     let (ra, rb) = tokio::join!(call(a.clone(), "A"), call(b.clone(), "B"));
     assert_eq!(ra["content"][0]["text"], "done A");
@@ -317,7 +319,8 @@ async fn failing_server_reports_an_error_instead_of_hanging() {
     let home = temp_home("failinit");
     let d = start_daemon(&home, config(&[("bad", Share::Global)])).await;
     let c = McpClient::spawn(shim_cmd(&home, "bad", &["--fail-init"]), vec![]).unwrap();
-    let r = c.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}), T).await.unwrap();
+    let r =
+        c.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}), T).await.unwrap();
     assert_eq!(r["error"]["code"], jsonrpc::SERVER_UNAVAILABLE);
     assert!(r["error"]["message"].as_str().unwrap().contains("refusing to initialize"));
     d.shutdown().await;
@@ -389,10 +392,7 @@ async fn auto_started_daemon_does_not_hold_the_clients_pipes() {
     // Close the client side. Our end of stdout must see EOF even though the
     // daemon (started from inside the shim) keeps running.
     drop(stdin);
-    let eof = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Ok(Some(_)) = lines.next_line().await {}
-    })
-    .await;
+    let eof = tokio::time::timeout(Duration::from_secs(10), async { while let Ok(Some(_)) = lines.next_line().await {} }).await;
     assert!(eof.is_ok(), "stdout never closed: the daemon inherited the client's pipe");
     assert!(hangar::procs::is_alive(info.pid), "the daemon outlives the shim");
     hangar::daemon::send_control(&home, "stop", json!({})).await.unwrap();

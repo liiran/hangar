@@ -84,7 +84,7 @@ function MachineCard({ onPool }: { onPool: () => void }) {
   if (!system) return null;
   const m = system.machine;
   const used = m.total_bytes - m.available_bytes;
-  const shared = system.servers.filter((s) => s.share !== "session").length;
+  const shared = system.servers.filter((s) => s.share === "global" || s.share === "project" || s.share === "native").length;
   return (
     <div className="border-t border-line p-3">
       <div className="rounded-xl bg-panel-2 p-3 ring-1 ring-inset ring-line">

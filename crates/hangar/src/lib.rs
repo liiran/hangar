@@ -4,7 +4,7 @@
 //!   through `hangar-shim`.
 //! * [`sessions`]: many headless Claude Code sessions, admitted by the
 //!   memory [`budget`], shown in the web UI served by [`api`].
-//! * [`bench`]: measures what that saves.
+//! * [`bench`]: measures what that saves; [`verify`] checks it costs no quality.
 
 pub mod agent;
 pub mod api;
@@ -21,5 +21,6 @@ pub mod pool;
 pub mod procs;
 pub mod sessions;
 pub mod util;
+pub mod verify;
 
 pub use hangar_proto as proto;

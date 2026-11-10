@@ -1,7 +1,7 @@
 //! The `hangar` command line, run as a real process against temporary
 //! state and a temporary `~/.claude.json` (never the user's own).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};

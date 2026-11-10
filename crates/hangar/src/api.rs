@@ -20,17 +20,18 @@ use crate::sessions::{Manager, NeedsTrust, NewSession};
 use crate::util::constant_time_eq;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'";
+const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
+                   font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -97,10 +98,10 @@ async fn same_origin_only(State(st): State<AppState>, req: Request, next: Next) 
     if !hosts.iter().any(|h| h == host) {
         return (StatusCode::FORBIDDEN, "wrong host").into_response();
     }
-    if let Some(origin) = req.headers().get(header::ORIGIN).and_then(|o| o.to_str().ok()) {
-        if !hosts.iter().any(|h| origin == format!("http://{h}")) {
-            return (StatusCode::FORBIDDEN, Json(json!({"error": "cross-origin request refused"}))).into_response();
-        }
+    if let Some(origin) = req.headers().get(header::ORIGIN).and_then(|o| o.to_str().ok())
+        && !hosts.iter().any(|h| origin == format!("http://{h}"))
+    {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "cross-origin request refused"}))).into_response();
     }
     let mut res = next.run(req).await;
     let h = res.headers_mut();
@@ -154,7 +155,12 @@ async fn static_file(req: Request) -> Response {
             let cache = if p.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "no-cache" };
             ([(header::CONTENT_TYPE, mime.as_ref().to_string()), (header::CACHE_CONTROL, cache.to_string())], f.data.into_owned()).into_response()
         }
-        None => (StatusCode::OK, [(header::CONTENT_TYPE, "text/html")], "<h1>hangar</h1><p>The web UI was not built. Run <code>npm ci && npm run build</code> in <code>web/</code>, then rebuild hangar.</p>").into_response(),
+        None => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html")],
+            "<h1>hangar</h1><p>The web UI was not built. Run <code>npm ci && npm run build</code> in <code>web/</code>, then rebuild hangar.</p>",
+        )
+            .into_response(),
     }
 }
 
@@ -166,10 +172,10 @@ fn err(status: StatusCode, e: impl std::fmt::Display) -> Response {
 /// 1.5 s and shared by all windows.
 pub async fn system_snapshot(st: &AppState) -> Value {
     let mut cache = st.snapshot.lock().await;
-    if let Some((at, v)) = cache.as_ref() {
-        if at.elapsed() < Duration::from_millis(1500) {
-            return v.clone();
-        }
+    if let Some((at, v)) = cache.as_ref()
+        && at.elapsed() < Duration::from_millis(1500)
+    {
+        return v.clone();
     }
     let stats = st.pool.stats().await;
     let snap = tokio::task::spawn_blocking(procs::snapshot).await.unwrap_or_default();

@@ -21,10 +21,10 @@ pub fn find_claude() -> Option<PathBuf> {
             if exe.is_file() {
                 return Some(exe);
             }
-            if dir.join("claude.cmd").is_file() || dir.join("claude").is_file() {
-                if let Some(native) = npm_native(&dir) {
-                    return Some(native);
-                }
+            if (dir.join("claude.cmd").is_file() || dir.join("claude").is_file())
+                && let Some(native) = npm_native(&dir)
+            {
+                return Some(native);
             }
         } else {
             let bin = dir.join("claude");

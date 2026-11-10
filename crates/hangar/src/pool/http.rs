@@ -12,7 +12,7 @@
 //! answering, the session receives an error instead of waiting forever.
 
 use super::process::{self, Ring};
-use super::upstream::{display, launch_display, Cmd, Rejected, SessionRef, Upstream, UpstreamStats, FAILED_RETRY};
+use super::upstream::{Cmd, FAILED_RETRY, Rejected, SessionRef, Upstream, UpstreamStats, display, launch_display};
 use super::{PoolKey, PoolOptions};
 use crate::jsonrpc::{self, Kind};
 use crate::launch::{self, FastPath, Launch};
@@ -20,7 +20,7 @@ use crate::policy::Share;
 use crate::util::now_ms;
 use futures_util::StreamExt;
 use hangar_proto::ServerSpec;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
@@ -52,7 +52,7 @@ pub struct HttpSpawn {
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
     pub opts: PoolOptions,
-    pub on_exit: Weak<dyn Fn(u64, &PoolKey) + Send + Sync>,
+    pub on_exit: Weak<super::OnExit>,
 }
 
 /// Where sessions can reach the server.
@@ -161,6 +161,8 @@ struct HttpActor {
     done: bool,
 }
 
+// Lives for one loop iteration on the stack; boxing would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 enum Wake {
     Cmd(Option<Cmd>),
     Ev(Option<Event>),
@@ -240,7 +242,14 @@ impl HttpActor {
                 self.idle_since = None;
                 let (tx, rx) = mpsc::unbounded_channel();
                 let init = json!({"jsonrpc": "2.0", "id": init_id.clone().unwrap_or(json!("hangar-init")), "method": "initialize", "params": init_params});
-                let session = SessionTask { http: self.http.clone(), url: self.url_tx.subscribe(), to_client: info.tx.clone(), init, respond_init: init_id.is_some(), rx };
+                let session = SessionTask {
+                    http: self.http.clone(),
+                    url: self.url_tx.subscribe(),
+                    to_client: info.tx.clone(),
+                    init,
+                    respond_init: init_id.is_some(),
+                    rx,
+                };
                 tokio::spawn(session.run());
                 self.sessions.insert(info.conn, SessionHandle { info: info.summary(), tx });
                 if self.state == State::Failed && self.retry_at.is_some_and(|t| Instant::now() >= t) {
@@ -352,7 +361,15 @@ impl HttpActor {
         let fast = FastPath { enabled: self.s.opts.fast_npx && !self.fast_failed, state_dir: self.s.opts.state_dir.as_deref() };
         let launch = launch::plan(&self.s.spec, &self.s.env, fast);
         let extra: Vec<String> = self.s.extra_args.iter().map(|a| a.replace("{port}", &port.to_string())).collect();
-        let opts = process::Options { launch: &launch, extra_args: &extra, cwd: &self.s.cwd, env: &self.s.env, declared: &self.s.spec.env, stdin: false, stdout: false };
+        let opts = process::Options {
+            launch: &launch,
+            extra_args: &extra,
+            cwd: &self.s.cwd,
+            env: &self.s.env,
+            declared: &self.s.spec.env,
+            stdin: false,
+            stdout: false,
+        };
         let started = process::start(opts, &self.stderr);
         self.launch = Some(launch);
         let mut started = match started {
@@ -651,7 +668,14 @@ impl SessionTask {
         if answer_client {
             let _ = self.to_client.send(jsonrpc::to_line(&answer));
         }
-        let ctx = Ctx { http: self.http.clone(), url: url.to_string(), sid, protocol, to_client: self.to_client.clone(), inflight: Arc::new(Mutex::new(HashMap::new())) };
+        let ctx = Ctx {
+            http: self.http.clone(),
+            url: url.to_string(),
+            sid,
+            protocol,
+            to_client: self.to_client.clone(),
+            inflight: Arc::new(Mutex::new(HashMap::new())),
+        };
         forward(ctx.clone(), jsonrpc::notification("notifications/initialized", None)).await;
         Ok(ctx)
     }
@@ -678,10 +702,10 @@ async fn forward(ctx: Ctx, msg: Value) {
     }
     let answered = |ctx: &Ctx| key.as_ref().is_none_or(|k| !ctx.inflight.lock().unwrap().contains_key(k));
     let fail = |ctx: &Ctx, why: String| {
-        if let (Some(id), Some(key)) = (&id, &key) {
-            if ctx.inflight.lock().unwrap().remove(key).is_some() {
-                ctx.reply_error(id, &why);
-            }
+        if let (Some(id), Some(key)) = (&id, &key)
+            && ctx.inflight.lock().unwrap().remove(key).is_some()
+        {
+            ctx.reply_error(id, &why);
         }
     };
     let Ok(body) = serde_json::to_vec(&msg) else { return };

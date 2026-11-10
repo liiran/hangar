@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import type { Status } from "../api";
 import { STATUS } from "../format";
 
@@ -64,4 +64,27 @@ export function Meter({ used, total, reserve }: { used: number; total: number; r
       {reservePct > 0 && <div className="absolute inset-y-0 right-0 border-l border-dashed border-faint/70 bg-faint/10" style={{ width: `${reservePct}%` }} title="Reserve hangar keeps free" />}
     </div>
   );
+}
+
+/**
+ * Dialog behavior: Escape closes it, and focus goes back where it was when
+ * the dialog closes.
+ */
+export function useDialog(onClose: () => void) {
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const before = document.activeElement as HTMLElement | null;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented && !e.isComposing) {
+        e.preventDefault();
+        close.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      before?.focus?.();
+    };
+  }, []);
 }

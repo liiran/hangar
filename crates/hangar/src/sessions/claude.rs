@@ -13,7 +13,7 @@
 
 use crate::procs;
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -42,12 +42,33 @@ pub struct PermissionRequest {
 
 /// What a driver reports. Every variant names the process it came from.
 pub enum DriverEvent {
-    Message { session_id: String, pid: u32, msg: Value },
-    Permission { session_id: String, pid: u32, request: PermissionRequest },
+    Message {
+        session_id: String,
+        pid: u32,
+        msg: Value,
+    },
+    Permission {
+        session_id: String,
+        pid: u32,
+        request: PermissionRequest,
+    },
     /// Claude withdrew a permission request (for example after an interrupt).
-    PermissionCancelled { session_id: String, pid: u32, request_id: String },
-    McpStatus { session_id: String, pid: u32, servers: Vec<Value> },
-    Exited { session_id: String, pid: u32, code: Option<i32>, stderr: Vec<String> },
+    PermissionCancelled {
+        session_id: String,
+        pid: u32,
+        request_id: String,
+    },
+    McpStatus {
+        session_id: String,
+        pid: u32,
+        servers: Vec<Value>,
+    },
+    Exited {
+        session_id: String,
+        pid: u32,
+        code: Option<i32>,
+        stderr: Vec<String>,
+    },
 }
 
 pub struct Driver {
@@ -58,10 +79,11 @@ pub struct Driver {
 
 impl Driver {
     pub fn args(l: &Launch) -> Vec<String> {
-        let mut args: Vec<String> = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--permission-mode"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let mut args: Vec<String> =
+            ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--permission-mode"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         args.push(l.permission_mode.clone());
         if let Some(m) = &l.model {
             args.push("--model".into());
@@ -283,7 +305,14 @@ mod tests {
 
     #[test]
     fn builds_the_cli_arguments() {
-        let l = Launch { program: "claude".into(), cwd: ".".into(), model: Some("haiku".into()), permission_mode: "acceptEdits".into(), resume: Some("abc".into()), session_id: "s1".into() };
+        let l = Launch {
+            program: "claude".into(),
+            cwd: ".".into(),
+            model: Some("haiku".into()),
+            permission_mode: "acceptEdits".into(),
+            resume: Some("abc".into()),
+            session_id: "s1".into(),
+        };
         let a = Driver::args(&l);
         assert!(a.windows(2).any(|w| w == ["--permission-prompt-tool", "stdio"]));
         assert!(a.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]));
@@ -324,7 +353,13 @@ mod tests {
         assert!(reply_rx.try_recv().unwrap().contains("\"subtype\":\"error\""), "unknown requests are refused, not left hanging");
         route("s", 42, json!({"type":"control_cancel_request","request_id":"r1"}), &ev_tx, &reply_tx);
         assert!(matches!(ev_rx.try_recv().unwrap(), DriverEvent::PermissionCancelled { request_id, .. } if request_id == "r1"));
-        route("s", 42, json!({"type":"control_response","response":{"request_id":"mcp-0","subtype":"success","response":{"mcpServers":[{"name":"a","status":"connected","config":{}}]}}}), &ev_tx, &reply_tx);
+        route(
+            "s",
+            42,
+            json!({"type":"control_response","response":{"request_id":"mcp-0","subtype":"success","response":{"mcpServers":[{"name":"a","status":"connected","config":{}}]}}}),
+            &ev_tx,
+            &reply_tx,
+        );
         assert!(matches!(ev_rx.try_recv().unwrap(), DriverEvent::McpStatus { servers, .. } if servers.len() == 1));
         route("s", 42, json!({"type":"assistant","message":{}}), &ev_tx, &reply_tx);
         assert!(matches!(ev_rx.try_recv().unwrap(), DriverEvent::Message { pid: 42, .. }));

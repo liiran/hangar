@@ -7,10 +7,14 @@ export interface Pending {
   tool_name: string;
   input: Record<string, unknown>;
   suggestions: unknown[] | null;
+  /** "Always allow" has session rules to remember. */
+  can_remember: boolean;
 }
 
 export interface Session {
   id: string;
+  /** Higher is newer; used to drop stale updates. */
+  rev: number;
   title: string;
   cwd: string;
   created_ms: number;
@@ -31,11 +35,13 @@ export interface Session {
   mcp: { name: string; status: string }[];
 }
 
+export type Decision = "allow" | "allow_always" | "deny" | "cancelled";
+
 export type EventBody =
   | { kind: "user"; text: string }
   | { kind: "claude"; msg: any }
   | { kind: "permission"; request_id: string; tool_name: string; input: any; suggestions?: unknown; description?: string | null }
-  | { kind: "decision"; request_id: string; behavior: string }
+  | { kind: "decision"; request_id: string; behavior: Decision }
   | { kind: "status"; status: Status; detail?: string | null }
   | { kind: "error"; message: string };
 
@@ -48,10 +54,12 @@ export interface Usage {
   cpu_ms: number;
 }
 
+export type Share = "global" | "project" | "native" | "session" | "off";
+
 export interface Server {
   id: number;
   name: string;
-  share: "global" | "project" | "native" | "session";
+  share: Share;
   scope: string;
   command: string;
   launch: string | null;
@@ -87,30 +95,52 @@ export interface AppState extends System {
   home: string;
 }
 
+/** What a folder would run on its own when Claude starts there. */
+export interface Trust {
+  trusted: boolean;
+  hooks: string[];
+  allow_rules: string[];
+  mcp_servers: string[];
+}
+
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly data: Record<string, any> = {},
+  ) {
     super(message);
   }
 }
 
+// The UI token comes from pairing (see store.ts) and goes in a header, never
+// a cookie: cookies are shared by every port on 127.0.0.1.
+let token: string | null = null;
+
+export function setToken(t: string | null) {
+  token = t;
+}
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const headers: Record<string, string> = {};
+  if (token) headers["x-hangar-token"] = token;
+  if (body !== undefined) headers["content-type"] = "application/json";
+  const res = await fetch(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(data.error ?? `${res.status} ${res.statusText}`, res.status);
+  if (!res.ok) throw new ApiError(data.error ?? `${res.status} ${res.statusText}`, res.status, data);
   return data as T;
 }
 
+const q = encodeURIComponent;
+
 export const api = {
+  pair: (code: string) => call<{ token: string }>("POST", "/pair", { code }),
   state: () => call<AppState>("GET", "/state"),
   events: (id: string, after = 0) => call<SessionEvent[]>("GET", `/sessions/${id}/events?after=${after}`),
-  create: (b: { cwd: string; prompt: string; model?: string; permission_mode?: string }) => call<Session>("POST", "/sessions", b),
+  trust: (cwd: string) => call<Trust>("GET", `/trust?cwd=${q(cwd)}`),
+  create: (b: { cwd: string; prompt: string; model?: string; permission_mode?: string; trust?: boolean }) => call<Session>("POST", "/sessions", b),
   send: (id: string, text: string) => call("POST", `/sessions/${id}/messages`, { text }),
-  decide: (id: string, requestId: string, behavior: "allow" | "allow_always" | "deny") =>
-    call("POST", `/sessions/${id}/permissions/${encodeURIComponent(requestId)}`, { behavior }),
+  decide: (id: string, requestId: string, behavior: "allow" | "allow_always" | "deny") => call("POST", `/sessions/${id}/permissions/${q(requestId)}`, { behavior }),
   interrupt: (id: string) => call("POST", `/sessions/${id}/interrupt`),
   stop: (id: string) => call("POST", `/sessions/${id}/stop`),
   startNow: (id: string) => call("POST", `/sessions/${id}/start`),
@@ -118,3 +148,13 @@ export const api = {
   remove: (id: string) => call("DELETE", `/sessions/${id}`),
   stopServer: (id: number) => call("POST", `/servers/${id}/stop`),
 };
+
+export function socketUrl() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${location.host}/api/ws`;
+}
+
+/** The subprotocols that carry the token on the WebSocket handshake. */
+export function socketProtocols() {
+  return token ? ["hangar", `token.${token}`] : ["hangar"];
+}

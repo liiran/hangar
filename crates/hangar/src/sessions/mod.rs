@@ -16,9 +16,9 @@ use crate::budget::{Budget, Machine};
 use crate::config::Config;
 use crate::procs;
 use crate::util::now_ms;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -97,10 +97,14 @@ pub struct Event {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventBody {
     /// A message the user sent.
-    User { text: String },
+    User {
+        text: String,
+    },
     /// A stream-json message from Claude Code (assistant, user/tool results,
     /// result, system). Results carry `turn_cost_usd`, the cost of that turn.
-    Claude { msg: Value },
+    Claude {
+        msg: Value,
+    },
     /// Claude asks for permission to use a tool.
     Permission {
         request_id: String,
@@ -112,9 +116,18 @@ pub enum EventBody {
         description: Option<String>,
     },
     /// `allow`, `allow_always` (rules remembered for this session), `deny` or `cancelled`.
-    Decision { request_id: String, behavior: String },
-    Status { status: Status, #[serde(default)] detail: Option<String> },
-    Error { message: String },
+    Decision {
+        request_id: String,
+        behavior: String,
+    },
+    Status {
+        status: Status,
+        #[serde(default)]
+        detail: Option<String>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,6 +145,10 @@ pub struct PendingPermission {
 pub struct SessionView {
     #[serde(flatten)]
     pub meta: SessionMeta,
+    /// Increases with every view built. Views are built under the manager's
+    /// lock, so a higher `rev` is always newer state: the UI uses it to drop
+    /// updates that arrive after a fresher snapshot.
+    pub rev: u64,
     pub pid: Option<u32>,
     pub memory_bytes: Option<u64>,
     pub pending: Vec<PendingPermission>,
@@ -288,7 +305,7 @@ impl Manager {
     pub fn list(&self) -> Vec<SessionView> {
         let inner = self.inner.lock().unwrap();
         let mut v: Vec<SessionView> = inner.sessions.values().map(|s| view(s, &inner.queue)).collect();
-        v.sort_by(|a, b| b.meta.created_ms.cmp(&a.meta.created_ms));
+        v.sort_by_key(|v| std::cmp::Reverse(v.meta.created_ms));
         v
     }
 
@@ -311,7 +328,7 @@ impl Manager {
     pub fn recent_projects(&self) -> Vec<String> {
         let inner = self.inner.lock().unwrap();
         let mut seen: Vec<(u64, String)> = inner.sessions.values().map(|s| (s.meta.updated_ms, s.meta.cwd.clone())).collect();
-        seen.sort_by(|a, b| b.0.cmp(&a.0));
+        seen.sort_by_key(|s| std::cmp::Reverse(s.0));
         let mut out: Vec<String> = Vec::new();
         for (_, cwd) in seen {
             if !out.iter().any(|c| c.eq_ignore_ascii_case(&cwd)) {
@@ -545,9 +562,8 @@ impl Manager {
             return; // the daemon is going away; queued sessions start next time
         }
         let mut inner = self.inner.lock().unwrap();
-        loop {
-            // The next queued session whose previous process (if any) is gone.
-            let Some(pos) = inner.queue.iter().position(|q| inner.sessions.get(q).is_some_and(|s| s.run.is_none())) else { break };
+        // The next queued session whose previous process (if any) is gone.
+        while let Some(pos) = inner.queue.iter().position(|q| inner.sessions.get(q).is_some_and(|s| s.run.is_none())) {
             let id = inner.queue[pos].clone();
             let (_, available) = procs::system_memory();
             let estimate = inner.budget.estimate();
@@ -608,11 +624,11 @@ impl Manager {
     }
 
     fn hibernate(&self, inner: &mut Inner, id: &str) {
-        if let Some(s) = inner.sessions.get_mut(id) {
-            if let Some(run) = &s.run {
-                s.stopping = Some(Status::Hibernated);
-                run.driver.kill();
-            }
+        if let Some(s) = inner.sessions.get_mut(id)
+            && let Some(run) = &s.run
+        {
+            s.stopping = Some(Status::Hibernated);
+            run.driver.kill();
         }
     }
 
@@ -759,12 +775,24 @@ impl Manager {
         let can_remember = req.suggestions.as_ref().and_then(claude::session_only).is_some();
         s.pending.insert(
             req.request_id.clone(),
-            PendingPermission { request_id: req.request_id.clone(), tool_name: req.tool_name.clone(), input: req.input.clone(), suggestions: req.suggestions.clone(), can_remember },
+            PendingPermission {
+                request_id: req.request_id.clone(),
+                tool_name: req.tool_name.clone(),
+                input: req.input.clone(),
+                suggestions: req.suggestions.clone(),
+                can_remember,
+            },
         );
         self.push_event(
             &mut inner,
             id,
-            EventBody::Permission { request_id: req.request_id, tool_name: req.tool_name, input: req.input, suggestions: req.suggestions, description: req.description },
+            EventBody::Permission {
+                request_id: req.request_id,
+                tool_name: req.tool_name,
+                input: req.input,
+                suggestions: req.suggestions,
+                description: req.description,
+            },
         );
         set_status(&mut inner, id, Status::NeedsYou, None);
         self.save(&inner, id);
@@ -823,10 +851,10 @@ impl Manager {
             inner.budget.record_peak(peak);
         }
         let queued = inner.queue.iter().any(|q| q == id);
-        if status == Status::Error {
-            if let Some(d) = &detail {
-                self.push_event(&mut inner, id, EventBody::Error { message: d.clone() });
-            }
+        if status == Status::Error
+            && let Some(d) = &detail
+        {
+            self.push_event(&mut inner, id, EventBody::Error { message: d.clone() });
         }
         // Someone sent a message while it was stopping: start it again.
         let has_outbox = inner.sessions.get(id).is_some_and(|s| !s.meta.outbox.is_empty());
@@ -858,7 +886,8 @@ impl Manager {
                     let changed = s.memory.is_none_or(|m| m.abs_diff(used) > (4 << 20));
                     s.memory = Some(used);
                     s.meta.peak_bytes = s.meta.peak_bytes.max(used);
-                    let idle_too_long = self.hibernate_after.is_some_and(|limit| s.meta.status == Status::Idle && s.idle_since.is_some_and(|t| t.elapsed() > limit));
+                    let idle_too_long =
+                        self.hibernate_after.is_some_and(|limit| s.meta.status == Status::Idle && s.idle_since.is_some_and(|t| t.elapsed() > limit));
                     if idle_too_long && s.meta.claude_session_id.is_some() && s.stopping.is_none() {
                         self.hibernate(&mut inner, &id);
                         continue;
@@ -908,9 +937,12 @@ fn set_status(inner: &mut Inner, id: &str, status: Status, detail: Option<String
     }
 }
 
+static VIEW_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 fn view(s: &Session, queue: &[String]) -> SessionView {
     SessionView {
         meta: s.meta.clone(),
+        rev: VIEW_REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         pid: s.pid(),
         memory_bytes: s.memory,
         pending: s.pending.values().cloned().collect(),

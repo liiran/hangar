@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 /// An exact version: npx never updates it, so the fast path applies at once.
 const PKG: &str = "hangar-fake-server@1.0.0";
 const LATEST: &str = "hangar-fake-server@latest";
-const FORWARD_JS: &str = "const c = require('child_process').spawn(process.env.FAKE_MCP, [], { stdio: 'inherit' }); c.on('exit', (code) => process.exit(code ?? 0));";
+const FORWARD_JS: &str =
+    "const c = require('child_process').spawn(process.env.FAKE_MCP, [], { stdio: 'inherit' }); c.on('exit', (code) => process.exit(code ?? 0));";
 
 /// Builds a fake npm cache holding PKG with the given entry script, and a
 /// fake `npx` that runs the fake MCP server. Returns (cache, bin dir).

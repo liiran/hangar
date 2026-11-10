@@ -21,7 +21,25 @@ function Header({ session }: { session: Session }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(session.title);
   const [menu, setMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => setTitle(session.title), [session.title]);
+  // The menu closes on Escape or a click anywhere else.
+  useEffect(() => {
+    if (!menu) return;
+    const onDown = (e: MouseEvent) => menuRef.current?.contains(e.target as Node) || setMenu(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMenu(false);
+      }
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [menu]);
   const live = session.pid != null;
 
   const saveTitle = async () => {
@@ -46,6 +64,7 @@ function Header({ session }: { session: Session }) {
               onKeyDown={(e) => {
                 if (e.key === "Enter") saveTitle();
                 if (e.key === "Escape") {
+                  e.preventDefault();
                   setTitle(session.title);
                   setEditing(false);
                 }
@@ -100,12 +119,12 @@ function Header({ session }: { session: Session }) {
         </Button>
       )}
 
-      <div className="relative">
-        <Button variant="ghost" size="sm" onClick={() => setMenu(!menu)} aria-label="More">
+      <div className="relative" ref={menuRef}>
+        <Button variant="ghost" size="sm" onClick={() => setMenu(!menu)} aria-label="More" aria-haspopup="menu" aria-expanded={menu}>
           <MoreHorizontal className="size-4" />
         </Button>
         {menu && (
-          <div className="absolute right-0 z-20 mt-1 w-56 overflow-hidden rounded-xl bg-panel p-1 shadow-xl ring-1 ring-line" onMouseLeave={() => setMenu(false)}>
+          <div role="menu" className="absolute right-0 z-20 mt-1 w-56 overflow-hidden rounded-xl bg-panel p-1 shadow-xl ring-1 ring-line">
             {live && (
               <MenuItem icon={<Pause className="size-4" />} onClick={act(() => api.stop(session.id))}>
                 Stop process <span className="ml-auto text-[11px] text-faint">resumable</span>
@@ -140,26 +159,27 @@ function Pencil() {
 
 function MenuItem({ icon, children, onClick, danger }: { icon: React.ReactNode; children: React.ReactNode; onClick: () => void; danger?: boolean }) {
   return (
-    <button onClick={onClick} className={cx("flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px]", danger ? "text-rose-400 hover:bg-rose-500/10" : "hover:bg-panel-2")}>
+    <button role="menuitem" onClick={onClick} className={cx("flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px]", danger ? "text-rose-400 hover:bg-rose-500/10" : "hover:bg-panel-2")}>
       {icon}
       {children}
     </button>
   );
 }
 
+/** Unsent text per session. Outside React: the pane remounts on every switch. */
+const drafts = new Map<string, string>();
+
 function Composer({ session }: { session: Session }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() => drafts.get(session.id) ?? "");
   const [sending, setSending] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const drafts = useRef<Record<string, string>>({});
 
-  // Keep a draft per session.
   useEffect(() => {
-    setText(drafts.current[session.id] ?? "");
     ref.current?.focus();
   }, [session.id]);
   useEffect(() => {
-    drafts.current[session.id] = text;
+    if (text) drafts.set(session.id, text);
+    else drafts.delete(session.id);
     const el = ref.current;
     if (el) {
       el.style.height = "auto";
@@ -187,8 +207,10 @@ function Composer({ session }: { session: Session }) {
       : session.status === "hibernated" || session.status === "stopped" || session.status === "error"
         ? "Send a message to resume this session…"
         : session.status === "queued"
-          ? "Messages wait until the session starts…"
-          : "Reply to Claude…";
+          ? "Messages are sent when the session starts…"
+          : session.status === "working"
+            ? "Queue a follow-up for when Claude finishes…"
+            : "Reply to Claude…";
 
   return (
     <div className="border-t border-line px-6 py-4">
@@ -196,6 +218,8 @@ function Composer({ session }: { session: Session }) {
         <div className="flex items-end gap-2 rounded-2xl bg-panel p-2 ring-1 ring-inset ring-line focus-within:ring-accent/50">
           <textarea
             ref={ref}
+            data-composer
+            aria-label="Message"
             rows={1}
             value={text}
             placeholder={placeholder}

@@ -80,7 +80,7 @@ pub fn inspect(home: &Path, claude_json: &Path, cwd: &Path) -> TrustInfo {
         }
     }
     let want = normalize(cwd);
-    info.trusted = hangar_trusted(home).iter().any(|t| *t == want) || claude_trusts(claude_json, cwd);
+    info.trusted = hangar_trusted(home).contains(&want) || claude_trusts(claude_json, cwd);
     info
 }
 

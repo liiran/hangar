@@ -32,7 +32,7 @@ pub fn snapshot() -> Vec<ProcInfo> {
 }
 
 /// `root` and every process descended from it.
-pub fn tree<'a>(snap: &'a [ProcInfo], root: u32) -> Vec<&'a ProcInfo> {
+pub fn tree(snap: &[ProcInfo], root: u32) -> Vec<&ProcInfo> {
     trees(snap, &[root])
 }
 
@@ -46,10 +46,10 @@ pub fn trees<'a>(snap: &'a [ProcInfo], roots: &[u32]) -> Vec<&'a ProcInfo> {
         }
         // A child must be younger than its parent; otherwise the parent pid
         // was reused and the "child" is an orphan of an older process.
-        if let Some(parent) = by_pid.get(&p.ppid) {
-            if parent.created_ms > p.created_ms {
-                continue;
-            }
+        if let Some(parent) = by_pid.get(&p.ppid)
+            && parent.created_ms > p.created_ms
+        {
+            continue;
         }
         children.entry(p.ppid).or_default().push(p);
     }
@@ -146,13 +146,13 @@ pub fn contain(child: &tokio::process::Child) -> Option<Job> {
 mod imp {
     use super::ProcInfo;
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
     use windows_sys::Win32::System::JobObjects::*;
     use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
-        PROCESS_TERMINATE,
+        GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        TerminateProcess,
     };
 
     fn filetime_ms(ft: &FILETIME) -> u64 {

@@ -5,7 +5,7 @@ pub mod process;
 pub mod upstream;
 
 use crate::policy::Share;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use hangar_proto::ServerSpec;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -31,6 +31,10 @@ pub struct PoolKey {
     pub credentials: String,
 }
 
+/// Called when an upstream's actor ends, with its id and key, so the pool
+/// forgets it.
+pub type OnExit = dyn Fn(u64, &PoolKey) + Send + Sync;
+
 #[derive(Debug, Clone)]
 pub struct PoolOptions {
     pub idle_timeout: Duration,
@@ -44,7 +48,13 @@ pub struct PoolOptions {
 
 impl Default for PoolOptions {
     fn default() -> Self {
-        PoolOptions { idle_timeout: Duration::from_secs(600), session_grace: Duration::from_secs(2), init_timeout: Duration::from_secs(90), fast_npx: true, state_dir: None }
+        PoolOptions {
+            idle_timeout: Duration::from_secs(600),
+            session_grace: Duration::from_secs(2),
+            init_timeout: Duration::from_secs(90),
+            fast_npx: true,
+            state_dir: None,
+        }
     }
 }
 
@@ -89,7 +99,7 @@ pub struct Pool {
     upstreams: Arc<Mutex<HashMap<PoolKey, Upstream>>>,
     next_conn: AtomicU64,
     next_upstream: AtomicU64,
-    on_exit: Arc<dyn Fn(u64, &PoolKey) + Send + Sync>,
+    on_exit: Arc<OnExit>,
 }
 
 impl Pool {
@@ -97,7 +107,7 @@ impl Pool {
         let upstreams: Arc<Mutex<HashMap<PoolKey, Upstream>>> = Arc::new(Mutex::new(HashMap::new()));
         let map = Arc::downgrade(&upstreams);
         // When an upstream finishes, drop it from the map (unless replaced).
-        let on_exit: Arc<dyn Fn(u64, &PoolKey) + Send + Sync> = Arc::new(move |id, key| {
+        let on_exit: Arc<OnExit> = Arc::new(move |id, key| {
             if let Some(map) = map.upgrade() {
                 let mut m = map.lock().unwrap();
                 if m.get(key).is_some_and(|u| u.id == id) {
@@ -155,17 +165,17 @@ impl Pool {
                             })
                         } else {
                             upstream::start(upstream::Spawn {
-                            id,
-                            key: key.clone(),
-                            name: req.name.clone(),
-                            share: req.share,
-                            spec: req.spec.clone(),
-                            cwd: req.cwd.clone(),
-                            env: req.env.clone(),
-                            client_init: client_init.clone(),
-                            opts: self.opts.clone(),
-                            on_exit: Arc::downgrade(&self.on_exit),
-                        })
+                                id,
+                                key: key.clone(),
+                                name: req.name.clone(),
+                                share: req.share,
+                                spec: req.spec.clone(),
+                                cwd: req.cwd.clone(),
+                                env: req.env.clone(),
+                                client_init: client_init.clone(),
+                                opts: self.opts.clone(),
+                                on_exit: Arc::downgrade(&self.on_exit),
+                            })
                         };
                         map.insert(key.clone(), u.clone());
                         u

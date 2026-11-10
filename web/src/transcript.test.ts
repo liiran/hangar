@@ -17,13 +17,18 @@ describe("toRows", () => {
         { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } },
       ]),
       toolResults([{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "a.txt" }] }]),
-      ev({ kind: "claude", msg: { type: "result", total_cost_usd: 0.01, duration_ms: 1200, num_turns: 2, is_error: false } }),
+      ev({ kind: "claude", msg: { type: "result", total_cost_usd: 0.05, turn_cost_usd: 0.01, duration_ms: 1200, num_turns: 2, is_error: false } }),
     ]);
     expect(rows.map((r) => r.kind)).toEqual(["user", "thinking", "text", "tool", "result"]);
     const tool = rows[3];
     expect(tool.kind === "tool" && tool.result).toEqual({ text: "a.txt", isError: false });
     const result = rows[4];
     expect(result.kind === "result" && [result.cost, result.durationMs, result.isError]).toEqual([0.01, 1200, false]);
+  });
+
+  it("shows what the turn cost, not the process's running total", () => {
+    const rows = toRows([ev({ kind: "claude", msg: { type: "result", total_cost_usd: 0.3, duration_ms: 5, is_error: false } })]);
+    expect(rows[0].kind === "result" && rows[0].cost).toBeNull();
   });
 
   it("marks failed tool results and stringifies plain content", () => {

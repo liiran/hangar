@@ -6,7 +6,7 @@ use hangar::client::McpClient;
 use hangar::config::{Config, ServerOverride};
 use hangar::daemon::{Daemon, DaemonOptions};
 use hangar::policy::Share;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;

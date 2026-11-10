@@ -61,10 +61,10 @@ pub struct FastPath<'a> {
 
 /// The best launch for `spec`, using the npx fast path when it applies.
 pub fn plan(spec: &ServerSpec, env: &BTreeMap<String, String>, fast: FastPath<'_>) -> Launch {
-    if fast.enabled {
-        if let Some(l) = npx_fast_path(spec, env, fast.state_dir) {
-            return l;
-        }
+    if fast.enabled
+        && let Some(l) = npx_fast_path(spec, env, fast.state_dir)
+    {
+        return l;
     }
     as_configured(spec, env)
 }
@@ -152,11 +152,7 @@ pub fn npm_cache_dir(env: &BTreeMap<String, String>) -> Option<PathBuf> {
             return Some(PathBuf::from(v));
         }
     }
-    if cfg!(windows) {
-        Some(Path::new(&env_var(env, "LOCALAPPDATA")?).join("npm-cache"))
-    } else {
-        Some(Path::new(&env_var(env, "HOME")?).join(".npm"))
-    }
+    if cfg!(windows) { Some(Path::new(&env_var(env, "LOCALAPPDATA")?).join("npm-cache")) } else { Some(Path::new(&env_var(env, "HOME")?).join(".npm")) }
 }
 
 /// The folder npx installs `pkg_spec` into.
@@ -197,11 +193,7 @@ pub fn cached_entry(cache: &Path, pkg_spec: &str) -> Option<PathBuf> {
         Value::String(s) => s.clone(),
         Value::Object(map) => {
             let unscoped = name.rsplit('/').next().unwrap_or(&name);
-            if map.len() == 1 {
-                map.values().next()?.as_str()?.to_string()
-            } else {
-                map.get(unscoped)?.as_str()?.to_string()
-            }
+            if map.len() == 1 { map.values().next()?.as_str()?.to_string() } else { map.get(unscoped)?.as_str()?.to_string() }
         }
         _ => return None,
     };
@@ -248,7 +240,10 @@ mod tests {
 
     #[test]
     fn parses_npx_commands() {
-        assert_eq!(parse_npx(&spec("cmd", &["/c", "npx", "-y", "@playwright/mcp@latest", "--headless"])), Some(("@playwright/mcp@latest".into(), vec!["--headless".into()])));
+        assert_eq!(
+            parse_npx(&spec("cmd", &["/c", "npx", "-y", "@playwright/mcp@latest", "--headless"])),
+            Some(("@playwright/mcp@latest".into(), vec!["--headless".into()]))
+        );
         assert_eq!(parse_npx(&spec("npx", &["-y", "pkg"])), Some(("pkg".into(), vec![])));
         assert_eq!(parse_npx(&spec("C:/node/npx.cmd", &["pkg", "a"])), Some(("pkg".into(), vec!["a".into()])));
         assert_eq!(parse_npx(&spec("cmd", &["/d", "/s", "/c", "npx", "pkg"])).map(|p| p.0), Some("pkg".into()));

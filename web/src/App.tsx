@@ -8,13 +8,16 @@ import { Sidebar } from "./components/Sidebar";
 import { Button, Kbd } from "./components/ui";
 import { GROUP_ORDER, STATUS } from "./format";
 import { report, useStore } from "./store";
+import { attentionCount, ignoreShortcut } from "./sync";
 
 export function App() {
   const conn = useStore((s) => s.conn);
+  const authError = useStore((s) => s.authError);
   const sessions = useStore((s) => s.sessions);
   const selected = useStore((s) => s.selected);
   const select = useStore((s) => s.select);
   const toasts = useStore((s) => s.toasts);
+  const dismiss = useStore((s) => s.dismiss);
   const [showNew, setShowNew] = useState(false);
   const [showPool, setShowPool] = useState(false);
   const session = selected ? sessions[selected] : undefined;
@@ -25,14 +28,16 @@ export function App() {
     [sessions],
   );
 
-  const waiting = Object.values(sessions).filter((s) => s.status === "needs_you").length;
+  // Sessions asking for permission or stopped by an error.
+  const waiting = attentionCount(Object.values(sessions));
   useEffect(() => {
     document.title = waiting > 0 ? `(${waiting}) hangar` : "hangar";
   }, [waiting]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+      if (showNew || showPool || ignoreShortcut(e)) return;
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
         e.preventDefault();
         setShowNew(true);
       } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && ordered.length) {
@@ -40,7 +45,7 @@ export function App() {
         const i = ordered.findIndex((s) => s.id === selected);
         const next = e.key === "ArrowDown" ? Math.min(ordered.length - 1, i + 1) : Math.max(0, i - 1);
         select(ordered[next].id);
-      } else if (e.key === "Escape" && !showNew && !showPool && session?.status === "working") {
+      } else if (e.key === "Escape" && session?.status === "working") {
         api.interrupt(session.id).catch(report);
       }
     };
@@ -55,6 +60,7 @@ export function App() {
         <p className="mt-2 text-[13.5px] text-muted">
           Run <code className="rounded bg-panel-2 px-1.5 py-0.5 font-mono text-fg">hangar up</code> to sign this window in.
         </p>
+        {authError && <p className="mt-3 text-[12.5px] text-faint">{authError}</p>}
       </Centered>
     );
   }
@@ -77,8 +83,11 @@ export function App() {
       )}
       <div className="fixed right-4 bottom-4 z-50 space-y-2">
         {toasts.map((t) => (
-          <div key={t.id} className="max-w-sm rounded-xl bg-panel px-4 py-3 text-[13px] shadow-xl ring-1 ring-rose-500/30" role="alert">
-            {t.text}
+          <div key={t.id} className="flex max-w-sm items-start gap-3 rounded-xl bg-panel px-4 py-3 text-[13px] shadow-xl ring-1 ring-rose-500/30" role="alert">
+            <span className="min-w-0 flex-1 break-words">{t.text}</span>
+            <button onClick={() => dismiss(t.id)} className="shrink-0 text-faint hover:text-fg" aria-label="Dismiss">
+              ×
+            </button>
           </div>
         ))}
       </div>
@@ -93,7 +102,7 @@ function Centered({ children }: { children: React.ReactNode }) {
 function Welcome({ onNew, onPool }: { onNew: () => void; onPool: () => void }) {
   const items = [
     { icon: Layers, title: "Every session in one window", text: "See which sessions are working, which are done, and which need you, without switching terminals." },
-    { icon: ShieldCheck, title: "Approve from here", text: "Permission requests show up inline with the exact command. Allow, always allow, or deny." },
+    { icon: ShieldCheck, title: "Approve from here", text: "Permission requests show up inline with the exact command or diff. Allow once, allow for the session, or deny." },
     { icon: Gauge, title: "Shared MCP servers and a memory budget", text: "One copy of each MCP server for all sessions. New sessions wait for memory instead of slowing everything down." },
   ];
   return (

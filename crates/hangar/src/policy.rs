@@ -146,14 +146,18 @@ pub fn decide(spec: &ServerSpec, name: &str, config: &Config) -> Decision {
         }
         let http_args = o.http_args.clone().or(builtin_http);
         return match http_args {
-            Some(args) if args.iter().any(|a| a.contains("{port}")) => Decision { http_args: Some(args), ..Decision::new(Share::Native, package, "set in config.toml") },
+            Some(args) if args.iter().any(|a| a.contains("{port}")) => {
+                Decision { http_args: Some(args), ..Decision::new(Share::Native, package, "set in config.toml") }
+            }
             _ => Decision::new(Share::Session, package, "share = \"native\" needs http_args with a {port} placeholder; running one per session instead"),
         };
     }
     if let Some(pkg) = &package {
         if pkg == "@playwright/mcp" {
             return match builtin_http {
-                Some(args) => Decision { http_args: Some(args), ..Decision::new(Share::Native, package, "one browser, a separate isolated context per session") },
+                Some(args) => {
+                    Decision { http_args: Some(args), ..Decision::new(Share::Native, package, "one browser, a separate isolated context per session") }
+                }
                 None => Decision::new(Share::Session, package, "without --isolated, Playwright keeps one persistent profile that only one session can use"),
             };
         }

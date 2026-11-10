@@ -5,8 +5,8 @@
 //! server may send to its client (`ping`, `roots/list`) the way an agent would.
 
 use crate::jsonrpc::{self, Kind};
-use anyhow::{anyhow, bail, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, anyhow, bail};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,7 +17,9 @@ use tokio::sync::{mpsc, oneshot};
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>;
+/// Requests waiting for an answer. `None` once the server's stdout closed,
+/// so later requests fail at once instead of waiting for their timeout.
+type Pending = Arc<Mutex<Option<HashMap<String, oneshot::Sender<Value>>>>>;
 
 type SharedStdin = Arc<tokio::sync::Mutex<Option<ChildStdin>>>;
 
@@ -39,7 +41,7 @@ impl McpClient {
         let pid = child.id().unwrap_or(0);
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
-        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
         let server_requests = Arc::new(Mutex::new(Vec::new()));
         let (note_tx, note_rx) = mpsc::unbounded_channel();
         let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Value>();
@@ -58,13 +60,22 @@ impl McpClient {
 
         let roots_value: Vec<Value> = roots.iter().map(|r| json!({"uri": file_uri(r), "name": r})).collect();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut reader = BufReader::new(stdout);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                // Servers sometimes print junk; skip it rather than give up.
+                let line = String::from_utf8_lossy(&buf);
                 let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else { continue };
                 match jsonrpc::classify(&msg) {
                     Kind::Response { id } => {
                         let key = jsonrpc::id_key(id);
-                        if let Some(tx) = pending.lock().unwrap().remove(&key) {
+                        let waiter = pending.lock().unwrap().as_mut().and_then(|p| p.remove(&key));
+                        if let Some(tx) = waiter {
                             let _ = tx.send(msg);
                         }
                     }
@@ -83,8 +94,8 @@ impl McpClient {
                     Kind::Invalid => {}
                 }
             }
-            // Fail every request still waiting.
-            pending.lock().unwrap().clear();
+            // Fail every request still waiting, and every later one.
+            pending.lock().unwrap().take();
         });
 
         // Replies to server requests go through the same stdin.
@@ -114,13 +125,28 @@ impl McpClient {
 
     /// Sends a request with an explicit id and waits for the full response message.
     pub async fn request_with_id(&self, id: Value, method: &str, params: Value, timeout: Duration) -> Result<Value> {
+        let key = jsonrpc::id_key(&id);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(jsonrpc::id_key(&id), tx);
-        self.send(&jsonrpc::request(id, method, params)).await?;
+        match self.pending.lock().unwrap().as_mut() {
+            Some(p) => p.insert(key.clone(), tx),
+            None => bail!("server closed before {method}"),
+        };
+        let forget = || {
+            if let Some(p) = self.pending.lock().unwrap().as_mut() {
+                p.remove(&key);
+            }
+        };
+        if let Err(e) = self.send(&jsonrpc::request(id, method, params)).await {
+            forget();
+            return Err(e);
+        }
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(msg)) => Ok(msg),
             Ok(Err(_)) => bail!("server closed before answering {method}"),
-            Err(_) => bail!("timed out waiting for {method}"),
+            Err(_) => {
+                forget();
+                bail!("timed out waiting for {method}")
+            }
         }
     }
 

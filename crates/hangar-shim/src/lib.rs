@@ -12,7 +12,7 @@
 //! If the daemon cannot be reached, the shim runs the real server itself with
 //! inherited stdio, so wrapping a server never makes it stop working.
 
-use hangar_proto::{read_daemon_info, Challenge, DaemonInfo, Hello, Proof, ServerSpec, Welcome, ENV_BIN, ENV_NO_AUTOSTART, ENV_SESSION, WIRE_VERSION};
+use hangar_proto::{Challenge, DaemonInfo, ENV_BIN, ENV_NO_AUTOSTART, ENV_SESSION, Hello, Proof, ServerSpec, WIRE_VERSION, Welcome, read_daemon_info};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -74,11 +74,7 @@ impl Opts {
     }
 
     fn spec(&self) -> ServerSpec {
-        let env = self
-            .env_keys
-            .iter()
-            .filter_map(|k| std::env::var(k).ok().map(|v| (k.clone(), v)))
-            .collect();
+        let env = self.env_keys.iter().filter_map(|k| std::env::var(k).ok().map(|v| (k.clone(), v))).collect();
         ServerSpec { command: self.command.clone(), args: self.args.clone(), env }
     }
 }
@@ -100,7 +96,7 @@ fn default_name(command: &str, args: &[String]) -> String {
     let mut parts = bare.split('/');
     let first = parts.next().unwrap_or(bare);
     match parts.next() {
-        Some(last) if matches!(last, "mcp" | "server" | "mcp-server" | "cli") => first.to_string(),
+        Some("mcp" | "server" | "mcp-server" | "cli") => first.to_string(),
         Some(last) => last.trim_start_matches("server-").to_string(),
         None => first.to_string(),
     }
@@ -253,16 +249,16 @@ fn pump(stream: TcpStream, reader: BufReader<TcpStream>, opts: &Opts, home: &Pat
         buf.clear();
         match reader.read_until(b'\n', &mut buf) {
             Ok(n) if n > 0 => {
-                if let Some(h) = head(&buf) {
-                    if h.method.is_none() {
-                        if let Some(id) = h.id {
-                            let key = id.to_string();
-                            state.inflight.lock().unwrap().remove(&key);
-                            let init_key = state.init.lock().unwrap().as_ref().and_then(|i| i.get("id")).map(Value::to_string);
-                            if init_key.as_deref() == Some(key.as_str()) {
-                                state.init_answered.store(true, Ordering::SeqCst);
-                            }
-                        }
+                // A response: no longer in flight.
+                if let Some(h) = head(&buf)
+                    && h.method.is_none()
+                    && let Some(id) = h.id
+                {
+                    let key = id.to_string();
+                    state.inflight.lock().unwrap().remove(&key);
+                    let init_key = state.init.lock().unwrap().as_ref().and_then(|i| i.get("id")).map(Value::to_string);
+                    if init_key.as_deref() == Some(key.as_str()) {
+                        state.init_answered.store(true, Ordering::SeqCst);
                     }
                 }
                 if !write_stdout(&buf) {
@@ -296,7 +292,8 @@ fn reconnect(state: &Pump, opts: &Opts, home: &Path) -> Option<BufReader<TcpStre
     let init_key = init.as_ref().and_then(|i| i.get("id")).map(Value::to_string);
     let lost: Vec<Value> = state.inflight.lock().unwrap().drain().filter(|(k, _)| answered || Some(k) != init_key.as_ref()).map(|(_, id)| id).collect();
     for id in lost {
-        let err = serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "the hangar daemon went away before answering; please retry"}});
+        let err =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "the hangar daemon went away before answering; please retry"}});
         let mut line = serde_json::to_vec(&err).unwrap_or_default();
         line.push(b'\n');
         write_stdout(&line);
@@ -337,16 +334,17 @@ fn stdin_to_daemon(state: &Pump) {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
-        if let Some(h) = head(&buf) {
-            if let (Some(method), Some(id)) = (&h.method, &h.id) {
-                if method == "initialize" {
-                    let mut init = state.init.lock().unwrap();
-                    if init.is_none() {
-                        *init = serde_json::from_slice(&buf).ok();
-                    }
+        // A request: remember it until its answer comes back.
+        if let Some(h) = head(&buf)
+            && let (Some(method), Some(id)) = (&h.method, &h.id)
+        {
+            if method == "initialize" {
+                let mut init = state.init.lock().unwrap();
+                if init.is_none() {
+                    *init = serde_json::from_slice(&buf).ok();
                 }
-                state.inflight.lock().unwrap().insert(id.to_string(), id.clone());
             }
+            state.inflight.lock().unwrap().insert(id.to_string(), id.clone());
         }
         if !buf.ends_with(b"\n") {
             buf.push(b'\n');
@@ -370,13 +368,13 @@ fn write_to_daemon(state: &Pump, line: &[u8]) {
         {
             let guard = state.writer.lock().unwrap();
             let (generation, writer) = (&guard.0, &guard.1);
-            if let Some(mut w) = writer.as_ref() {
-                if failed_gen != Some(*generation) {
-                    if w.write_all(line).is_ok() {
-                        return;
-                    }
-                    failed_gen = Some(*generation);
+            if let Some(mut w) = writer.as_ref()
+                && failed_gen != Some(*generation)
+            {
+                if w.write_all(line).is_ok() {
+                    return;
                 }
+                failed_gen = Some(*generation);
             }
         }
         if Instant::now() >= deadline {
@@ -396,7 +394,7 @@ fn write_to_daemon(state: &Pump, line: &[u8]) {
 pub fn keep_std_handles_private() {
     #[cfg(windows)]
     unsafe {
-        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation};
         use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
         for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
             let h = GetStdHandle(id);
@@ -530,10 +528,10 @@ fn contain_children() {
 #[cfg(windows)]
 mod win {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 

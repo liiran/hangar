@@ -8,7 +8,7 @@ use hangar::client::McpClient;
 use hangar::config::{Config, ServerOverride};
 use hangar::jsonrpc;
 use hangar::policy::Share;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 fn native_config() -> Config {

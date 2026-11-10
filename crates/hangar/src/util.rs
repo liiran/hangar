@@ -61,19 +61,20 @@ pub fn redact_command(parts: &[String]) -> String {
                 }
                 continue;
             }
-        } else if let Some((name, _)) = p.split_once('=') {
-            if looks_secret(name) && !name.contains('/') {
-                out.push(format!("{name}=***"));
-                continue;
-            }
+        } else if let Some((name, _)) = p.split_once('=')
+            && looks_secret(name)
+            && !name.contains('/')
+        {
+            out.push(format!("{name}=***"));
+            continue;
         }
-        if let Some(at) = p.find('@') {
-            if let Some(scheme) = p.find("://") {
-                if scheme < at && p[scheme + 3..at].contains(':') {
-                    out.push(format!("{}://***@{}", &p[..scheme], &p[at + 1..]));
-                    continue;
-                }
-            }
+        if let Some(at) = p.find('@')
+            && let Some(scheme) = p.find("://")
+            && scheme < at
+            && p[scheme + 3..at].contains(':')
+        {
+            out.push(format!("{}://***@{}", &p[..scheme], &p[at + 1..]));
+            continue;
         }
         out.push(p.clone());
     }

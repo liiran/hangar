@@ -5,7 +5,7 @@
 //! session its own browser context. Tools: `pid`, `counter`, `slow` (answers
 //! as an SSE stream with progress), `crash`, `stats`.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -151,7 +151,8 @@ fn serve(stream: TcpStream, state: &Mutex<State>, next: &AtomicU64) -> std::io::
                     for i in 1..=3 {
                         std::thread::sleep(Duration::from_millis(60));
                         if let Some(t) = &token {
-                            let n = json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": t, "progress": i, "message": sid}});
+                            let n =
+                                json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": t, "progress": i, "message": sid}});
                             s.write_all(format!("event: message\ndata: {n}\n\n").as_bytes())?;
                         }
                     }

@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { api, ApiError, type Session, type SessionEvent, type System } from "./api";
+import { api, ApiError, setToken, socketProtocols, socketUrl, type Session, type SessionEvent, type System } from "./api";
+import { isNewer, mergeEvents, notice, pairCode } from "./sync";
 
 type Conn = "connecting" | "live" | "offline" | "unauthorized";
 
@@ -10,40 +11,37 @@ interface Toast {
 
 interface Store {
   conn: Conn;
+  /** Why the window is not signed in, when it is not. */
+  authError: string | null;
   sessions: Record<string, Session>;
   events: Record<string, SessionEvent[]>;
   system: System | null;
   projects: string[];
   home: string;
   selected: string | null;
-  composing: boolean;
   toasts: Toast[];
   select: (id: string | null) => void;
-  setComposing: (v: boolean) => void;
   toast: (text: string) => void;
   dismiss: (id: number) => void;
 }
 
 export const useStore = create<Store>((set) => ({
   conn: "connecting",
+  authError: null,
   sessions: {},
   events: {},
   system: null,
   projects: [],
   home: "",
   selected: null,
-  composing: false,
   toasts: [],
   select: (id) => {
-    set({ selected: id, composing: false });
+    set({ selected: id });
     if (id) {
-      try {
-        localStorage.setItem("hangar.selected", id);
-      } catch {}
+      saved.set(SELECTED_KEY, id);
       loadEvents(id);
     }
   },
-  setComposing: (v) => set({ composing: v }),
   toast: (text) => {
     const id = Date.now() + Math.random();
     set((s) => ({ toasts: [...s.toasts, { id, text }] }));
@@ -52,78 +50,127 @@ export const useStore = create<Store>((set) => ({
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }));
 
-const loading = new Set<string>();
-
-export async function loadEvents(id: string) {
-  if (useStore.getState().events[id] || loading.has(id)) return;
-  loading.add(id);
-  try {
-    const evs = await api.events(id);
-    useStore.setState((s) => ({ events: { ...s.events, [id]: mergeEvents(s.events[id] ?? [], evs) } }));
-  } catch (e) {
-    report(e);
-  } finally {
-    loading.delete(id);
-  }
-}
-
-function mergeEvents(have: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
-  if (incoming.length === 0) return have;
-  const seen = new Set(have.map((e) => e.seq));
-  const merged = have.concat(incoming.filter((e) => !seen.has(e.seq)));
-  merged.sort((a, b) => a.seq - b.seq);
-  return merged;
-}
-
 export function report(e: unknown) {
-  const text = e instanceof Error ? e.message : String(e);
-  useStore.getState().toast(text);
+  useStore.getState().toast(e instanceof Error ? e.message : String(e));
 }
 
-async function refresh() {
-  try {
-    const st = await api.state();
-    const sessions: Record<string, Session> = {};
-    for (const s of st.sessions) sessions[s.id] = s;
-    const { sessions: _, projects, home, ...system } = st;
-    useStore.setState((s) => {
-      // Keep the selection if it still exists; otherwise restore the last one.
-      let selected = s.selected && sessions[s.selected] ? s.selected : null;
-      if (!selected) {
-        let saved: string | null = null;
-        try {
-          saved = localStorage.getItem("hangar.selected");
-        } catch {}
-        selected = saved && sessions[saved] ? saved : st.sessions[0]?.id ?? null;
-      }
-      return { sessions, system, projects, home, selected, conn: "live" };
-    });
-    const sel = useStore.getState().selected;
-    if (sel) {
-      // Refetch the open transcript in full after a reconnect.
-      useStore.setState((s) => {
-        const events = { ...s.events };
-        delete events[sel];
-        return { events };
-      });
-      loadEvents(sel);
+// ------------------------------------------------------------ local storage
+
+const TOKEN_KEY = "hangar.token";
+const SELECTED_KEY = "hangar.selected";
+
+/** localStorage that never throws (private windows, blocked storage). */
+export const saved = {
+  get(key: string): string | null {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
     }
-  } catch (e) {
-    if (e instanceof ApiError && e.status === 401) useStore.setState({ conn: "unauthorized" });
-    else useStore.setState({ conn: "offline" });
-    throw e;
+  },
+  set(key: string, value: string | null) {
+    try {
+      if (value == null) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    } catch {}
+  },
+};
+
+// ------------------------------------------------------------ sign-in
+
+/**
+ * Signs the window in. `hangar up` opens `/#pair=<code>`: the one-time code
+ * is traded for the UI token, and removed from the address bar and history.
+ */
+export async function start() {
+  const code = pairCode(location.hash);
+  if (code) {
+    history.replaceState(null, "", location.pathname + location.search);
+    try {
+      const { token } = await api.pair(code);
+      saved.set(TOKEN_KEY, token);
+    } catch (e) {
+      // An old link: fine if this window is already signed in.
+      if (!saved.get(TOKEN_KEY)) return signedOut(e instanceof Error ? e.message : String(e));
+    }
   }
+  const token = saved.get(TOKEN_KEY);
+  if (!token) return signedOut(null);
+  setToken(token);
+  connect();
 }
+
+// A new link opened in a tab that already shows hangar only changes the hash.
+if (typeof window !== "undefined") {
+  window.addEventListener("hashchange", () => {
+    if (pairCode(location.hash)) start();
+  });
+}
+
+function signedOut(reason: string | null) {
+  saved.set(TOKEN_KEY, null);
+  setToken(null);
+  socket?.close();
+  socket = null;
+  useStore.setState({ conn: "unauthorized", authError: reason });
+}
+
+// ------------------------------------------------------------ live sync
 
 let socket: WebSocket | null = null;
 let retry = 0;
+/** Bumped on every full resync; late answers from older ones are dropped. */
+let generation = 0;
+/** Sessions whose events are being fetched, with events that arrived meanwhile. */
+const loading = new Map<string, SessionEvent[]>();
 
-export function connect() {
-  refresh()
-    .then(openSocket)
-    .catch(() => {
-      if (useStore.getState().conn !== "unauthorized") setTimeout(connect, backoff());
-    });
+/**
+ * Opens the socket first and buffers what it sends until the snapshot is
+ * in, so nothing that happens in between is lost.
+ */
+function connect() {
+  socket?.close();
+  const ws = new WebSocket(socketUrl(), socketProtocols());
+  socket = ws;
+  let buffer: unknown[] | null = [];
+  const resync = async () => {
+    buffer ??= [];
+    try {
+      await refresh();
+    } finally {
+      const queued = buffer ?? [];
+      buffer = null;
+      queued.forEach(handle);
+    }
+  };
+  ws.onopen = () => {
+    retry = 0;
+    resync().catch(() => ws.close());
+  };
+  ws.onmessage = (m) => {
+    let msg: any;
+    try {
+      msg = JSON.parse(m.data);
+    } catch {
+      return;
+    }
+    if (msg?.type === "resync") resync().catch(() => ws.close());
+    else if (buffer) buffer.push(msg);
+    else handle(msg);
+  };
+  ws.onclose = () => {
+    if (socket !== ws) return;
+    socket = null;
+    useStore.setState((s) => (s.conn === "unauthorized" ? {} : { conn: "offline" }));
+    // A refused handshake looks like any other close: ask the API why.
+    api
+      .state()
+      .then(() => setTimeout(connect, backoff()))
+      .catch((e) => {
+        if (e instanceof ApiError && e.status === 401) signedOut(e.message);
+        else setTimeout(connect, backoff());
+      });
+  };
 }
 
 function backoff() {
@@ -131,68 +178,102 @@ function backoff() {
   return 250 * 2 ** retry;
 }
 
-function openSocket() {
-  socket?.close();
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/api/ws`);
-  socket = ws;
-  ws.onopen = () => {
-    retry = 0;
-    useStore.setState({ conn: "live" });
-  };
-  ws.onmessage = (m) => {
-    const msg = JSON.parse(m.data);
-    switch (msg.type) {
-      case "session": {
-        const s: Session = msg.session;
-        const prev = useStore.getState().sessions[s.id];
-        notifyTransition(prev, s);
-        useStore.setState((st) => ({ sessions: { ...st.sessions, [s.id]: s } }));
-        break;
-      }
-      case "event": {
-        const id: string = msg.session_id;
-        useStore.setState((st) => (st.events[id] ? { events: { ...st.events, [id]: mergeEvents(st.events[id], [msg.event]) } } : {}));
-        break;
-      }
-      case "removed": {
-        useStore.setState((st) => {
-          const sessions = { ...st.sessions };
-          delete sessions[msg.session_id];
-          return { sessions, selected: st.selected === msg.session_id ? null : st.selected };
-        });
-        break;
-      }
-      case "system": {
-        const { type: _, ...system } = msg;
-        useStore.setState({ system });
-        break;
-      }
-      case "resync":
-        refresh().catch(() => {});
-        break;
+/** Replaces everything with a fresh snapshot. */
+async function refresh() {
+  let st;
+  try {
+    st = await api.state();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) signedOut(e.message);
+    throw e;
+  }
+  generation++;
+  loading.clear();
+  const sessions: Record<string, Session> = {};
+  for (const s of st.sessions) sessions[s.id] = s;
+  const { sessions: _, projects, home, ...system } = st;
+  useStore.setState((s) => {
+    let selected = s.selected && sessions[s.selected] ? s.selected : null;
+    if (!selected) {
+      const last = saved.get(SELECTED_KEY);
+      selected = last && sessions[last] ? last : (st.sessions[0]?.id ?? null);
     }
-  };
-  ws.onclose = () => {
-    if (socket !== ws) return;
-    useStore.setState({ conn: "offline" });
-    setTimeout(connect, backoff());
-  };
+    // Cached transcripts may have missed events while disconnected. Keep the
+    // open one on screen (logs are append-only) and catch it up below.
+    const events: Record<string, SessionEvent[]> = {};
+    if (selected && s.events[selected]) events[selected] = s.events[selected];
+    return { sessions, system, projects, home, selected, events, conn: "live", authError: null };
+  });
+  const sel = useStore.getState().selected;
+  if (sel) loadEvents(sel, true);
+}
+
+/** Fetches a session's events (only the new ones if some are cached). */
+export async function loadEvents(id: string, force = false) {
+  const have = useStore.getState().events[id];
+  if ((have && !force) || loading.has(id)) return;
+  const gen = generation;
+  loading.set(id, []);
+  try {
+    const fetched = await api.events(id, have?.at(-1)?.seq ?? 0);
+    if (gen !== generation) return;
+    const meanwhile = loading.get(id) ?? [];
+    useStore.setState((s) => ({ events: { ...s.events, [id]: mergeEvents(s.events[id] ?? [], [...fetched, ...meanwhile]) } }));
+  } catch (e) {
+    if (gen === generation) report(e);
+  } finally {
+    if (gen === generation) loading.delete(id);
+  }
+}
+
+/** Applies a session view from any source, unless a newer one is in. */
+export function upsertSession(s: Session) {
+  const prev = useStore.getState().sessions[s.id];
+  if (!isNewer(prev, s)) return;
+  notify(prev, s);
+  useStore.setState((st) => ({ sessions: { ...st.sessions, [s.id]: s } }));
+}
+
+function handle(msg: any) {
+  switch (msg?.type) {
+    case "session":
+      upsertSession(msg.session);
+      break;
+    case "event": {
+      const id: string = msg.session_id;
+      const pending = loading.get(id);
+      if (pending) pending.push(msg.event);
+      else useStore.setState((st) => (st.events[id] ? { events: { ...st.events, [id]: mergeEvents(st.events[id], [msg.event]) } } : {}));
+      break;
+    }
+    case "removed":
+      useStore.setState((st) => {
+        const sessions = { ...st.sessions };
+        const events = { ...st.events };
+        delete sessions[msg.session_id];
+        delete events[msg.session_id];
+        return { sessions, events, selected: st.selected === msg.session_id ? null : st.selected };
+      });
+      break;
+    case "system": {
+      const { type: _, ...system } = msg;
+      useStore.setState({ system });
+      break;
+    }
+  }
 }
 
 // ------------------------------------------------------------ notifications
 
-function notifyTransition(prev: Session | undefined, next: Session) {
-  if (!prev || prev.status === next.status) return;
-  const asks = next.status === "needs_you";
-  const done = next.status === "idle" && (prev.status === "working" || prev.status === "starting");
-  if (!asks && !done) return;
+function notify(prev: Session | undefined, next: Session) {
+  const kind = notice(prev, next);
+  if (!kind) return;
   if (document.visibilityState === "visible" && useStore.getState().selected === next.id) return;
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-  const n = new Notification(asks ? `${next.title} needs you` : `${next.title} is done`, {
-    body: asks ? `Wants to use ${next.pending[0]?.tool_name ?? "a tool"}` : next.preview || "Finished its turn",
-    tag: next.id,
-  });
+  const title = kind === "needs_you" ? `${next.title} needs you` : kind === "failed" ? `${next.title} failed` : `${next.title} is done`;
+  const body =
+    kind === "needs_you" ? `Wants to use ${next.pending[0]?.tool_name ?? "a tool"}` : kind === "failed" ? (next.status_detail ?? "The session stopped with an error") : next.preview || "Finished its turn";
+  const n = new Notification(title, { body, tag: next.id });
   n.onclick = () => {
     window.focus();
     useStore.getState().select(next.id);

@@ -6,7 +6,7 @@ use common::*;
 use hangar::config::Config;
 use hangar::daemon::{Daemon, DaemonOptions};
 use hangar::sessions::{EventBody, Manager, NeedsTrust, NewSession, SessionView, Status};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -417,7 +417,17 @@ async fn sessions_run_end_to_end_through_the_api() {
     std::fs::write(repo.join(".claude/settings.json"), r#"{"permissions":{"allow":["Bash(*)"]}}"#).unwrap();
     let post = |path: &str, body: Value| ui.http.post(format!("{}{path}", ui.base)).header("x-hangar-token", &token).json(&body).send();
     // The folder pre-approves every shell command, so hangar asks first.
-    let trust: Value = ui.http.get(format!("{}/api/trust", ui.base)).query(&[("cwd", repo.display().to_string())]).header("x-hangar-token", &token).send().await.unwrap().json().await.unwrap();
+    let trust: Value = ui
+        .http
+        .get(format!("{}/api/trust", ui.base))
+        .query(&[("cwd", repo.display().to_string())])
+        .header("x-hangar-token", &token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(trust["trusted"], false);
     assert_eq!(trust["allow_rules"], json!(["Bash(*)"]));
     let refused = post("/api/sessions", json!({"cwd": repo.display().to_string(), "prompt": "hi"})).await.unwrap();
@@ -433,7 +443,8 @@ async fn sessions_run_end_to_end_through_the_api() {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    let events: Value = ui.http.get(format!("{}/api/sessions/{id}/events", ui.base)).header("x-hangar-token", &token).send().await.unwrap().json().await.unwrap();
+    let events: Value =
+        ui.http.get(format!("{}/api/sessions/{id}/events", ui.base)).header("x-hangar-token", &token).send().await.unwrap().json().await.unwrap();
     assert!(events.as_array().unwrap().iter().any(|e| e["kind"] == "claude" && e["msg"]["result"] == "echo: hi"));
     ui.d.shutdown().await;
 }

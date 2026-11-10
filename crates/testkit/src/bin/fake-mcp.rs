@@ -4,7 +4,7 @@
 //! `notify_changed`, `ask_roots`, `big`, `touch` (resource update), `stats`.
 //! Flags: `--init-delay-ms N`, `--fail-init`, `--exit-after-init`.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -61,6 +61,7 @@ fn main() {
     let fail_init = flag("--fail-init");
     let exit_after_init = flag("--exit-after-init");
     let stderr_garbage = flag("--stderr-garbage");
+    let stdout_junk = flag("--stdout-junk");
 
     let server = Arc::new(Server {
         out: Mutex::new(std::io::stdout()),
@@ -102,6 +103,13 @@ fn main() {
             }
             (Some("tools/list"), Some(id)) => {
                 server.stats.lock().unwrap().tools_list_calls += 1;
+                if stdout_junk {
+                    // A line of invalid UTF-8 that is not JSON, like a
+                    // server that logs to stdout by mistake.
+                    let mut out = server.out.lock().unwrap();
+                    let _ = out.write_all(&[0xff, 0xfe, b' ', b'o', b'o', b'p', b's', 0x0a]);
+                    let _ = out.flush();
+                }
                 server.result(&id, tools());
             }
             (Some("resources/list"), Some(id)) => server.result(&id, json!({"resources": [{"uri": "mem://a", "name": "a"}]})),

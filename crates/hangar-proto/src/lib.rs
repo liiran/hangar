@@ -154,9 +154,7 @@ pub fn home_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os(ENV_HOME).filter(|v| !v.is_empty()) {
         return PathBuf::from(dir);
     }
-    let base = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let base = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     base.join(".hangar")
 }
 

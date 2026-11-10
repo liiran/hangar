@@ -15,7 +15,7 @@ use crate::procs::Job;
 use anyhow::{Context, Result};
 use hangar_proto::ServerSpec;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -97,6 +97,13 @@ pub struct Report {
     pub tasks: Vec<TaskResult>,
 }
 
+impl Report {
+    /// Every compared answer matched and every agent task succeeded both ways.
+    pub fn all_matched(&self) -> bool {
+        self.parity.iter().all(|p| p.outcome != "differs") && self.tasks.iter().all(|t| t.success)
+    }
+}
+
 fn servers(workdir: &Path) -> Vec<Server> {
     let root = workdir.join("files");
     let root_s = root.display().to_string();
@@ -109,7 +116,10 @@ fn servers(workdir: &Path) -> Vec<Server> {
             name: "memory",
             spec: memory,
             script: vec![
-                step("create_entities", json!({"entities": [{"name": "hangar-verify", "entityType": "check", "observations": ["pooling keeps results identical"]}]})),
+                step(
+                    "create_entities",
+                    json!({"entities": [{"name": "hangar-verify", "entityType": "check", "observations": ["pooling keeps results identical"]}]}),
+                ),
                 step("open_nodes", json!({"names": ["hangar-verify"]})),
                 step("search_nodes", json!({"query": "identical"})),
                 step("delete_entities", json!({"entityNames": ["hangar-verify"]})),
@@ -132,7 +142,10 @@ fn servers(workdir: &Path) -> Vec<Server> {
             name: "sequential-thinking",
             spec: bench::npx_spec(&["@modelcontextprotocol/server-sequential-thinking"]),
             script: vec![
-                step("sequentialthinking", json!({"thought": "Compare pooled and direct answers.", "thoughtNumber": 1, "totalThoughts": 2, "nextThoughtNeeded": true})),
+                step(
+                    "sequentialthinking",
+                    json!({"thought": "Compare pooled and direct answers.", "thoughtNumber": 1, "totalThoughts": 2, "nextThoughtNeeded": true}),
+                ),
                 step("sequentialthinking", json!({"thought": "They should match.", "thoughtNumber": 2, "totalThoughts": 2, "nextThoughtNeeded": false})),
             ],
             probe: None,
@@ -151,7 +164,12 @@ fn servers(workdir: &Path) -> Vec<Server> {
         Server {
             name: "context7",
             spec: bench::npx_spec(&["@upstash/context7-mcp@latest"]),
-            script: vec![Step { tool: "resolve-library-id", aliases: &[], args: json!({"libraryName": "react", "query": "react hooks"}), expect: Expect::BothSucceed }],
+            script: vec![Step {
+                tool: "resolve-library-id",
+                aliases: &[],
+                args: json!({"libraryName": "react", "query": "react hooks"}),
+                expect: Expect::BothSucceed,
+            }],
             probe: None,
         },
     ]
@@ -235,7 +253,8 @@ async fn latency(client: &McpClient, call: &(&str, Value), n: usize) -> Result<(
         times.push(t.elapsed().as_secs_f64() * 1000.0);
     }
     times.sort_by(f64::total_cmp);
-    let pick = |p: f64| times[((p / 100.0) * (times.len() - 1) as f64).round() as usize];
+    // Nearest rank, as in the benchmark report.
+    let pick = |p: f64| times[(((p / 100.0) * times.len() as f64).ceil() as usize).clamp(1, times.len()) - 1];
     Ok((pick(50.0), pick(95.0)))
 }
 
@@ -269,7 +288,8 @@ pub async fn run(opts: VerifyOpts) -> Result<Report> {
         let pooled = spawn(server, &workdir, Some(&pool))?;
         let p = run_script(&pooled, server).await.with_context(|| format!("{} (pooled)", server.name))?;
         for ((label, dv, dn), (_, pv, pn)) in d.into_iter().zip(p) {
-            let expect = server.script.iter().enumerate().find(|(i, _)| label.starts_with(&format!("{}.", i + 1))).map(|(_, s)| s.expect).unwrap_or(Expect::Identical);
+            let expect =
+                server.script.iter().enumerate().find(|(i, _)| label.starts_with(&format!("{}.", i + 1))).map(|(_, s)| s.expect).unwrap_or(Expect::Identical);
             let (outcome, detail) = if dn == "tool not offered" || pn == "tool not offered" {
                 ("skipped".to_string(), Some("tool not offered by this version".to_string()))
             } else if expect == Expect::BothSucceed {
@@ -289,7 +309,14 @@ pub async fn run(opts: VerifyOpts) -> Result<Report> {
             let (d50, d95) = latency(&direct, probe, opts.calls).await?;
             let (p50, p95) = latency(&pooled, probe, opts.calls).await?;
             println!("  {:<20} {:<28} direct p50 {d50:.2} ms, pooled p50 {p50:.2} ms", server.name, probe.0);
-            lat.push(Latency { server: server.name.into(), call: probe.0.into(), direct_p50_ms: d50, direct_p95_ms: d95, pooled_p50_ms: p50, pooled_p95_ms: p95 });
+            lat.push(Latency {
+                server: server.name.into(),
+                call: probe.0.into(),
+                direct_p50_ms: d50,
+                direct_p95_ms: d95,
+                pooled_p50_ms: p50,
+                pooled_p95_ms: p95,
+            });
         }
         direct.shutdown_like_agent().await;
         pooled.shutdown_like_agent().await;
@@ -326,7 +353,9 @@ fn tasks() -> Vec<Task> {
         Task {
             name: "memory: store and recall",
             servers: &["memory"],
-            prompt: "Use the memory tools to create an entity named Hangar of type project with the observation 'shares MCP servers between sessions'. Then read it back with the memory tools and reply with only that observation text.".into(),
+            prompt: "Use the memory tools to create an entity named Hangar of type project with the observation \
+                     'shares MCP servers between sessions'. Then read it back with the memory tools and reply with only that observation text."
+                .into(),
             expect: "shares mcp servers between sessions",
         },
         Task {
@@ -338,7 +367,8 @@ fn tasks() -> Vec<Task> {
         Task {
             name: "playwright: read a page",
             servers: &["playwright"],
-            prompt: "Use the browser tools to open data:text/html,<title>Q</title><h1>Value: 7319</h1> and reply with only the number shown in the heading.".into(),
+            prompt: "Use the browser tools to open data:text/html,<title>Q</title><h1>Value: 7319</h1> and reply with only the number shown in the heading."
+                .into(),
             expect: "7319",
         },
     ]
@@ -398,15 +428,22 @@ fn render(r: &Report) -> String {
     }
     let same = r.parity.iter().filter(|p| p.outcome == "identical" || p.outcome == "both succeeded").count();
     let compared = r.parity.iter().filter(|p| p.outcome != "skipped").count();
-    s.push_str(&format!("\n**{same} of {compared} answers matched.** Timestamps and long numbers are masked before comparing; network answers only need to both succeed.\n"));
+    s.push_str(&format!(
+        "\n**{same} of {compared} answers matched.** Timestamps and long numbers are masked before comparing; network answers only need to both succeed.\n"
+    ));
     if !r.latency.is_empty() {
         s.push_str("\n### Latency per tool call\n\n| Server | Call | Direct p50 | Pooled p50 | Direct p95 | Pooled p95 |\n|---|---|---:|---:|---:|---:|\n");
         for l in &r.latency {
-            s.push_str(&format!("| {} | {} | {:.2} ms | {:.2} ms | {:.2} ms | {:.2} ms |\n", l.server, l.call, l.direct_p50_ms, l.pooled_p50_ms, l.direct_p95_ms, l.pooled_p95_ms));
+            s.push_str(&format!(
+                "| {} | {} | {:.2} ms | {:.2} ms | {:.2} ms | {:.2} ms |\n",
+                l.server, l.call, l.direct_p50_ms, l.pooled_p50_ms, l.direct_p95_ms, l.pooled_p95_ms
+            ));
         }
     }
     if !r.tasks.is_empty() {
-        s.push_str("\n### Agent tasks (Claude Code, Haiku, built-in tools off)\n\n| Task | Mode | Succeeded | Avg turns | Avg cost |\n|---|---|---:|---:|---:|\n");
+        s.push_str(
+            "\n### Agent tasks (Claude Code, Haiku, built-in tools off)\n\n| Task | Mode | Succeeded | Avg turns | Avg cost |\n|---|---|---:|---:|---:|\n",
+        );
         let mut names: Vec<&str> = r.tasks.iter().map(|t| t.task.as_str()).collect();
         names.dedup();
         for name in names {

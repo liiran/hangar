@@ -28,7 +28,7 @@ use crate::policy::Share;
 use crate::util::{now_ms, redact_command};
 use hangar_proto::ServerSpec;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
@@ -74,11 +74,25 @@ pub enum Cmd {
     /// when a shim reconnects and the session is already initialized.
     /// `init_params` are the session's own initialize params (multi-session
     /// HTTP servers initialize every session separately).
-    Attach { info: ConnInfo, init_id: Option<Value>, init_params: Value, reply: oneshot::Sender<Result<(), Rejected>> },
-    Client { conn: u64, msg: Value },
-    Detach { conn: u64 },
-    Stop { reply: Option<oneshot::Sender<()>> },
-    Stats { reply: oneshot::Sender<UpstreamStats> },
+    Attach {
+        info: ConnInfo,
+        init_id: Option<Value>,
+        init_params: Value,
+        reply: oneshot::Sender<Result<(), Rejected>>,
+    },
+    Client {
+        conn: u64,
+        msg: Value,
+    },
+    Detach {
+        conn: u64,
+    },
+    Stop {
+        reply: Option<oneshot::Sender<()>>,
+    },
+    Stats {
+        reply: oneshot::Sender<UpstreamStats>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -163,7 +177,7 @@ pub struct Spawn {
     /// Params of the first session's `initialize` request.
     pub client_init: Value,
     pub opts: PoolOptions,
-    pub on_exit: Weak<dyn Fn(u64, &PoolKey) + Send + Sync>,
+    pub on_exit: Weak<super::OnExit>,
 }
 
 pub fn start(spawn: Spawn) -> Upstream {
@@ -212,11 +226,11 @@ pub fn start(spawn: Spawn) -> Upstream {
 /// What the upstream sees as its client's `initialize` params.
 fn upstream_init_params(client: &Value, share: Share) -> Value {
     let mut params = client.clone();
-    if share.is_shared() {
-        if let Some(obj) = params.as_object_mut() {
-            // Per-client features cannot be shared, so the server never sees them.
-            obj.insert("capabilities".into(), json!({}));
-        }
+    if share.is_shared()
+        && let Some(obj) = params.as_object_mut()
+    {
+        // Per-client features cannot be shared, so the server never sees them.
+        obj.insert("capabilities".into(), json!({}));
     }
     params
 }
@@ -305,6 +319,8 @@ struct Actor {
     fast_failed: bool,
 }
 
+// Lives for one loop iteration on the stack; boxing would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 enum Wake {
     Cmd(Option<Cmd>),
     Proc(Option<ProcEvent>),
@@ -380,17 +396,17 @@ impl Actor {
 
     async fn on_timer(&mut self) {
         let now = Instant::now();
-        if let Phase::Starting = self.phase {
-            if self.init_deadline.is_some_and(|t| now >= t) {
-                self.fail_start(format!("no answer to initialize after {}s", self.s.opts.init_timeout.as_secs())).await;
-                return;
-            }
+        if let Phase::Starting = self.phase
+            && self.init_deadline.is_some_and(|t| now >= t)
+        {
+            self.fail_start(format!("no answer to initialize after {}s", self.s.opts.init_timeout.as_secs())).await;
+            return;
         }
-        if let Phase::Backoff(t) = self.phase {
-            if now >= t {
-                self.spawn_process().await;
-                return;
-            }
+        if let Phase::Backoff(t) = self.phase
+            && now >= t
+        {
+            self.spawn_process().await;
+            return;
         }
         if self.conns.is_empty() && self.idle_since.is_some_and(|s| now >= s + self.idle_limit()) {
             tracing::info!(upstream = self.s.id, name = %self.s.name, "stopping idle server");
@@ -411,10 +427,10 @@ impl Actor {
                 let conn = info.conn;
                 self.conns.insert(conn, info);
                 self.idle_since = None;
-                if let Phase::Failed { retry_at } = self.phase {
-                    if Instant::now() >= retry_at {
-                        self.spawn_process().await;
-                    }
+                if let Phase::Failed { retry_at } = self.phase
+                    && Instant::now() >= retry_at
+                {
+                    self.spawn_process().await;
                 }
                 if let Some(id) = init_id {
                     match (&self.phase, &self.init_result) {
@@ -778,7 +794,11 @@ impl Actor {
         if restarted {
             // The new process may offer different tools; let sessions refresh.
             let caps = result.get("capabilities").cloned().unwrap_or(Value::Null);
-            for (cap, note) in [("tools", "notifications/tools/list_changed"), ("prompts", "notifications/prompts/list_changed"), ("resources", "notifications/resources/list_changed")] {
+            for (cap, note) in [
+                ("tools", "notifications/tools/list_changed"),
+                ("prompts", "notifications/prompts/list_changed"),
+                ("resources", "notifications/resources/list_changed"),
+            ] {
                 if caps.get(cap).is_some() {
                     self.broadcast(&jsonrpc::notification(note, None));
                 }
@@ -801,7 +821,8 @@ impl Actor {
         let generation = self.generation;
         let fast = FastPath { enabled: self.s.opts.fast_npx && !self.fast_failed, state_dir: self.s.opts.state_dir.as_deref() };
         let launch = launch::plan(&self.s.spec, &self.s.env, fast);
-        let opts = process::Options { launch: &launch, extra_args: &[], cwd: &self.s.cwd, env: &self.s.env, declared: &self.s.spec.env, stdin: true, stdout: true };
+        let opts =
+            process::Options { launch: &launch, extra_args: &[], cwd: &self.s.cwd, env: &self.s.env, declared: &self.s.spec.env, stdin: true, stdout: true };
         let started = process::start(opts, &self.stderr);
         self.launch = Some(launch);
         let mut started = match started {

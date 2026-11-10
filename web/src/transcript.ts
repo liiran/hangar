@@ -59,7 +59,8 @@ export function toRows(events: SessionEvent[]): Row[] {
           rows.push({
             kind: "result",
             key,
-            cost: m.total_cost_usd ?? null,
+            // The CLI reports a running total; hangar adds what this turn cost.
+            cost: m.turn_cost_usd ?? null,
             durationMs: m.duration_ms ?? null,
             turns: m.num_turns ?? null,
             isError: !!m.is_error,
