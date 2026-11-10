@@ -1,6 +1,7 @@
 //! The MCP server pool: one running copy of each server, shared by sessions.
 
 pub mod http;
+pub mod process;
 pub mod upstream;
 
 use crate::policy::Share;
@@ -24,6 +25,10 @@ pub struct PoolKey {
     pub scope: String,
     /// The MCP protocol version the client asked for.
     pub protocol: String,
+    /// Fingerprint of credential-looking variables the server inherits from
+    /// the session (not declared in the config). Sessions that would give a
+    /// server different credentials never share it.
+    pub credentials: String,
 }
 
 #[derive(Debug, Clone)]
@@ -33,11 +38,13 @@ pub struct PoolOptions {
     pub init_timeout: Duration,
     /// Start cached npx packages with `node` directly (see [`crate::launch`]).
     pub fast_npx: bool,
+    /// Where state such as npx freshness is kept (the daemon's home).
+    pub state_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for PoolOptions {
     fn default() -> Self {
-        PoolOptions { idle_timeout: Duration::from_secs(600), session_grace: Duration::from_secs(2), init_timeout: Duration::from_secs(90), fast_npx: true }
+        PoolOptions { idle_timeout: Duration::from_secs(600), session_grace: Duration::from_secs(2), init_timeout: Duration::from_secs(90), fast_npx: true, state_dir: None }
     }
 }
 
@@ -55,6 +62,8 @@ pub struct AttachRequest {
     /// Whether to answer `init` (false when a shim reconnects).
     pub respond_init: bool,
     pub to_client: mpsc::UnboundedSender<String>,
+    /// For [`Share::Native`]: arguments that make the server serve HTTP.
+    pub http_args: Option<Vec<String>>,
 }
 
 /// A session attached to an upstream.
@@ -105,16 +114,21 @@ impl Pool {
 
     pub fn key_for(&self, req: &AttachRequest, conn: u64) -> PoolKey {
         let scope = match req.share {
-            Share::Global | Share::Native => "global".to_string(),
+            Share::Global => "global".to_string(),
+            Share::Native => "native".to_string(),
             Share::Project => format!("project:{}", normalize_dir(&req.cwd)),
             Share::Session | Share::Off => format!("session:{conn}"),
         };
         let protocol = req.init.pointer("/params/protocolVersion").and_then(Value::as_str).unwrap_or_default().to_string();
-        PoolKey { fingerprint: req.spec.fingerprint(), scope, protocol }
+        PoolKey { fingerprint: req.spec.fingerprint(), scope, protocol, credentials: credential_fingerprint(&req.env, &req.spec) }
     }
 
     /// Attaches a session, starting the server if no suitable one is running.
-    pub async fn attach(&self, req: AttachRequest) -> Result<Attached> {
+    pub async fn attach(&self, mut req: AttachRequest) -> Result<Attached> {
+        // A multi-session server needs to be told how to serve HTTP.
+        if req.share == Share::Native && req.http_args.is_none() {
+            req.share = Share::Session;
+        }
         let conn = self.next_conn.fetch_add(1, Ordering::SeqCst);
         let key = self.key_for(&req, conn);
         let init_id = if req.respond_init { req.init.get("id").cloned() } else { None };
@@ -126,9 +140,7 @@ impl Pool {
                     Some(u) if u.is_alive() => u.clone(),
                     _ => {
                         let id = self.next_upstream.fetch_add(1, Ordering::SeqCst);
-                        let native = (req.share == Share::Native)
-                            .then(|| http::native_args(crate::policy::package_of(&req.spec).as_deref(), &req.spec))
-                            .flatten();
+                        let native = if req.share == Share::Native { req.http_args.clone() } else { None };
                         let u = if let Some(extra_args) = native {
                             http::start(http::HttpSpawn {
                                 id,
@@ -168,7 +180,7 @@ impl Pool {
                 client_pid: req.client_pid,
                 shim_pid: req.shim_pid,
                 tx: req.to_client.clone(),
-                attached_at_ms: upstream::now_ms(),
+                attached_at_ms: crate::util::now_ms(),
             };
             if !upstream.send(Cmd::Attach { info, init_id: init_id.clone(), init_params: client_init.clone(), reply }) {
                 self.forget(&key, upstream.id);
@@ -196,6 +208,7 @@ impl Pool {
         self.upstreams.lock().unwrap().values().cloned().collect()
     }
 
+    /// Stats of every upstream that answers within a second.
     pub async fn stats(&self) -> Vec<UpstreamStats> {
         let mut out = Vec::new();
         for u in self.upstreams() {
@@ -212,7 +225,7 @@ impl Pool {
         let Some(u) = self.upstreams().into_iter().find(|u| u.id == id) else { return false };
         let (reply, rx) = oneshot::channel();
         if u.send(Cmd::Stop { reply: Some(reply) }) {
-            let _ = rx.await;
+            let _ = tokio::time::timeout(Duration::from_secs(10), rx).await;
         }
         self.forget(&u.key, u.id);
         true
@@ -232,6 +245,22 @@ impl Pool {
             let _ = tokio::time::timeout(Duration::from_secs(5), w).await;
         }
     }
+}
+
+/// Hash of credential-looking variables in the session's environment that
+/// the config does not declare (those are part of the spec fingerprint).
+fn credential_fingerprint(env: &BTreeMap<String, String>, spec: &ServerSpec) -> String {
+    let mut h = hangar_proto::Fnv::new();
+    for (k, v) in env {
+        let is_ours = k.starts_with("HANGAR_") || k.starts_with("CLAUDE_CODE_") || k == "CLAUDECODE";
+        if crate::util::looks_secret(k) && !is_ours && !spec.env.contains_key(k) {
+            h.write(k.as_bytes());
+            h.write(b"=");
+            h.write(v.as_bytes());
+            h.write(b";");
+        }
+    }
+    format!("{:016x}", h.finish())
 }
 
 fn normalize_dir(p: &std::path::Path) -> String {

@@ -60,6 +60,7 @@ fn main() {
     let init_delay = value("--init-delay-ms").unwrap_or(0);
     let fail_init = flag("--fail-init");
     let exit_after_init = flag("--exit-after-init");
+    let stderr_garbage = flag("--stderr-garbage");
 
     let server = Arc::new(Server {
         out: Mutex::new(std::io::stdout()),
@@ -106,14 +107,27 @@ fn main() {
             (Some("resources/list"), Some(id)) => server.result(&id, json!({"resources": [{"uri": "mem://a", "name": "a"}]})),
             (Some("resources/subscribe"), Some(id)) => {
                 server.stats.lock().unwrap().subscribe_calls += 1;
-                server.result(&id, json!({}));
+                if msg.pointer("/params/uri").and_then(Value::as_str) == Some("mem://deny") {
+                    server.error(&id, -32602, "cannot subscribe to that");
+                } else {
+                    server.result(&id, json!({}));
+                }
             }
             (Some("resources/unsubscribe"), Some(id)) => {
                 server.stats.lock().unwrap().unsubscribe_calls += 1;
                 server.result(&id, json!({}));
             }
             (Some("ping"), Some(id)) => server.result(&id, json!({})),
-            (Some("tools/call"), Some(id)) => call_tool(&server, id, &msg),
+            (Some("tools/call"), Some(id)) => {
+                if stderr_garbage {
+                    // 256 KB of invalid UTF-8: more than a pipe holds, so this
+                    // blocks forever unless someone keeps draining stderr.
+                    let junk = vec![0xffu8; 256 * 1024];
+                    let _ = std::io::stderr().write_all(&junk);
+                    let _ = std::io::stderr().write_all(b"\n");
+                }
+                call_tool(&server, id, &msg)
+            }
             (Some("notifications/cancelled"), None) => {
                 server.stats.lock().unwrap().cancelled.push(msg.pointer("/params/requestId").cloned().unwrap_or(Value::Null));
             }

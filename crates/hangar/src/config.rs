@@ -50,6 +50,10 @@ impl Default for PoolConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServerOverride {
     pub share: Option<Share>,
+    /// For `share = "native"`: arguments that make the server serve
+    /// Streamable HTTP; `{port}` is replaced with a free loopback port.
+    #[serde(default)]
+    pub http_args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,24 +1,29 @@
-//! The hangar daemon: accepts shims, runs the pool, answers control requests.
+//! The hangar daemon: accepts shims, runs the pool and the sessions, serves
+//! the UI, and answers control requests from the CLI.
 //!
-//! Shims connect over loopback TCP. Every connection must present the random
-//! token from `daemon.json`, which only the current user can read. The first
-//! line decides what the connection is:
+//! Shims and the CLI connect over loopback TCP. Every connection starts with
+//! a [`Challenge`]: the daemon proves it knows the token from `daemon.json`
+//! before the client reveals anything. The client then sends the token:
 //!
 //! * a [`Hello`]: a shim standing in for an MCP server;
-//! * `{"control": ..., "token": ...}`: `status`, `stop` or `logs` from the CLI.
+//! * `{"control": ..., "token": ...}`: `status`, `stop`, `stop-server` or
+//!   `pair` from the CLI.
 
 use crate::config::Config;
+use crate::jsonrpc;
 use crate::policy::{self, Share};
 use crate::pool::{AttachRequest, Pool, PoolOptions};
 use crate::procs;
+use crate::util::{constant_time_eq, make_private, now_ms, random_hex, write_private};
 use anyhow::{bail, Context, Result};
-use hangar_proto::{DaemonInfo, Hello, Welcome, WIRE_VERSION};
+use hangar_proto::{Challenge, DaemonInfo, Hello, Proof, Welcome, WIRE_VERSION};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 
@@ -32,13 +37,47 @@ pub struct DaemonOptions {
 /// The UI's default port; any free port is used if it is taken.
 pub const DEFAULT_UI_PORT: u16 = 7317;
 
+/// The longest first line an unauthenticated peer may send.
+const MAX_CHALLENGE: u64 = 4 << 10;
+/// The longest hello (it carries the shim's environment).
+const MAX_HELLO: u64 = 4 << 20;
+/// How long a pairing code from `hangar up` stays valid.
+const PAIRING_TTL: Duration = Duration::from_secs(120);
+
+/// One-time codes that let a browser tab obtain the UI token.
+#[derive(Default)]
+pub struct Pairing {
+    codes: Mutex<HashMap<String, Instant>>,
+}
+
+impl Pairing {
+    pub fn issue(&self) -> String {
+        let code = random_hex(16);
+        let mut codes = self.codes.lock().unwrap();
+        codes.retain(|_, t| t.elapsed() < PAIRING_TTL);
+        codes.insert(code.clone(), Instant::now());
+        code
+    }
+
+    /// Consumes `code`; true if it was issued and is still fresh.
+    pub fn redeem(&self, code: &str) -> bool {
+        let mut codes = self.codes.lock().unwrap();
+        let found = codes.keys().find(|k| constant_time_eq(k, code)).cloned();
+        match found.and_then(|k| codes.remove(&k)) {
+            Some(t) => t.elapsed() < PAIRING_TTL,
+            None => false,
+        }
+    }
+}
+
 /// A running daemon. Dropping it does not stop it; call [`Daemon::shutdown`].
 pub struct Daemon {
     pub info: DaemonInfo,
     pub pool: Arc<Pool>,
     pub sessions: Arc<crate::sessions::Manager>,
-    ui: Option<tokio::task::JoinHandle<()>>,
+    pub pairing: Arc<Pairing>,
     pub home: PathBuf,
+    ui: Option<tokio::task::JoinHandle<()>>,
     shutdown_tx: watch::Sender<bool>,
     accept: tokio::task::JoinHandle<()>,
     _lock: std::fs::File,
@@ -49,6 +88,7 @@ struct Shared {
     config: Config,
     token: String,
     info: DaemonInfo,
+    pairing: Arc<Pairing>,
     shutdown_tx: watch::Sender<bool>,
 }
 
@@ -66,12 +106,13 @@ impl std::error::Error for AlreadyRunning {}
 impl Daemon {
     pub async fn start(opts: DaemonOptions) -> Result<Daemon> {
         std::fs::create_dir_all(&opts.home).with_context(|| format!("creating {}", opts.home.display()))?;
+        make_private(&opts.home);
         let lock = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(opts.home.join("daemon.lock"))?;
         if lock.try_lock().is_err() {
             bail!(AlreadyRunning);
         }
 
-        let token = random_token();
+        let token = random_hex(24);
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.context("binding the shim port")?;
         let port = listener.local_addr()?.port();
         let ui_listener = match opts.ui_port {
@@ -85,23 +126,25 @@ impl Daemon {
             Some(l) => Some(l.local_addr()?.port()),
             None => None,
         };
-        let info = DaemonInfo {
-            pid: std::process::id(),
-            shim_port: port,
-            ui_port,
-            token: token.clone(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            started_at_ms: crate::pool::upstream::now_ms(),
-        };
+        let info = DaemonInfo { pid: std::process::id(), shim_port: port, ui_port, token: token.clone(), version: env!("CARGO_PKG_VERSION").into(), started_at_ms: now_ms() };
+
         let p = &opts.config.pool;
-        let pool = Pool::new(PoolOptions { idle_timeout: p.idle_timeout(), session_grace: p.session_grace(), init_timeout: p.init_timeout(), fast_npx: p.fast_npx });
+        let pool = Pool::new(PoolOptions {
+            idle_timeout: p.idle_timeout(),
+            session_grace: p.session_grace(),
+            init_timeout: p.init_timeout(),
+            fast_npx: p.fast_npx,
+            state_dir: Some(opts.home.clone()),
+        });
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         let sessions = crate::sessions::Manager::start(&opts.home, &opts.config);
+        let pairing = Arc::new(Pairing::default());
         let ui = ui_listener.map(|l| {
-            let state = crate::api::AppState { manager: sessions.clone(), pool: pool.clone(), token: token.clone(), port: ui_port.unwrap_or(0) };
+            // The UI has its own token, which never touches the disk.
+            let state = crate::api::AppState::new(sessions.clone(), pool.clone(), random_hex(24), pairing.clone(), ui_port.unwrap_or(0));
             tokio::spawn(crate::api::serve(l, state, shutdown_tx.subscribe()))
         });
-        let shared = Arc::new(Shared { pool: pool.clone(), config: opts.config, token, info: info.clone(), shutdown_tx: shutdown_tx.clone() });
+        let shared = Arc::new(Shared { pool: pool.clone(), config: opts.config, token, info: info.clone(), pairing: pairing.clone(), shutdown_tx: shutdown_tx.clone() });
         // Announce ourselves only once everything is listening.
         write_info(&opts.home, &info)?;
 
@@ -122,7 +165,7 @@ impl Daemon {
             }
         });
         tracing::info!(port, home = %opts.home.display(), "hangar daemon listening");
-        Ok(Daemon { info, pool, sessions, ui, home: opts.home, shutdown_tx, accept, _lock: lock })
+        Ok(Daemon { info, pool, sessions, pairing, ui, home: opts.home, shutdown_tx, accept, _lock: lock })
     }
 
     /// Resolves when someone asks the daemon to stop (`hangar stop`).
@@ -152,17 +195,8 @@ impl Daemon {
 }
 
 fn write_info(home: &Path, info: &DaemonInfo) -> Result<()> {
-    let path = hangar_proto::daemon_info_path(home);
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(info)?)?;
-    std::fs::rename(&tmp, &path)?;
+    write_private(&hangar_proto::daemon_info_path(home), &serde_json::to_vec_pretty(info)?)?;
     Ok(())
-}
-
-fn random_token() -> String {
-    let mut bytes = [0u8; 24];
-    getrandom::fill(&mut bytes).expect("OS randomness");
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 async fn write_line(w: &mut tokio::net::tcp::OwnedWriteHalf, v: &impl Serialize) -> Result<()> {
@@ -172,34 +206,46 @@ async fn write_line(w: &mut tokio::net::tcp::OwnedWriteHalf, v: &impl Serialize)
     Ok(())
 }
 
+/// Reads one line of at most `limit` bytes.
+async fn read_limited(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>, limit: u64, timeout: Duration) -> Result<String> {
+    let mut line = String::new();
+    let mut limited = (&mut *reader).take(limit);
+    tokio::time::timeout(timeout, limited.read_line(&mut line)).await.context("timed out")??;
+    if !line.ends_with('\n') {
+        bail!("line too long or incomplete");
+    }
+    Ok(line)
+}
+
 async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     stream.set_nodelay(true)?;
     let (rd, mut wr) = stream.into_split();
+    // Lines longer than this are still read whole; it is just the up-front allocation.
     let mut reader = BufReader::with_capacity(16 * 1024, rd);
-    let mut first = String::new();
-    tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut first)).await.context("handshake timed out")??;
-    let value: Value = serde_json::from_str(first.trim()).context("handshake is not JSON")?;
 
+    // 1. Prove we hold the token before the client says anything secret.
+    let first = read_limited(&mut reader, MAX_CHALLENGE, Duration::from_secs(10)).await?;
+    let challenge: Challenge = serde_json::from_str(first.trim()).context("expected a challenge")?;
+    if challenge.hangar != WIRE_VERSION {
+        write_line(&mut wr, &Welcome { ok: false, error: Some(format!("client speaks wire version {}, daemon speaks {WIRE_VERSION}", challenge.hangar)), ..Default::default() }).await?;
+        return Ok(());
+    }
+    write_line(&mut wr, &Proof { proof: hangar_proto::proof(&shared.token, &challenge.challenge) }).await?;
+
+    // 2. The client proves it holds the token too.
+    let second = read_limited(&mut reader, MAX_HELLO, Duration::from_secs(10)).await?;
+    let value: Value = serde_json::from_str(second.trim()).context("handshake is not JSON")?;
+    let token_ok = constant_time_eq(value.get("token").and_then(Value::as_str).unwrap_or_default(), &shared.token);
     if let Some(cmd) = value.get("control").and_then(Value::as_str) {
-        if value.get("token").and_then(Value::as_str) != Some(shared.token.as_str()) {
-            write_line(&mut wr, &json!({"ok": false, "error": "bad token"})).await?;
-            return Ok(());
-        }
-        let answer = control(cmd, &value, &shared).await;
+        let answer = if token_ok { control(cmd, &value, &shared).await } else { json!({"ok": false, "error": "bad token"}) };
         write_line(&mut wr, &answer).await?;
         return Ok(());
     }
-
-    let hello: Hello = serde_json::from_value(value).context("bad hello")?;
-    if hello.hangar != WIRE_VERSION {
-        let w = Welcome { ok: false, error: Some(format!("shim speaks wire version {}, daemon speaks {WIRE_VERSION}", hello.hangar)), ..Default::default() };
-        write_line(&mut wr, &w).await?;
-        return Ok(());
-    }
-    if hello.token != shared.token {
+    if !token_ok {
         write_line(&mut wr, &Welcome { ok: false, error: Some("bad token".into()), ..Default::default() }).await?;
         return Ok(());
     }
+    let hello: Hello = serde_json::from_value(value).context("bad hello")?;
     let decision = policy::decide(&hello.spec, &hello.name, &shared.config);
     if decision.share == Share::Off {
         write_line(&mut wr, &Welcome { ok: true, direct: true, mode: Some("off".into()), error: None }).await?;
@@ -220,11 +266,19 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
             if n == 0 {
                 return Ok(());
             }
-            let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else { continue };
-            match crate::jsonrpc::classify(&msg) {
-                crate::jsonrpc::Kind::Request { method: "initialize", .. } => break (msg, true),
-                crate::jsonrpc::Kind::Request { id, method } => {
-                    let err = crate::jsonrpc::error(id.clone(), crate::jsonrpc::METHOD_NOT_FOUND, format!("Method not found: {method}"));
+            let msg = match serde_json::from_str::<Value>(line.trim()) {
+                Ok(m) => m,
+                Err(_) => {
+                    if !line.trim().is_empty() {
+                        write_line(&mut wr, &jsonrpc::error(Value::Null, jsonrpc::PARSE_ERROR, "parse error")).await?;
+                    }
+                    continue;
+                }
+            };
+            match jsonrpc::classify(&msg) {
+                jsonrpc::Kind::Request { method: "initialize", .. } => break (msg, true),
+                jsonrpc::Kind::Request { id, method } => {
+                    let err = jsonrpc::error(id.clone(), jsonrpc::METHOD_NOT_FOUND, format!("Method not found: {method}"));
                     write_line(&mut wr, &err).await?;
                 }
                 _ => {} // notifications before initialize mean nothing yet
@@ -254,19 +308,19 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
         init: init.clone(),
         respond_init,
         to_client: tx.clone(),
+        http_args: decision.http_args.clone(),
     };
     let attached = match shared.pool.attach(req).await {
         Ok(a) => a,
         Err(e) => {
-            if let Some(id) = init.get("id").cloned() {
-                let _ = tx.send(crate::jsonrpc::to_line(&crate::jsonrpc::error(id, crate::jsonrpc::SERVER_UNAVAILABLE, format!("{e:#}"))));
+            if let Some(id) = init.get("id").cloned().filter(|_| respond_init) {
+                let _ = tx.send(jsonrpc::to_line(&jsonrpc::error(id, jsonrpc::SERVER_UNAVAILABLE, format!("{e:#}"))));
             }
             drop(tx);
             let _ = writer.await;
             return Ok(());
         }
     };
-    drop(tx);
 
     let mut buf = Vec::with_capacity(4 * 1024);
     loop {
@@ -275,20 +329,19 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
+        if buf.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
         match serde_json::from_slice::<Value>(&buf) {
-            Ok(Value::Array(batch)) => {
-                for msg in batch {
-                    attached.send(msg);
-                }
-            }
+            // JSON-RPC batches were removed from MCP; handle each element.
+            Ok(Value::Array(batch)) => batch.into_iter().for_each(|m| attached.send(m)),
             Ok(msg) => attached.send(msg),
             Err(_) => {
-                if !buf.iter().all(u8::is_ascii_whitespace) {
-                    tracing::debug!("ignoring a line that is not JSON");
-                }
+                let _ = tx.send(jsonrpc::to_line(&jsonrpc::error(Value::Null, jsonrpc::PARSE_ERROR, "parse error")));
             }
         }
     }
+    drop(tx);
     drop(attached); // detaches; the upstream drops our sender and the writer ends
     let _ = writer.await;
     Ok(())
@@ -299,6 +352,11 @@ struct ServerStatus {
     #[serde(flatten)]
     stats: crate::pool::upstream::UpstreamStats,
     memory: procs::Usage,
+}
+
+/// What `status` may show about the daemon (never the token).
+fn public_info(info: &DaemonInfo) -> Value {
+    json!({"pid": info.pid, "shim_port": info.shim_port, "ui_port": info.ui_port, "version": info.version, "started_at_ms": info.started_at_ms})
 }
 
 async fn control(cmd: &str, req: &Value, shared: &Shared) -> Value {
@@ -314,7 +372,7 @@ async fn control(cmd: &str, req: &Value, shared: &Shared) -> Value {
                 })
                 .collect();
             let daemon = snap.iter().find(|p| p.pid == shared.info.pid).map(|p| procs::Usage::of([p])).unwrap_or_default();
-            json!({"ok": true, "daemon": shared.info.clone_without_token(), "daemon_memory": daemon, "servers": servers})
+            json!({"ok": true, "daemon": public_info(&shared.info), "daemon_memory": daemon, "servers": servers})
         }
         "stop" => {
             let _ = shared.shutdown_tx.send(true);
@@ -324,21 +382,13 @@ async fn control(cmd: &str, req: &Value, shared: &Shared) -> Value {
             let id = req.get("id").and_then(Value::as_u64).unwrap_or(0);
             json!({"ok": shared.pool.stop(id).await})
         }
+        "pair" => json!({"ok": true, "code": shared.pairing.issue(), "ui_port": shared.info.ui_port}),
         other => json!({"ok": false, "error": format!("unknown control command {other}")}),
     }
 }
 
-trait WithoutToken {
-    fn clone_without_token(&self) -> Value;
-}
-
-impl WithoutToken for DaemonInfo {
-    fn clone_without_token(&self) -> Value {
-        json!({"pid": self.pid, "shim_port": self.shim_port, "ui_port": self.ui_port, "version": self.version, "started_at_ms": self.started_at_ms})
-    }
-}
-
-/// Sends a control request to the running daemon.
+/// Sends a control request to the running daemon, after checking that it
+/// really is the daemon.
 pub async fn send_control(home: &Path, cmd: &str, extra: Value) -> Result<Value> {
     let info = hangar_proto::read_daemon_info(home).context("hangar daemon is not running")?;
     let stream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(("127.0.0.1", info.shim_port)))
@@ -346,6 +396,15 @@ pub async fn send_control(home: &Path, cmd: &str, extra: Value) -> Result<Value>
         .context("hangar daemon is not answering")?
         .context("hangar daemon is not running")?;
     let (rd, mut wr) = stream.into_split();
+    let mut reader = BufReader::new(rd);
+    let nonce = hangar_proto::nonce();
+    write_line(&mut wr, &Challenge { hangar: WIRE_VERSION, challenge: nonce.clone() }).await?;
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line)).await.context("no answer from the daemon")??;
+    let proof: Proof = serde_json::from_str(line.trim()).context("the process on the hangar port is not the hangar daemon")?;
+    if !constant_time_eq(&proof.proof, &hangar_proto::proof(&info.token, &nonce)) {
+        bail!("the process on the hangar port is not the hangar daemon");
+    }
     let mut req = json!({"control": cmd, "token": info.token});
     if let (Some(obj), Some(more)) = (req.as_object_mut(), extra.as_object()) {
         for (k, v) in more {
@@ -355,7 +414,21 @@ pub async fn send_control(home: &Path, cmd: &str, extra: Value) -> Result<Value>
         }
     }
     write_line(&mut wr, &req).await?;
-    let mut line = String::new();
-    BufReader::new(rd).read_line(&mut line).await?;
+    line.clear();
+    tokio::time::timeout(Duration::from_secs(15), reader.read_line(&mut line)).await.context("no answer from the daemon")??;
     Ok(serde_json::from_str(line.trim())?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pairing_codes_work_once() {
+        let p = Pairing::default();
+        let code = p.issue();
+        assert!(!p.redeem("wrong"));
+        assert!(p.redeem(&code));
+        assert!(!p.redeem(&code), "a code works only once");
+    }
 }

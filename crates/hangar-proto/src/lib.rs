@@ -60,7 +60,42 @@ impl ServerSpec {
     }
 }
 
-/// First line a shim sends after connecting.
+/// First line any client sends: a random nonce the daemon must sign with
+/// the token, so clients never reveal secrets to an impostor listening on a
+/// stale port.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Challenge {
+    pub hangar: u32,
+    pub challenge: String,
+}
+
+/// The daemon's answer to a [`Challenge`]: [`proof`] of the token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Proof {
+    pub proof: String,
+}
+
+/// SHA-256 over the token and the client's nonce, as hex.
+pub fn proof(token: &str, nonce: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("hangar-proof:{token}:{nonce}").as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 32 random hex characters from the OS.
+pub fn nonce() -> String {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).expect("OS randomness");
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Compares secrets without leaking where they differ through timing.
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Second line a shim sends, once the daemon proved itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hello {
     /// Must equal [`WIRE_VERSION`].
@@ -135,12 +170,35 @@ pub fn read_daemon_info(home: &Path) -> Option<DaemonInfo> {
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in bytes {
-        hash ^= u64::from(*b);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    let mut h = Fnv::new();
+    h.write(bytes);
+    h.finish()
+}
+
+/// FNV-1a: a fast, stable, non-cryptographic hash for fingerprints.
+pub struct Fnv(u64);
+
+impl Fnv {
+    pub fn new() -> Fnv {
+        Fnv(0xcbf2_9ce4_8422_2325)
     }
-    hash
+
+    pub fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 ^= u64::from(*b);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    pub fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Fnv::new()
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +217,17 @@ mod tests {
         let mut with_env = a.clone();
         with_env.env.insert("TOKEN".into(), "x".into());
         assert_ne!(a.fingerprint(), with_env.fingerprint());
+    }
+
+    #[test]
+    fn proofs_depend_on_token_and_nonce() {
+        let p = proof("tok", "n1");
+        assert_eq!(p.len(), 64);
+        assert_eq!(p, proof("tok", "n1"));
+        assert_ne!(p, proof("tok", "n2"));
+        assert_ne!(p, proof("other", "n1"));
+        assert_ne!(nonce(), nonce());
+        assert!(constant_time_eq("abc", "abc") && !constant_time_eq("abc", "abd") && !constant_time_eq("a", "ab"));
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod common;
 use common::*;
 use hangar::client::McpClient;
 use hangar::jsonrpc;
+use hangar::config::Config;
 use hangar::policy::Share;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -335,15 +336,8 @@ async fn status_lists_servers_and_sessions() {
     assert_eq!(servers[0]["sessions"].as_array().unwrap().len(), 2);
     assert!(servers[0]["memory"]["private_bytes"].as_u64().unwrap() > 0);
     assert!(v["daemon"].get("token").is_none(), "status never leaks the token");
-    // A connection without the right token gets nothing.
-    let info = hangar::proto::read_daemon_info(&home).unwrap();
-    let mut raw = tokio::net::TcpStream::connect(("127.0.0.1", info.shim_port)).await.unwrap();
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-    raw.write_all(b"{\"control\":\"status\",\"token\":\"nope\"}
-").await.unwrap();
-    let mut line = String::new();
-    tokio::io::BufReader::new(raw).read_line(&mut line).await.unwrap();
-    let bad: Value = serde_json::from_str(&line).unwrap();
+    // A connection that knows the protocol but not the token gets nothing.
+    let bad = raw_control(&home, "nope").await;
     assert_eq!(bad["ok"], false);
     assert!(bad.get("servers").is_none());
     let pids: HashSet<u64> = servers.iter().filter_map(|s| s["pid"].as_u64()).collect();
@@ -403,4 +397,146 @@ async fn auto_started_daemon_does_not_hold_the_clients_pipes() {
     assert!(hangar::procs::is_alive(info.pid), "the daemon outlives the shim");
     hangar::daemon::send_control(&home, "stop", json!({})).await.unwrap();
     assert!(eventually(Duration::from_secs(10), || !hangar::procs::is_alive(info.pid)).await);
+}
+
+/// Speaks the daemon protocol by hand: challenge, check the proof, then a
+/// control request with the given token.
+async fn raw_control(home: &std::path::Path, token: &str) -> Value {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let info = hangar::proto::read_daemon_info(home).unwrap();
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", info.shim_port)).await.unwrap();
+    let (rd, mut wr) = stream.into_split();
+    let mut rd = tokio::io::BufReader::new(rd);
+    wr.write_all(json!({"hangar": 1, "challenge": "n0nce"}).to_string().as_bytes()).await.unwrap();
+    wr.write_all(b"\n").await.unwrap();
+    let mut line = String::new();
+    rd.read_line(&mut line).await.unwrap();
+    let proof: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(proof["proof"], hangar::proto::proof(&info.token, "n0nce"), "the daemon proves it holds the token");
+    wr.write_all(json!({"control": "status", "token": token}).to_string().as_bytes()).await.unwrap();
+    wr.write_all(b"\n").await.unwrap();
+    line.clear();
+    rd.read_line(&mut line).await.unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+#[tokio::test]
+async fn the_shim_reveals_nothing_to_an_impostor_on_a_stale_port() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let home = temp_home("impostor");
+    // Someone else listens where a dead daemon used to be.
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let info = hangar::proto::DaemonInfo { pid: 1, shim_port: port, ui_port: None, token: "the-real-token".into(), version: "x".into(), started_at_ms: 0 };
+    std::fs::write(hangar::proto::daemon_info_path(&home), serde_json::to_vec(&info).unwrap()).unwrap();
+    let seen = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (rd, mut wr) = stream.into_split();
+        let mut rd = tokio::io::BufReader::new(rd);
+        let mut all = String::new();
+        let mut line = String::new();
+        rd.read_line(&mut line).await.unwrap();
+        all.push_str(&line);
+        wr.write_all(b"{\"proof\":\"made-up\"}\n").await.unwrap();
+        line.clear();
+        let _ = tokio::time::timeout(Duration::from_secs(2), rd.read_line(&mut line)).await;
+        all.push_str(&line);
+        all
+    });
+    let mut cmd = shim_cmd(&home, "fake", &[]);
+    cmd.env("SECRET_API_KEY", "do-not-leak");
+    let c = McpClient::spawn(cmd, vec![]).unwrap();
+    c.initialize("t", T).await.expect("the shim falls back to running the server itself");
+    let received = seen.await.unwrap();
+    assert!(received.contains("challenge"));
+    assert!(!received.contains("the-real-token") && !received.contains("do-not-leak"), "leaked: {received}");
+}
+
+#[tokio::test]
+async fn a_failing_server_answers_new_sessions_at_once_with_its_reason() {
+    let home = temp_home("failed-attach");
+    let d = start_daemon(&home, config(&[("bad", Share::Global)])).await;
+    let init = json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}});
+    for _ in 0..2 {
+        let c = McpClient::spawn(shim_cmd(&home, "bad", &["--fail-init"]), vec![]).unwrap();
+        let started = std::time::Instant::now();
+        let r = c.request("initialize", init.clone(), T).await.unwrap();
+        assert!(r["error"]["message"].as_str().unwrap().contains("refusing to initialize"), "{r}");
+        assert!(started.elapsed() < Duration::from_secs(5), "answered promptly");
+    }
+    let s = d.pool.stats().await;
+    assert_eq!(s.len(), 1);
+    assert_eq!(s[0].state, "failed");
+    assert_eq!(s[0].restarts, 0, "a failing server is not restarted in a loop");
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn stopping_a_server_answers_its_requests_in_flight() {
+    let home = temp_home("stop-inflight");
+    let d = start_daemon(&home, config(&[("fake", Share::Global)])).await;
+    let a = client(&home, "fake", &[]).await;
+    let pending = tokio::spawn(async move {
+        let r = a.request("tools/call", json!({"name": "slow", "arguments": {"ms": 10000}}), T).await;
+        (a, r)
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let id = d.pool.stats().await[0].id;
+    assert!(d.pool.stop(id).await);
+    let (_a, r) = pending.await.unwrap();
+    assert_eq!(r.unwrap()["error"]["code"], jsonrpc::SERVER_UNAVAILABLE);
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_refused_subscription_is_rolled_back() {
+    let home = temp_home("sub-refused");
+    let d = start_daemon(&home, config(&[("fake", Share::Global)])).await;
+    let a = client(&home, "fake", &[]).await;
+    let b = client(&home, "fake", &[]).await;
+    assert!(a.call("resources/subscribe", json!({"uri": "mem://deny"}), T).await.is_err());
+    // B must not be told "subscribed" for something the server refused.
+    assert!(b.call("resources/subscribe", json!({"uri": "mem://deny"}), T).await.is_err());
+    assert_eq!(server_stats(&a).await["subscribe_calls"], 2);
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn sessions_with_different_credentials_never_share() {
+    let home = temp_home("credentials");
+    let d = start_daemon(&home, config(&[("fake", Share::Global)])).await;
+    let with_key = |key: &str| {
+        let mut c = shim_cmd(&home, "fake", &[]);
+        c.env("SERVICE_API_KEY", key);
+        McpClient::spawn(c, vec![]).unwrap()
+    };
+    let (a, b, c) = (with_key("alice"), with_key("alice"), with_key("bob"));
+    for x in [&a, &b, &c] {
+        x.initialize("t", T).await.unwrap();
+    }
+    let pa = tool(&a, "pid", json!({})).await.unwrap();
+    assert_eq!(pa, tool(&b, "pid", json!({})).await.unwrap(), "same credentials share");
+    assert_ne!(pa, tool(&c, "pid", json!({})).await.unwrap(), "other credentials get their own server");
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalid_utf8_on_stderr_does_not_stall_the_server() {
+    let home = temp_home("stderr-junk");
+    let d = start_daemon(&home, config(&[("fake", Share::Global)])).await;
+    let a = client(&home, "fake", &["--stderr-garbage"]).await;
+    for i in 0..4 {
+        assert_eq!(tool(&a, "echo", json!({"text": format!("call {i}")})).await.unwrap(), format!("call {i}"));
+    }
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn unknown_servers_are_not_shared_by_default() {
+    let home = temp_home("unknown-default");
+    let d = start_daemon(&home, Config::default()).await;
+    let a = client(&home, "mystery", &[]).await;
+    let b = client(&home, "mystery", &[]).await;
+    assert_ne!(tool(&a, "pid", json!({})).await.unwrap(), tool(&b, "pid", json!({})).await.unwrap());
+    d.shutdown().await;
 }

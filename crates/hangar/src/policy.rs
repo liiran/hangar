@@ -14,8 +14,8 @@
 //! * `off`: not managed; the shim runs the server itself.
 //!
 //! Known servers come from a built-in registry. Unknown servers default to
-//! `project`, so they are only shared between sessions that started them with
-//! the same command, environment and folder. Anything can be overridden in
+//! `session`: supervised, but never shared, because hangar cannot know
+//! whether they keep per-client state. Anything can be overridden in
 //! `config.toml`.
 
 use crate::config::Config;
@@ -54,6 +54,14 @@ pub struct Decision {
     pub share: Share,
     pub package: Option<String>,
     pub reason: String,
+    /// For `native`: the arguments that switch the server to HTTP mode.
+    pub http_args: Option<Vec<String>>,
+}
+
+impl Decision {
+    fn new(share: Share, package: Option<String>, reason: impl Into<String>) -> Decision {
+        Decision { share, package, reason: reason.into(), http_args: None }
+    }
 }
 
 /// Built-in knowledge about popular servers: (package, share, reason).
@@ -129,31 +137,32 @@ fn strip_version(pkg: &str) -> String {
 /// Decides how `spec` (configured as `name`) is shared.
 pub fn decide(spec: &ServerSpec, name: &str, config: &Config) -> Decision {
     let package = package_of(spec);
-    let overridden = config
-        .servers
-        .get(name)
-        .or_else(|| package.as_ref().and_then(|p| config.servers.get(p)))
-        .and_then(|o| o.share);
-    if let Some(share) = overridden {
-        return Decision { share, package, reason: "set in config.toml".into() };
+    let builtin_http = crate::pool::http::native_args(package.as_deref(), spec);
+    let overridden = config.servers.get(name).or_else(|| package.as_ref().and_then(|p| config.servers.get(p)));
+    if let Some(o) = overridden.filter(|o| o.share.is_some()) {
+        let share = o.share.unwrap();
+        if share != Share::Native {
+            return Decision::new(share, package, "set in config.toml");
+        }
+        let http_args = o.http_args.clone().or(builtin_http);
+        return match http_args {
+            Some(args) if args.iter().any(|a| a.contains("{port}")) => Decision { http_args: Some(args), ..Decision::new(Share::Native, package, "set in config.toml") },
+            _ => Decision::new(Share::Session, package, "share = \"native\" needs http_args with a {port} placeholder; running one per session instead"),
+        };
     }
     if let Some(pkg) = &package {
         if pkg == "@playwright/mcp" {
-            return if crate::pool::http::native_args(Some(pkg), spec).is_some() {
-                Decision { share: Share::Native, package, reason: "one browser, a separate isolated context per session".into() }
-            } else {
-                Decision {
-                    share: Share::Session,
-                    package,
-                    reason: "without --isolated, Playwright keeps one persistent profile that only one session can use".into(),
-                }
+            return match builtin_http {
+                Some(args) => Decision { http_args: Some(args), ..Decision::new(Share::Native, package, "one browser, a separate isolated context per session") },
+                None => Decision::new(Share::Session, package, "without --isolated, Playwright keeps one persistent profile that only one session can use"),
             };
         }
         if let Some((_, share, reason)) = REGISTRY.iter().find(|(p, _, _)| p == pkg) {
-            return Decision { share: *share, package, reason: (*reason).into() };
+            return Decision::new(*share, package, *reason);
         }
     }
-    Decision { share: Share::Project, package, reason: "unknown server: shared only by sessions in the same folder with the same config".into() }
+    // Unknown servers may keep state per client, so they are not shared.
+    Decision::new(Share::Session, package, "unknown server: one per session (mark it shareable in config.toml)")
 }
 
 #[cfg(test)]
@@ -181,15 +190,27 @@ mod tests {
         assert_eq!(decide(&spec("npx", &["-y", "@upstash/context7-mcp@latest"]), "context7", &c).share, Share::Global);
         assert_eq!(decide(&spec("npx", &["-y", "@playwright/mcp"]), "pw", &c).share, Share::Session);
         assert_eq!(decide(&spec("npx", &["-y", "@playwright/mcp", "--isolated"]), "pw", &c).share, Share::Native);
-        assert_eq!(decide(&spec("node", &["mine.js"]), "mine", &c).share, Share::Project);
+        assert_eq!(decide(&spec("node", &["mine.js"]), "mine", &c).share, Share::Session, "unknown servers are never shared by default");
     }
 
     #[test]
     fn config_overrides_by_name_or_package() {
         let mut c = Config::default();
-        c.servers.insert("pw".into(), ServerOverride { share: Some(Share::Off) });
-        c.servers.insert("@upstash/context7-mcp".into(), ServerOverride { share: Some(Share::Session) });
+        c.servers.insert("pw".into(), ServerOverride { share: Some(Share::Off), http_args: None });
+        c.servers.insert("@upstash/context7-mcp".into(), ServerOverride { share: Some(Share::Session), http_args: None });
         assert_eq!(decide(&spec("npx", &["@playwright/mcp"]), "pw", &c).share, Share::Off);
         assert_eq!(decide(&spec("npx", &["@upstash/context7-mcp"]), "docs", &c).share, Share::Session);
+    }
+
+    #[test]
+    fn native_needs_http_arguments() {
+        let mut c = Config::default();
+        c.servers.insert("web".into(), ServerOverride { share: Some(Share::Native), http_args: Some(vec!["--port".into(), "{port}".into()]) });
+        c.servers.insert("bare".into(), ServerOverride { share: Some(Share::Native), http_args: None });
+        let d = decide(&spec("node", &["web.js"]), "web", &c);
+        assert_eq!((d.share, d.http_args.unwrap().len()), (Share::Native, 2));
+        assert_eq!(decide(&spec("node", &["bare.js"]), "bare", &c).share, Share::Session, "no way to reach it over HTTP");
+        let pw = decide(&spec("npx", &["@playwright/mcp", "--isolated"]), "pw", &Config::default());
+        assert!(pw.http_args.unwrap().contains(&"{port}".to_string()));
     }
 }

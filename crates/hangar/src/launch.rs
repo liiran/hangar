@@ -32,20 +32,80 @@ impl Launch {
     }
 }
 
+/// Reads a variable from a client environment, ignoring case on Windows
+/// (where `Path` and `PATH` are the same variable). Falls back to our own.
+fn env_var(env: &BTreeMap<String, String>, name: &str) -> Option<String> {
+    let found = if cfg!(windows) { env.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone()) } else { env.get(name).cloned() };
+    found.or_else(|| std::env::var(name).ok()).filter(|v| !v.is_empty())
+}
+
+/// Resolves `command` on the PATH of the environment the server will run in.
+pub fn resolve(command: &str, env: &BTreeMap<String, String>) -> PathBuf {
+    let path = env_var(env, "PATH");
+    let pathext = env_var(env, "PATHEXT");
+    hangar_shim::resolve_command_in(command, path.as_deref().map(std::ffi::OsStr::new), pathext.as_deref()).unwrap_or_else(|| PathBuf::from(command))
+}
+
 /// The plain launch: exactly what the client config says.
-pub fn as_configured(spec: &ServerSpec) -> Launch {
-    let program = hangar_shim::resolve_command(&spec.command).unwrap_or_else(|| PathBuf::from(&spec.command));
-    Launch { program, args: spec.args.clone(), fast: false }
+pub fn as_configured(spec: &ServerSpec, env: &BTreeMap<String, String>) -> Launch {
+    Launch { program: resolve(&spec.command, env), args: spec.args.clone(), fast: false }
+}
+
+/// When the npx fast path may be used.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FastPath<'a> {
+    pub enabled: bool,
+    /// Where hangar remembers when real npx last ran each spec.
+    pub state_dir: Option<&'a Path>,
 }
 
 /// The best launch for `spec`, using the npx fast path when it applies.
-pub fn plan(spec: &ServerSpec, env: &BTreeMap<String, String>, fast_npx: bool) -> Launch {
-    if fast_npx {
-        if let Some(l) = npx_fast_path(spec, env) {
+pub fn plan(spec: &ServerSpec, env: &BTreeMap<String, String>, fast: FastPath<'_>) -> Launch {
+    if fast.enabled {
+        if let Some(l) = npx_fast_path(spec, env, fast.state_dir) {
             return l;
         }
     }
-    as_configured(spec)
+    as_configured(spec, env)
+}
+
+/// How long a successful real `npx` run vouches for the cached copy of a
+/// spec that names a tag (`@latest`) or no version.
+pub const FRESH_FOR_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Whether the spec pins an exact version, which npx never updates.
+pub fn is_exact(pkg_spec: &str) -> bool {
+    let after_name = pkg_spec.strip_prefix('@').map_or(pkg_spec, |s| s).split_once('@').map(|(_, v)| v);
+    after_name.is_some_and(|v| {
+        let core = v.split(['-', '+']).next().unwrap_or(v);
+        let parts: Vec<&str> = core.split('.').collect();
+        parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    })
+}
+
+fn fresh_file(dir: &Path) -> PathBuf {
+    dir.join("npx-fresh.json")
+}
+
+static FRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Remembers that real npx just started `spec` successfully (so its cache is current).
+pub fn note_npx_ran(state_dir: Option<&Path>, spec: &ServerSpec) {
+    let (Some(dir), Some((pkg, _))) = (state_dir, parse_npx(spec)) else { return };
+    if is_exact(&pkg) {
+        return;
+    }
+    let _guard = FRESH_LOCK.lock().unwrap();
+    let path = fresh_file(dir);
+    let mut map: serde_json::Map<String, Value> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    map.insert(pkg, Value::from(crate::util::now_ms()));
+    let _ = crate::util::write_private(&path, &serde_json::to_vec_pretty(&map).unwrap_or_default());
+}
+
+fn recently_refreshed(state_dir: Option<&Path>, pkg: &str) -> bool {
+    let Some(dir) = state_dir else { return false };
+    let map: serde_json::Map<String, Value> = std::fs::read(fresh_file(dir)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    map.get(pkg).and_then(Value::as_u64).is_some_and(|t| crate::util::now_ms().saturating_sub(t) < FRESH_FOR_MS)
 }
 
 fn base(token: &str) -> String {
@@ -93,11 +153,9 @@ pub fn npm_cache_dir(env: &BTreeMap<String, String>) -> Option<PathBuf> {
         }
     }
     if cfg!(windows) {
-        let local = env.get("LOCALAPPDATA").cloned().or_else(|| std::env::var("LOCALAPPDATA").ok())?;
-        Some(Path::new(&local).join("npm-cache"))
+        Some(Path::new(&env_var(env, "LOCALAPPDATA")?).join("npm-cache"))
     } else {
-        let home = env.get("HOME").cloned().or_else(|| std::env::var("HOME").ok())?;
-        Some(Path::new(&home).join(".npm"))
+        Some(Path::new(&env_var(env, "HOME")?).join(".npm"))
     }
 }
 
@@ -106,6 +164,17 @@ pub fn npx_dir(cache: &Path, pkg_spec: &str) -> PathBuf {
     let digest = Sha512::digest(pkg_spec.as_bytes());
     let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
     cache.join("_npx").join(hex)
+}
+
+/// npm package names: `name` or `@scope/name`, no path tricks.
+fn valid_package_name(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('/').collect();
+    let ok = |p: &str| !p.is_empty() && p != "." && p != ".." && p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~'));
+    match parts.as_slice() {
+        [n] => ok(n),
+        [scope, n] => scope.starts_with('@') && ok(&scope[1..]) && ok(n),
+        _ => false,
+    }
 }
 
 fn package_name(spec: &str) -> String {
@@ -119,6 +188,9 @@ fn package_name(spec: &str) -> String {
 /// The entry script npx would run for `pkg_spec`, if it is cached.
 pub fn cached_entry(cache: &Path, pkg_spec: &str) -> Option<PathBuf> {
     let name = package_name(pkg_spec);
+    if !valid_package_name(&name) {
+        return None;
+    }
     let pkg_dir = npx_dir(cache, pkg_spec).join("node_modules").join(&name);
     let manifest: Value = serde_json::from_str(&std::fs::read_to_string(pkg_dir.join("package.json")).ok()?).ok()?;
     let rel = match manifest.get("bin")? {
@@ -133,15 +205,34 @@ pub fn cached_entry(cache: &Path, pkg_spec: &str) -> Option<PathBuf> {
         }
         _ => return None,
     };
-    let script = pkg_dir.join(rel);
-    script.is_file().then_some(script)
+    // The entry must live inside the package (no `../` escapes).
+    let script = pkg_dir.join(rel).canonicalize().ok()?;
+    let root = pkg_dir.canonicalize().ok()?;
+    (script.starts_with(&root) && script.is_file()).then(|| strip_verbatim(script))
 }
 
-fn npx_fast_path(spec: &ServerSpec, env: &BTreeMap<String, String>) -> Option<Launch> {
+/// `canonicalize` on Windows returns `\\?\C:\...`; node and cmd prefer `C:\...`.
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    let s = p.display().to_string();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
+        _ => p,
+    }
+}
+
+fn npx_fast_path(spec: &ServerSpec, env: &BTreeMap<String, String>, state_dir: Option<&Path>) -> Option<Launch> {
     let (pkg, rest) = parse_npx(spec)?;
+    // `npx -y pkg@latest` asks the registry for updates on every start. Only
+    // skip that when real npx did it recently; exact versions never change.
+    if !is_exact(&pkg) && !recently_refreshed(state_dir, &pkg) {
+        return None;
+    }
     let cache = npm_cache_dir(env)?;
     let script = cached_entry(&cache, &pkg)?;
-    let node = hangar_shim::resolve_command("node")?;
+    let node = resolve("node", env);
+    if !node.is_file() {
+        return None;
+    }
     let mut args = vec![script.display().to_string()];
     args.extend(rest);
     Some(Launch { program: node, args, fast: true })
@@ -177,6 +268,50 @@ mod tests {
     }
 
     #[test]
+    fn rejects_package_names_that_escape_the_cache() {
+        assert!(valid_package_name("@playwright/mcp"));
+        assert!(valid_package_name("chrome-devtools-mcp"));
+        assert!(!valid_package_name("@x/../../evil"));
+        assert!(!valid_package_name(".."));
+        assert!(!valid_package_name("a/b/c"));
+        assert!(!valid_package_name("@/x"));
+        assert!(!valid_package_name(r"x\y"));
+    }
+
+    #[test]
+    fn entries_outside_the_package_are_refused() {
+        let cache = std::env::temp_dir().join(format!("hangar-npx-escape-{}", std::process::id()));
+        let pkg_dir = npx_dir(&cache, "tool").join("node_modules").join("tool");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(cache.join("outside.js"), "").unwrap();
+        std::fs::write(pkg_dir.join("package.json"), r#"{"bin":"../../../../outside.js"}"#).unwrap();
+        assert_eq!(cached_entry(&cache, "tool"), None);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn only_exact_versions_skip_the_freshness_check() {
+        assert!(is_exact("@playwright/mcp@0.0.85"));
+        assert!(is_exact("tool@1.2.3-beta.1"));
+        assert!(!is_exact("@playwright/mcp@latest"));
+        assert!(!is_exact("tool"));
+        assert!(!is_exact("tool@^1.2.3"));
+        assert!(!is_exact("@scope/tool"));
+    }
+
+    #[test]
+    fn tagged_specs_use_the_fast_path_only_after_a_recent_npx_run() {
+        let dir = std::env::temp_dir().join(format!("hangar-fresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let spec = ServerSpec { command: "npx".into(), args: vec!["-y".into(), "tool@latest".into()], env: Default::default() };
+        assert!(!recently_refreshed(Some(&dir), "tool@latest"));
+        note_npx_ran(Some(&dir), &spec);
+        assert!(recently_refreshed(Some(&dir), "tool@latest"));
+        assert!(!recently_refreshed(None, "tool@latest"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn package_names_drop_versions() {
         assert_eq!(package_name("@playwright/mcp@latest"), "@playwright/mcp");
         assert_eq!(package_name("chrome-devtools-mcp@1.2.3"), "chrome-devtools-mcp");
@@ -190,7 +325,8 @@ mod tests {
         std::fs::create_dir_all(pkg_dir.join("dist")).unwrap();
         std::fs::write(pkg_dir.join("dist/cli.js"), "").unwrap();
         std::fs::write(pkg_dir.join("package.json"), r#"{"name":"@scope/tool","bin":{"tool":"dist/cli.js","other":"x.js"}}"#).unwrap();
-        assert_eq!(cached_entry(&cache, "@scope/tool@latest"), Some(pkg_dir.join("dist/cli.js")));
+        let expected = strip_verbatim(pkg_dir.join("dist/cli.js").canonicalize().unwrap());
+        assert_eq!(cached_entry(&cache, "@scope/tool@latest"), Some(expected));
         assert_eq!(cached_entry(&cache, "@scope/tool@1.0.0"), None, "different spec, different cache dir");
         let _ = std::fs::remove_dir_all(&cache);
     }

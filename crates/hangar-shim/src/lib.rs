@@ -12,8 +12,9 @@
 //! If the daemon cannot be reached, the shim runs the real server itself with
 //! inherited stdio, so wrapping a server never makes it stop working.
 
-use hangar_proto::{read_daemon_info, DaemonInfo, Hello, ServerSpec, Welcome, ENV_BIN, ENV_NO_AUTOSTART, ENV_SESSION, WIRE_VERSION};
-use std::collections::BTreeMap;
+use hangar_proto::{read_daemon_info, Challenge, DaemonInfo, Hello, Proof, ServerSpec, Welcome, ENV_BIN, ENV_NO_AUTOSTART, ENV_SESSION, WIRE_VERSION};
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -127,7 +128,7 @@ pub fn run() -> ExitCode {
 type Conn = (TcpStream, BufReader<TcpStream>, Welcome);
 
 /// Connects to the daemon, starting it once if nothing answers.
-fn connect(opts: &Opts, home: &Path, resume: Option<&serde_json::Value>) -> Result<Conn, String> {
+fn connect(opts: &Opts, home: &Path, resume: Option<&Value>) -> Result<Conn, String> {
     let deadline = Instant::now() + if resume.is_some() { RECONNECT_WAIT } else { CONNECT_WAIT };
     let mut started = false;
     loop {
@@ -155,8 +156,34 @@ fn connect(opts: &Opts, home: &Path, resume: Option<&serde_json::Value>) -> Resu
     }
 }
 
-fn handshake(stream: TcpStream, info: &DaemonInfo, opts: &Opts, resume: Option<&serde_json::Value>) -> Result<Conn, String> {
+fn write_json(w: &mut TcpStream, v: &impl serde::Serialize) -> Result<(), String> {
+    let mut line = serde_json::to_vec(v).map_err(|e| e.to_string())?;
+    line.push(b'\n');
+    w.write_all(&line).map_err(|e| format!("could not talk to the daemon: {e}"))
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(r: &mut BufReader<TcpStream>) -> Result<T, String> {
+    let mut line = String::new();
+    r.read_line(&mut line).map_err(|e| format!("no answer from the daemon: {e}"))?;
+    serde_json::from_str(line.trim()).map_err(|e| format!("bad answer from the daemon: {e}"))
+}
+
+/// Makes the daemon prove it knows the token before revealing anything to
+/// it (a stale `daemon.json` could point at someone else's port), then
+/// introduces the server this shim stands in for.
+fn handshake(stream: TcpStream, info: &DaemonInfo, opts: &Opts, resume: Option<&Value>) -> Result<Conn, String> {
     let _ = stream.set_nodelay(true);
+    stream.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+    let mut writer = stream.try_clone().map_err(|e| e.to_string())?;
+    let mut reader = BufReader::with_capacity(64 * 1024, stream.try_clone().map_err(|e| e.to_string())?);
+
+    let nonce = hangar_proto::nonce();
+    write_json(&mut writer, &Challenge { hangar: WIRE_VERSION, challenge: nonce.clone() })?;
+    let answer: Proof = read_json(&mut reader)?;
+    if !hangar_proto::constant_time_eq(&answer.proof, &hangar_proto::proof(&info.token, &nonce)) {
+        return Err("the process on the hangar port is not the hangar daemon".into());
+    }
+
     let hello = Hello {
         hangar: WIRE_VERSION,
         token: info.token.clone(),
@@ -169,39 +196,76 @@ fn handshake(stream: TcpStream, info: &DaemonInfo, opts: &Opts, resume: Option<&
         shim_pid: std::process::id(),
         resume: resume.cloned(),
     };
-    let mut line = serde_json::to_vec(&hello).map_err(|e| e.to_string())?;
-    line.push(b'\n');
-    let mut writer = stream.try_clone().map_err(|e| e.to_string())?;
-    writer.write_all(&line).map_err(|e| format!("handshake failed: {e}"))?;
-    stream.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
-    let mut reader = BufReader::with_capacity(64 * 1024, stream.try_clone().map_err(|e| e.to_string())?);
-    let mut answer = String::new();
-    reader.read_line(&mut answer).map_err(|e| format!("no answer from daemon: {e}"))?;
+    write_json(&mut writer, &hello)?;
+    let welcome: Welcome = read_json(&mut reader)?;
     stream.set_read_timeout(None).map_err(|e| e.to_string())?;
-    let welcome: Welcome = serde_json::from_str(answer.trim()).map_err(|e| format!("bad answer from daemon: {e}"))?;
     if !welcome.ok {
         return Err(welcome.error.unwrap_or_else(|| "daemon refused the connection".into()));
     }
     Ok((writer, reader, welcome))
 }
 
+/// The two fields of a JSON-RPC message the shim cares about.
+#[derive(serde::Deserialize)]
+struct Head {
+    #[serde(default)]
+    id: Option<Value>,
+    #[serde(default)]
+    method: Option<String>,
+}
+
+fn head(line: &[u8]) -> Option<Head> {
+    serde_json::from_slice(line).ok()
+}
+
+struct Pump {
+    /// The current daemon socket, tagged with a generation that bumps on reconnect.
+    writer: Mutex<(u64, Option<TcpStream>)>,
+    stdin_closed: AtomicBool,
+    /// The client's initialize request and whether it has been answered.
+    init: Mutex<Option<Value>>,
+    init_answered: AtomicBool,
+    /// Requests the client sent that have no answer yet: id key -> id.
+    inflight: Mutex<HashMap<String, Value>>,
+}
+
+fn write_stdout(line: &[u8]) -> bool {
+    let mut out = std::io::stdout().lock();
+    out.write_all(line).and_then(|_| out.flush()).is_ok()
+}
+
 /// Copies stdin to the daemon and the daemon to stdout until either side ends.
 fn pump(stream: TcpStream, reader: BufReader<TcpStream>, opts: &Opts, home: &Path) -> ExitCode {
-    let state = Arc::new(Pump { writer: Mutex::new((0, Some(stream))), stdin_closed: AtomicBool::new(false), init: Mutex::new(None) });
+    let state = Arc::new(Pump {
+        writer: Mutex::new((0, Some(stream))),
+        stdin_closed: AtomicBool::new(false),
+        init: Mutex::new(None),
+        init_answered: AtomicBool::new(false),
+        inflight: Mutex::new(HashMap::new()),
+    });
 
     let up = state.clone();
     std::thread::spawn(move || stdin_to_daemon(&up));
 
     let mut reader = reader;
-    let stdout = std::io::stdout();
     let mut buf = Vec::with_capacity(64 * 1024);
     loop {
         buf.clear();
-        let read = reader.read_until(b'\n', &mut buf);
-        match read {
+        match reader.read_until(b'\n', &mut buf) {
             Ok(n) if n > 0 => {
-                let mut out = stdout.lock();
-                if out.write_all(&buf).and_then(|_| out.flush()).is_err() {
+                if let Some(h) = head(&buf) {
+                    if h.method.is_none() {
+                        if let Some(id) = h.id {
+                            let key = id.to_string();
+                            state.inflight.lock().unwrap().remove(&key);
+                            let init_key = state.init.lock().unwrap().as_ref().and_then(|i| i.get("id")).map(Value::to_string);
+                            if init_key.as_deref() == Some(key.as_str()) {
+                                state.init_answered.store(true, Ordering::SeqCst);
+                            }
+                        }
+                    }
+                }
+                if !write_stdout(&buf) {
                     return ExitCode::SUCCESS; // the client went away
                 }
             }
@@ -209,61 +273,79 @@ fn pump(stream: TcpStream, reader: BufReader<TcpStream>, opts: &Opts, home: &Pat
                 if state.stdin_closed.load(Ordering::SeqCst) {
                     return ExitCode::SUCCESS;
                 }
-                // The daemon went away while the client is still running.
-                // Reconnect and replay the client's initialize request so the
-                // client never notices.
-                // Park writers until a new connection exists, so requests sent
-                // meanwhile wait instead of vanishing into the dead socket.
-                {
-                    let mut w = state.writer.lock().unwrap();
-                    *w = (w.0 + 1, None);
-                }
-                let init = state.init.lock().unwrap().clone();
-                let Some(init) = init else {
-                    eprintln!("hangar: lost the daemon before initialize; exiting");
-                    return ExitCode::from(1);
-                };
-                match connect(opts, home, Some(&init)) {
-                    Ok((stream, new_reader, welcome)) if !welcome.direct => {
-                        let mut w = state.writer.lock().unwrap();
-                        *w = (w.0 + 1, Some(stream));
-                        reader = new_reader;
-                        eprintln!("hangar: reconnected to the daemon");
-                    }
-                    Ok(_) | Err(_) => {
-                        eprintln!("hangar: lost the daemon and could not reconnect; exiting");
-                        return ExitCode::from(1);
-                    }
+                match reconnect(&state, opts, home) {
+                    Some(new_reader) => reader = new_reader,
+                    None => return ExitCode::from(1),
                 }
             }
         }
     }
 }
 
-struct Pump {
-    /// The current daemon socket, tagged with a generation that bumps on reconnect.
-    writer: Mutex<(u64, Option<TcpStream>)>,
-    stdin_closed: AtomicBool,
-    init: Mutex<Option<serde_json::Value>>,
+/// The daemon went away while the client is still running. Answer what it
+/// will never answer, then reconnect so the client barely notices.
+fn reconnect(state: &Pump, opts: &Opts, home: &Path) -> Option<BufReader<TcpStream>> {
+    // Park writers until a new connection exists, so requests sent meanwhile
+    // wait instead of vanishing into the dead socket.
+    {
+        let mut w = state.writer.lock().unwrap();
+        *w = (w.0 + 1, None);
+    }
+    let init = state.init.lock().unwrap().clone();
+    let answered = state.init_answered.load(Ordering::SeqCst);
+    let init_key = init.as_ref().and_then(|i| i.get("id")).map(Value::to_string);
+    let lost: Vec<Value> = state.inflight.lock().unwrap().drain().filter(|(k, _)| answered || Some(k) != init_key.as_ref()).map(|(_, id)| id).collect();
+    for id in lost {
+        let err = serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "the hangar daemon went away before answering; please retry"}});
+        let mut line = serde_json::to_vec(&err).unwrap_or_default();
+        line.push(b'\n');
+        write_stdout(&line);
+    }
+    let Some(init) = init else {
+        eprintln!("hangar: lost the daemon before initialize; exiting");
+        return None;
+    };
+    // Initialized: resume quietly. Not yet answered: ask again as new.
+    let conn = if answered { connect(opts, home, Some(&init)) } else { connect(opts, home, None) };
+    match conn {
+        Ok((mut stream, new_reader, welcome)) if !welcome.direct => {
+            if !answered {
+                state.inflight.lock().unwrap().insert(init_key.unwrap_or_default(), init["id"].clone());
+                if write_json(&mut stream, &init).is_err() {
+                    return None;
+                }
+            }
+            let mut w = state.writer.lock().unwrap();
+            *w = (w.0 + 1, Some(stream));
+            eprintln!("hangar: reconnected to the daemon");
+            Some(new_reader)
+        }
+        _ => {
+            eprintln!("hangar: lost the daemon and could not reconnect; exiting");
+            None
+        }
+    }
 }
 
 fn stdin_to_daemon(state: &Pump) {
     let stdin = std::io::stdin();
     let mut input = BufReader::with_capacity(64 * 1024, stdin.lock());
     let mut buf = Vec::with_capacity(64 * 1024);
-    let mut captured = false;
     loop {
         buf.clear();
         match input.read_until(b'\n', &mut buf) {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
-        if !captured {
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&buf) {
-                if v.get("method").and_then(|m| m.as_str()) == Some("initialize") && v.get("id").is_some() {
-                    *state.init.lock().unwrap() = Some(v);
-                    captured = true;
+        if let Some(h) = head(&buf) {
+            if let (Some(method), Some(id)) = (&h.method, &h.id) {
+                if method == "initialize" {
+                    let mut init = state.init.lock().unwrap();
+                    if init.is_none() {
+                        *init = serde_json::from_slice(&buf).ok();
+                    }
                 }
+                state.inflight.lock().unwrap().insert(id.to_string(), id.clone());
             }
         }
         if !buf.ends_with(b"\n") {
@@ -298,7 +380,7 @@ fn write_to_daemon(state: &Pump, line: &[u8]) {
             }
         }
         if Instant::now() >= deadline {
-            return; // dropped; the client will time out this request
+            return; // dropped; the reconnect path answers it with an error
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -385,7 +467,8 @@ fn run_direct(opts: &Opts) -> ExitCode {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     match cmd.status() {
-        Ok(status) => ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8),
+        // A crash (negative NTSTATUS, signal) must not look like success.
+        Ok(status) => ExitCode::from(status.code().filter(|c| (0..=255).contains(c)).unwrap_or(1) as u8),
         Err(e) => {
             eprintln!("hangar-shim: could not start {}: {e}", program.display());
             ExitCode::from(127)
@@ -393,9 +476,15 @@ fn run_direct(opts: &Opts) -> ExitCode {
     }
 }
 
-/// Finds a bare command on PATH the way a shell would, including `.cmd`
-/// wrappers such as `npx.cmd` on Windows.
+/// Finds a bare command on this process's PATH the way a shell would,
+/// including `.cmd` wrappers such as `npx.cmd` on Windows.
 pub fn resolve_command(command: &str) -> Option<PathBuf> {
+    resolve_command_in(command, std::env::var_os("PATH").as_deref(), std::env::var("PATHEXT").ok().as_deref())
+}
+
+/// Like [`resolve_command`], but searches the given PATH (for example the
+/// environment of the client that asked for the server).
+pub fn resolve_command_in(command: &str, path_var: Option<&std::ffi::OsStr>, pathext: Option<&str>) -> Option<PathBuf> {
     let path = Path::new(command);
     if path.components().count() > 1 || path.is_absolute() {
         return Some(path.to_path_buf());
@@ -404,13 +493,13 @@ pub fn resolve_command(command: &str) -> Option<PathBuf> {
         if path.extension().is_some() {
             vec![String::new()]
         } else {
-            std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into()).split(';').map(|e| e.to_ascii_lowercase()).collect()
+            pathext.unwrap_or(".COM;.EXE;.BAT;.CMD").split(';').filter(|e| !e.is_empty()).map(|e| e.to_ascii_lowercase()).collect()
         }
     } else {
         vec![String::new()]
     };
-    let dirs = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&dirs) {
+    let dirs = path_var?;
+    for dir in std::env::split_paths(dirs) {
         for ext in &exts {
             let candidate = dir.join(format!("{command}{ext}"));
             if candidate.is_file() {

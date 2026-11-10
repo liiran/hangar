@@ -112,6 +112,36 @@ pub fn is_alive(pid: u32) -> bool {
 
 pub use imp::Job;
 
+/// Windows creation flag: run without a console window.
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Starts a console program without flashing a window (Windows), in its own
+/// process group (Unix) so its whole tree can be signalled.
+pub fn hide_window(cmd: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(not(any(windows, unix)))]
+    let _ = cmd;
+}
+
+/// A kill-on-close job holding `child` and everything it starts.
+pub fn contain(child: &tokio::process::Child) -> Option<Job> {
+    let job = Job::new_kill_on_close().ok()?;
+    #[cfg(windows)]
+    let assigned = child.raw_handle().map(|h| job.assign_handle(h)).unwrap_or_else(|| Err(std::io::Error::other("no handle")));
+    #[cfg(not(windows))]
+    let assigned = child.id().map(|pid| job.assign_pid(pid)).unwrap_or_else(|| Err(std::io::Error::other("no pid")));
+    match assigned {
+        Ok(()) => Some(job),
+        Err(e) => {
+            tracing::warn!("could not contain a child process: {e}");
+            None
+        }
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::ProcInfo;
@@ -260,6 +290,16 @@ mod imp {
                 CloseHandle(h);
                 if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
             }
+        }
+
+        /// Assigns by handle, which (unlike a pid) cannot have been reused.
+        pub fn assign_handle(&self, process: std::os::windows::io::RawHandle) -> std::io::Result<()> {
+            unsafe {
+                if AssignProcessToJobObject(self.handle, process as HANDLE) == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
         }
 
         pub fn assign_self(&self) -> std::io::Result<()> {

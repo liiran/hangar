@@ -1,44 +1,45 @@
-//! One pooled MCP server process and everything needed to share it.
+//! One pooled stdio MCP server process and everything needed to share it.
 //!
-//! An [`Upstream`] is an actor: a single task owns the child process and all
-//! routing state, and the rest of the daemon talks to it through [`Cmd`]s.
+//! An upstream is an actor: one task owns the process and all routing state,
+//! and the rest of the daemon talks to it through [`Cmd`]s.
 //!
-//! Routing rules (shared servers):
-//! * Each session's request id is replaced with one that is unique on the
-//!   upstream and swapped back on the response.
+//! Routing rules for shared servers:
+//! * each session's request id is replaced with one unique on the upstream
+//!   and swapped back on the response;
 //! * `_meta.progressToken` and `notifications/cancelled` are remapped the
 //!   same way, so sessions never see each other's progress or cancel each
-//!   other's requests.
-//! * `resources/subscribe` is reference counted; updates go to subscribers.
+//!   other's requests;
+//! * `resources/subscribe` is reference counted (and rolled back if the
+//!   server refuses it); updates go only to subscribers;
 //! * `tools/list`, `prompts/list`, `resources/list` and
-//!   `resources/templates/list` are cached until the server says they changed.
-//! * The upstream is initialized once, without per-client capabilities
-//!   (roots, sampling, elicitation), so it never asks one session a question
-//!   meant for another.
+//!   `resources/templates/list` are cached until the server says they changed;
+//! * the server is initialized once, without per-client capabilities (roots,
+//!   sampling, elicitation), so it never asks one session a question meant
+//!   for another.
 //!
 //! A `session`-scoped upstream has exactly one session and passes everything
 //! through, including requests from the server to the client.
 
+use super::process::{self, Ring};
 use super::{PoolKey, PoolOptions};
 use crate::jsonrpc::{self, Kind};
+use crate::launch::{self, FastPath, Launch};
 use crate::policy::Share;
-use crate::procs::Job;
+use crate::util::{now_ms, redact_command};
 use hangar_proto::ServerSpec;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
 const MAX_QUEUED: usize = 10_000;
 const CRASH_WINDOW: Duration = Duration::from_secs(60);
 const MAX_CRASHES: usize = 5;
-const FAILED_RETRY: Duration = Duration::from_secs(30);
-const STDERR_LINES: usize = 200;
+pub(crate) const FAILED_RETRY: Duration = Duration::from_secs(30);
 
 /// A session attached to an upstream.
 pub struct ConnInfo {
@@ -52,14 +53,27 @@ pub struct ConnInfo {
     pub attached_at_ms: u64,
 }
 
+impl ConnInfo {
+    pub fn summary(&self) -> SessionRef {
+        SessionRef {
+            conn: self.conn,
+            name: self.name.clone(),
+            session: self.session.clone(),
+            client_pid: self.client_pid,
+            shim_pid: self.shim_pid,
+            attached_at_ms: self.attached_at_ms,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Rejected;
 
 pub enum Cmd {
     /// `init_id` is the id of the session's `initialize` request, or `None`
     /// when a shim reconnects and the session is already initialized.
-    /// `init_params` are the session's own initialize params (used by
-    /// multi-session HTTP servers, where every session initializes itself).
+    /// `init_params` are the session's own initialize params (multi-session
+    /// HTTP servers initialize every session separately).
     Attach { info: ConnInfo, init_id: Option<Value>, init_params: Value, reply: oneshot::Sender<Result<(), Rejected>> },
     Client { conn: u64, msg: Value },
     Detach { conn: u64 },
@@ -83,6 +97,7 @@ pub struct UpstreamStats {
     pub name: String,
     pub share: Share,
     pub scope: String,
+    /// The configured command, with likely secrets masked.
     pub command: String,
     pub pid: Option<u32>,
     pub state: String,
@@ -93,7 +108,7 @@ pub struct UpstreamStats {
     pub cache_hits: u64,
     pub last_error: Option<String>,
     pub stderr_tail: Vec<String>,
-    /// The command line actually running (differs from `command` on the npx fast path).
+    /// The command actually running (differs on the npx fast path), masked.
     pub launch: Option<String>,
     pub fast_path: bool,
 }
@@ -119,13 +134,22 @@ impl Upstream {
         !self.tx.is_closed()
     }
 
+    /// Stats, or `None` if the actor does not answer within a second.
     pub async fn stats(&self) -> Option<UpstreamStats> {
         let (reply, rx) = oneshot::channel();
         if !self.send(Cmd::Stats { reply }) {
             return None;
         }
-        rx.await.ok()
+        tokio::time::timeout(Duration::from_secs(1), rx).await.ok()?.ok()
     }
+}
+
+pub(crate) fn display(command: &str, args: &[String]) -> String {
+    redact_command(&std::iter::once(command.to_string()).chain(args.iter().cloned()).collect::<Vec<_>>())
+}
+
+pub(crate) fn launch_display(l: &Launch) -> String {
+    display(&l.program.display().to_string(), &l.args)
 }
 
 pub struct Spawn {
@@ -148,16 +172,7 @@ pub fn start(spawn: Spawn) -> Upstream {
     let handle = Upstream { id: spawn.id, key: spawn.key.clone(), tx };
     let init_params = upstream_init_params(&spawn.client_init, spawn.share);
     let actor = Actor {
-        id: spawn.id,
-        key: spawn.key,
-        name: spawn.name,
-        share: spawn.share,
-        spec: spawn.spec,
-        cwd: spawn.cwd,
-        env: spawn.env,
         init_params,
-        opts: spawn.opts,
-        on_exit: spawn.on_exit,
         rx,
         ev_tx,
         ev_rx,
@@ -188,6 +203,7 @@ pub fn start(spawn: Spawn) -> Upstream {
         done: false,
         launch: None,
         fast_failed: false,
+        s: spawn,
     };
     tokio::spawn(actor.run());
     handle
@@ -227,16 +243,18 @@ impl Phase {
     }
 }
 
-struct Proc {
-    child: Child,
-    stdin: ChildStdin,
-    job: Option<Job>,
-    pid: u32,
-}
-
 enum ProcEvent {
     Line(u64, String),
     Eof(u64),
+}
+
+#[derive(Clone)]
+enum PendingKind {
+    Normal,
+    /// A forwarded subscribe; roll it back if the server refuses.
+    Subscribe(String),
+    /// Our own request (re-subscribe, unsubscribe); the answer is dropped.
+    Internal,
 }
 
 struct Pending {
@@ -244,24 +262,19 @@ struct Pending {
     client_id: Value,
     progress_token: Option<String>,
     cache_key: Option<String>,
+    kind: PendingKind,
 }
 
 struct Actor {
-    id: u64,
-    key: PoolKey,
-    name: String,
-    share: Share,
-    spec: ServerSpec,
-    cwd: PathBuf,
-    env: BTreeMap<String, String>,
+    s: Spawn,
     init_params: Value,
-    opts: PoolOptions,
-    on_exit: Weak<dyn Fn(u64, &PoolKey) + Send + Sync>,
     rx: mpsc::UnboundedReceiver<Cmd>,
     ev_tx: mpsc::UnboundedSender<ProcEvent>,
     ev_rx: mpsc::UnboundedReceiver<ProcEvent>,
     phase: Phase,
-    proc_: Option<Proc>,
+    proc_: Option<process::Started>,
+    /// Bumped whenever a process starts or is killed, so late events from an
+    /// old process are recognized and ignored.
     generation: u64,
     init_result: Option<Value>,
     init_upstream_id: Option<u64>,
@@ -273,7 +286,6 @@ struct Actor {
     waiting_init: Vec<(u64, Value)>,
     /// Session messages that arrived while the server was not ready.
     queued: VecDeque<(u64, Value)>,
-    /// Requests in flight, by upstream id. `conn == 0` marks our own requests.
     pending: HashMap<u64, Pending>,
     by_client: HashMap<(u64, String), u64>,
     progress: HashMap<String, (u64, Value)>,
@@ -286,9 +298,9 @@ struct Actor {
     requests: u64,
     cache_hits: u64,
     last_error: Option<String>,
-    stderr: Arc<Mutex<VecDeque<String>>>,
+    stderr: Ring,
     done: bool,
-    launch: Option<crate::launch::Launch>,
+    launch: Option<Launch>,
     /// The npx fast path failed once; use the configured command from now on.
     fast_failed: bool,
 }
@@ -301,7 +313,7 @@ enum Wake {
 
 impl Actor {
     async fn run(mut self) {
-        tracing::debug!(upstream = self.id, name = %self.name, scope = %self.key.scope, "upstream created");
+        tracing::debug!(upstream = self.s.id, name = %self.s.name, scope = %self.s.key.scope, "upstream created");
         self.spawn_process().await;
         while !self.done {
             let deadline = self.next_deadline();
@@ -322,8 +334,8 @@ impl Actor {
                 Wake::Timer => self.on_timer().await,
             }
         }
-        if let Some(cb) = self.on_exit.upgrade() {
-            cb(self.id, &self.key);
+        if let Some(cb) = self.s.on_exit.upgrade() {
+            cb(self.s.id, &self.s.key);
         }
         // Anyone who raced us to attach gets a clean rejection and retries.
         self.rx.close();
@@ -341,7 +353,7 @@ impl Actor {
                 _ => {}
             }
         }
-        tracing::debug!(upstream = self.id, name = %self.name, "upstream finished");
+        tracing::debug!(upstream = self.s.id, name = %self.s.name, "upstream finished");
     }
 
     fn next_deadline(&self) -> Option<Instant> {
@@ -363,14 +375,14 @@ impl Actor {
     }
 
     fn idle_limit(&self) -> Duration {
-        if self.share.is_shared() { self.opts.idle_timeout } else { self.opts.session_grace }
+        if self.s.share.is_shared() { self.s.opts.idle_timeout } else { self.s.opts.session_grace }
     }
 
     async fn on_timer(&mut self) {
         let now = Instant::now();
         if let Phase::Starting = self.phase {
             if self.init_deadline.is_some_and(|t| now >= t) {
-                self.fail_start(format!("no answer to initialize after {}s", self.opts.init_timeout.as_secs())).await;
+                self.fail_start(format!("no answer to initialize after {}s", self.s.opts.init_timeout.as_secs())).await;
                 return;
             }
         }
@@ -381,7 +393,7 @@ impl Actor {
             }
         }
         if self.conns.is_empty() && self.idle_since.is_some_and(|s| now >= s + self.idle_limit()) {
-            tracing::info!(upstream = self.id, name = %self.name, "stopping idle server");
+            tracing::info!(upstream = self.s.id, name = %self.s.name, "stopping idle server");
             self.stop_process().await;
             self.done = true;
         }
@@ -399,18 +411,23 @@ impl Actor {
                 let conn = info.conn;
                 self.conns.insert(conn, info);
                 self.idle_since = None;
+                if let Phase::Failed { retry_at } = self.phase {
+                    if Instant::now() >= retry_at {
+                        self.spawn_process().await;
+                    }
+                }
                 if let Some(id) = init_id {
                     match (&self.phase, &self.init_result) {
                         (Phase::Ready, Some(result)) => {
                             let msg = jsonrpc::result(id, result.clone());
                             self.send_to(conn, &msg);
                         }
+                        // Still failing: say why right away instead of hanging.
+                        (Phase::Failed { .. }, _) => {
+                            let msg = jsonrpc::error(id, jsonrpc::SERVER_UNAVAILABLE, self.unavailable());
+                            self.send_to(conn, &msg);
+                        }
                         _ => self.waiting_init.push((conn, id)),
-                    }
-                }
-                if let Phase::Failed { retry_at } = self.phase {
-                    if Instant::now() >= retry_at {
-                        self.spawn_process().await;
                     }
                 }
                 let _ = reply.send(Ok(()));
@@ -420,8 +437,9 @@ impl Actor {
                     self.on_client(conn, msg).await;
                 }
             }
-            Cmd::Detach { conn } => self.detach(conn).await,
+            Cmd::Detach { conn } => self.detach(conn),
             Cmd::Stop { reply } => {
+                self.fail_pending(&format!("{} was stopped", self.s.name));
                 self.stop_process().await;
                 self.done = true;
                 if let Some(r) = reply {
@@ -434,26 +452,20 @@ impl Actor {
         }
     }
 
+    fn unavailable(&self) -> String {
+        let reason = self.last_error.clone().unwrap_or_else(|| "it failed to start".into());
+        format!("{} is unavailable: {reason}", self.s.name)
+    }
+
     fn snapshot(&self) -> UpstreamStats {
-        let mut sessions: Vec<SessionRef> = self
-            .conns
-            .values()
-            .map(|c| SessionRef {
-                conn: c.conn,
-                name: c.name.clone(),
-                session: c.session.clone(),
-                client_pid: c.client_pid,
-                shim_pid: c.shim_pid,
-                attached_at_ms: c.attached_at_ms,
-            })
-            .collect();
+        let mut sessions: Vec<SessionRef> = self.conns.values().map(ConnInfo::summary).collect();
         sessions.sort_by_key(|s| s.conn);
         UpstreamStats {
-            id: self.id,
-            name: self.name.clone(),
-            share: self.share,
-            scope: self.key.scope.clone(),
-            command: self.spec.display(),
+            id: self.s.id,
+            name: self.s.name.clone(),
+            share: self.s.share,
+            scope: self.s.key.scope.clone(),
+            command: display(&self.s.spec.command, &self.s.spec.args),
             pid: self.proc_.as_ref().map(|p| p.pid),
             state: self.phase.label().to_string(),
             sessions,
@@ -462,13 +474,13 @@ impl Actor {
             requests: self.requests,
             cache_hits: self.cache_hits,
             last_error: self.last_error.clone(),
-            stderr_tail: self.stderr.lock().unwrap().iter().rev().take(20).rev().cloned().collect(),
-            launch: self.launch.as_ref().map(|l| l.display()),
+            stderr_tail: process::tail(&self.stderr, 20),
+            launch: self.launch.as_ref().map(launch_display),
             fast_path: self.launch.as_ref().is_some_and(|l| l.fast),
         }
     }
 
-    async fn detach(&mut self, conn: u64) {
+    fn detach(&mut self, conn: u64) {
         if self.conns.remove(&conn).is_none() {
             return;
         }
@@ -477,16 +489,10 @@ impl Actor {
         // Tell the server to stop work nobody is waiting for.
         let abandoned: Vec<u64> = self.pending.iter().filter(|(_, p)| p.conn == conn).map(|(id, _)| *id).collect();
         for uid in abandoned {
-            if let Some(p) = self.pending.remove(&uid) {
-                if let Some(t) = p.progress_token {
-                    self.progress.remove(&t);
-                }
-                let cancel = jsonrpc::notification("notifications/cancelled", Some(json!({"requestId": uid, "reason": "client disconnected"})));
-                self.write_upstream(&cancel).await;
-            }
+            self.forget_request(uid);
+            let cancel = jsonrpc::notification("notifications/cancelled", Some(json!({"requestId": uid, "reason": "client disconnected"})));
+            self.write_upstream(&cancel);
         }
-        self.by_client.retain(|(c, _), _| *c != conn);
-        self.progress.retain(|_, (c, _)| *c != conn);
         // Drop the session's subscriptions; unsubscribe upstream when nobody is left.
         let mut emptied = Vec::new();
         for (uri, set) in self.subs.iter_mut() {
@@ -497,14 +503,27 @@ impl Actor {
         for uri in emptied {
             self.subs.remove(&uri);
             if matches!(self.phase, Phase::Ready) {
-                let uid = self.alloc_id();
-                self.pending.insert(uid, Pending { conn: 0, client_id: Value::Null, progress_token: None, cache_key: None });
-                self.write_upstream(&jsonrpc::request(json!(uid), "resources/unsubscribe", json!({"uri": uri}))).await;
+                self.internal_request("resources/unsubscribe", json!({"uri": uri}));
             }
         }
         if self.conns.is_empty() {
             self.idle_since = Some(Instant::now());
         }
+    }
+
+    fn forget_request(&mut self, uid: u64) -> Option<Pending> {
+        let p = self.pending.remove(&uid)?;
+        if let Some(t) = &p.progress_token {
+            self.progress.remove(t);
+        }
+        self.by_client.remove(&(p.conn, jsonrpc::id_key(&p.client_id)));
+        Some(p)
+    }
+
+    fn internal_request(&mut self, method: &str, params: Value) {
+        let uid = self.alloc_id();
+        self.pending.insert(uid, Pending { conn: 0, client_id: Value::Null, progress_token: None, cache_key: None, kind: PendingKind::Internal });
+        self.write_upstream(&jsonrpc::request(json!(uid), method, params));
     }
 
     // ------------------------------------------------------- client → server
@@ -514,8 +533,7 @@ impl Actor {
             Phase::Ready => {}
             Phase::Failed { retry_at } if Instant::now() < retry_at => {
                 if let Kind::Request { id, .. } = jsonrpc::classify(&msg) {
-                    let reason = self.last_error.clone().unwrap_or_else(|| "server failed".into());
-                    let err = jsonrpc::error(id.clone(), jsonrpc::SERVER_UNAVAILABLE, format!("{} is unavailable: {reason}", self.name));
+                    let err = jsonrpc::error(id.clone(), jsonrpc::SERVER_UNAVAILABLE, self.unavailable());
                     self.send_to(conn, &err);
                 }
                 return;
@@ -530,7 +548,7 @@ impl Actor {
                 return;
             }
         }
-        self.route_client(conn, msg).await;
+        self.route_client(conn, msg);
     }
 
     fn enqueue(&mut self, conn: u64, msg: Value) {
@@ -544,40 +562,39 @@ impl Actor {
         self.queued.push_back((conn, msg));
     }
 
-    async fn route_client(&mut self, conn: u64, mut msg: Value) {
-        let shared = self.share.is_shared();
-        let kind = match jsonrpc::classify(&msg) {
-            Kind::Request { id, method } => Some((Some(id.clone()), method.to_string())),
-            Kind::Notification { method } => Some((None, method.to_string())),
+    fn route_client(&mut self, conn: u64, mut msg: Value) {
+        let shared = self.s.share.is_shared();
+        let (id, method) = match jsonrpc::classify(&msg) {
+            Kind::Request { id, method } => (Some(id.clone()), method.to_string()),
+            Kind::Notification { method } => (None, method.to_string()),
             Kind::Response { .. } => {
                 // The client answering a request the server sent it.
                 if !shared {
-                    self.write_upstream(&msg).await;
+                    self.write_upstream(&msg);
                 }
                 return;
             }
-            Kind::Invalid => None,
+            Kind::Invalid => return,
         };
-        let Some((id, method)) = kind else { return };
         let Some(id) = id else {
-            // Notifications.
             match method.as_str() {
                 "notifications/initialized" => {}
                 "notifications/cancelled" => {
                     let target = msg.pointer("/params/requestId").cloned();
-                    if let Some(target) = target {
-                        if let Some(uid) = self.by_client.get(&(conn, jsonrpc::id_key(&target))).copied() {
-                            msg["params"]["requestId"] = json!(uid);
-                            self.write_upstream(&msg).await;
-                        }
+                    if let Some(uid) = target.and_then(|t| self.by_client.get(&(conn, jsonrpc::id_key(&t))).copied()) {
+                        msg["params"]["requestId"] = json!(uid);
+                        self.write_upstream(&msg);
+                        // Servers do not answer cancelled requests.
+                        self.forget_request(uid);
                     }
                 }
                 "notifications/roots/list_changed" | "notifications/progress" if shared => {}
-                _ => self.write_upstream(&msg).await,
+                _ => self.write_upstream(&msg),
             }
             return;
         };
         self.requests += 1;
+        let mut kind = PendingKind::Normal;
         if shared {
             match method.as_str() {
                 "initialize" => {
@@ -610,6 +627,9 @@ impl Actor {
                         self.send_to(conn, &jsonrpc::result(id, json!({})));
                         return;
                     }
+                    if subscribe {
+                        kind = PendingKind::Subscribe(uri);
+                    }
                 }
                 "tools/list" | "prompts/list" | "resources/list" | "resources/templates/list" => {
                     let key = cache_key(&method, msg.get("params"));
@@ -618,16 +638,16 @@ impl Actor {
                         self.send_to(conn, &jsonrpc::result(id, hit));
                         return;
                     }
-                    self.forward(conn, id, msg, Some(key)).await;
+                    self.forward(conn, id, msg, Some(key), kind);
                     return;
                 }
                 _ => {}
             }
         }
-        self.forward(conn, id, msg, None).await;
+        self.forward(conn, id, msg, None, kind);
     }
 
-    async fn forward(&mut self, conn: u64, client_id: Value, mut msg: Value, cache_key: Option<String>) {
+    fn forward(&mut self, conn: u64, client_id: Value, mut msg: Value, cache_key: Option<String>, kind: PendingKind) {
         let uid = self.alloc_id();
         let mut progress_token = None;
         if let Some(token) = msg.pointer("/params/_meta/progressToken").cloned() {
@@ -638,8 +658,8 @@ impl Actor {
         }
         msg["id"] = json!(uid);
         self.by_client.insert((conn, jsonrpc::id_key(&client_id)), uid);
-        self.pending.insert(uid, Pending { conn, client_id, progress_token, cache_key });
-        self.write_upstream(&msg).await;
+        self.pending.insert(uid, Pending { conn, client_id, progress_token, cache_key, kind });
+        self.write_upstream(&msg);
     }
 
     // ------------------------------------------------------- server → client
@@ -650,7 +670,7 @@ impl Actor {
             return;
         }
         let Ok(mut msg) = serde_json::from_str::<Value>(line) else {
-            self.push_stderr(format!("[stdout, not JSON] {line}"));
+            process::push(&self.stderr, format!("[stdout, not JSON] {line}"));
             return;
         };
         match jsonrpc::classify(&msg) {
@@ -660,14 +680,20 @@ impl Actor {
                     self.on_init_response(msg).await;
                     return;
                 }
-                let Some(p) = self.pending.remove(&uid) else { return };
-                if let Some(t) = &p.progress_token {
-                    self.progress.remove(t);
+                let Some(p) = self.forget_request(uid) else { return };
+                let failed = msg.get("error").is_some();
+                match &p.kind {
+                    PendingKind::Internal => return,
+                    PendingKind::Subscribe(uri) if failed => {
+                        if let Some(set) = self.subs.get_mut(uri) {
+                            set.remove(&p.conn);
+                            if set.is_empty() {
+                                self.subs.remove(uri);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                if p.conn == 0 {
-                    return; // one of our own requests
-                }
-                self.by_client.remove(&(p.conn, jsonrpc::id_key(&p.client_id)));
                 if let (Some(key), Some(result)) = (&p.cache_key, msg.get("result")) {
                     self.cache.insert(key.clone(), result.clone());
                 }
@@ -677,41 +703,38 @@ impl Actor {
             Kind::Request { id, method } => {
                 let id = id.clone();
                 if method == "ping" {
-                    self.write_upstream(&jsonrpc::result(id, json!({}))).await;
-                } else if self.share.is_shared() {
+                    self.write_upstream(&jsonrpc::result(id, json!({})));
+                } else if self.s.share.is_shared() {
                     let err = jsonrpc::error(id, jsonrpc::METHOD_NOT_FOUND, "this server is shared by several sessions; per-client requests are not available");
-                    self.write_upstream(&err).await;
+                    self.write_upstream(&err);
                 } else if let Some(conn) = self.conns.keys().next().copied() {
                     self.send_to(conn, &msg);
                 } else {
                     let err = jsonrpc::error(id, jsonrpc::SERVER_UNAVAILABLE, "no client attached");
-                    self.write_upstream(&err).await;
+                    self.write_upstream(&err);
                 }
             }
             Kind::Notification { method } => {
                 let method = method.to_string();
+                let shared = self.s.share.is_shared();
                 match method.as_str() {
                     "notifications/progress" => {
                         let token = msg.pointer("/params/progressToken").and_then(Value::as_str).map(String::from);
                         if let Some((conn, original)) = token.and_then(|t| self.progress.get(&t).cloned()) {
                             msg["params"]["progressToken"] = original;
                             self.send_to(conn, &msg);
-                        } else if !self.share.is_shared() {
+                        } else if !shared {
                             self.broadcast(&msg);
                         }
                     }
-                    "notifications/resources/updated" => {
-                        if self.share.is_shared() {
-                            let uri = msg.pointer("/params/uri").and_then(Value::as_str).unwrap_or_default();
-                            let targets: Vec<u64> = self.subs.get(uri).map(|s| s.iter().copied().collect()).unwrap_or_default();
-                            for conn in targets {
-                                self.send_to(conn, &msg);
-                            }
-                        } else {
-                            self.broadcast(&msg);
+                    "notifications/resources/updated" if shared => {
+                        let uri = msg.pointer("/params/uri").and_then(Value::as_str).unwrap_or_default();
+                        let targets: Vec<u64> = self.subs.get(uri).map(|s| s.iter().copied().collect()).unwrap_or_default();
+                        for conn in targets {
+                            self.send_to(conn, &msg);
                         }
                     }
-                    "notifications/cancelled" if self.share.is_shared() => {}
+                    "notifications/cancelled" if shared => {}
                     other => {
                         self.invalidate_for(other);
                         self.broadcast(&msg);
@@ -740,12 +763,15 @@ impl Actor {
             self.fail_start(format!("initialize failed: {err}")).await;
             return;
         };
-        self.write_upstream(&jsonrpc::notification("notifications/initialized", None)).await;
+        self.write_upstream(&jsonrpc::notification("notifications/initialized", None));
+        if self.launch.as_ref().is_some_and(|l| !l.fast) {
+            launch::note_npx_ran(self.s.opts.state_dir.as_deref(), &self.s.spec);
+        }
         self.init_result = Some(result.clone());
         self.phase = Phase::Ready;
         let restarted = self.was_ready;
         self.was_ready = true;
-        tracing::info!(upstream = self.id, name = %self.name, restarted, "server ready");
+        tracing::info!(upstream = self.s.id, name = %self.s.name, restarted, "server ready");
         for (conn, id) in std::mem::take(&mut self.waiting_init) {
             self.send_to(conn, &jsonrpc::result(id, result.clone()));
         }
@@ -758,14 +784,12 @@ impl Actor {
                 }
             }
             for uri in self.subs.keys().cloned().collect::<Vec<_>>() {
-                let uid = self.alloc_id();
-                self.pending.insert(uid, Pending { conn: 0, client_id: Value::Null, progress_token: None, cache_key: None });
-                self.write_upstream(&jsonrpc::request(json!(uid), "resources/subscribe", json!({"uri": uri}))).await;
+                self.internal_request("resources/subscribe", json!({"uri": uri}));
             }
         }
         while let Some((conn, msg)) = self.queued.pop_front() {
             if self.conns.contains_key(&conn) {
-                self.route_client(conn, msg).await;
+                self.route_client(conn, msg);
             }
         }
     }
@@ -775,44 +799,20 @@ impl Actor {
     async fn spawn_process(&mut self) {
         self.generation += 1;
         let generation = self.generation;
-        let launch = if self.opts.fast_npx && !self.fast_failed {
-            crate::launch::plan(&self.spec, &self.env, true)
-        } else {
-            crate::launch::as_configured(&self.spec)
-        };
-        let program = launch.program.clone();
-        let mut cmd = Command::new(&program);
-        cmd.args(&launch.args);
+        let fast = FastPath { enabled: self.s.opts.fast_npx && !self.fast_failed, state_dir: self.s.opts.state_dir.as_deref() };
+        let launch = launch::plan(&self.s.spec, &self.s.env, fast);
+        let opts = process::Options { launch: &launch, extra_args: &[], cwd: &self.s.cwd, env: &self.s.env, declared: &self.s.spec.env, stdin: true, stdout: true };
+        let started = process::start(opts, &self.stderr);
         self.launch = Some(launch);
-        if self.cwd.is_dir() {
-            cmd.current_dir(&self.cwd);
-        }
-        if !self.env.is_empty() {
-            cmd.env_clear().envs(&self.env);
-        }
-        cmd.envs(&self.spec.env);
-        cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
-        #[cfg(windows)]
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        #[cfg(unix)]
-        cmd.process_group(0);
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
+        let mut started = match started {
+            Ok(s) => s,
             Err(e) => {
-                self.fail_start(format!("could not start {}: {e}", program.display())).await;
+                let program = self.launch.as_ref().map(|l| l.program.display().to_string()).unwrap_or_default();
+                self.fail_start(format!("could not start {program}: {e}")).await;
                 return;
             }
         };
-        let pid = child.id().unwrap_or(0);
-        let job = Job::new_kill_on_close().ok();
-        if let Some(j) = &job {
-            if let Err(e) = j.assign_pid(pid) {
-                tracing::warn!(pid, "could not contain server in a job: {e}");
-            }
-        }
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
-        let stderr = child.stderr.take().expect("piped stderr");
+        let stdout = started.stdout.take().expect("piped stdout");
         let tx = self.ev_tx.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::with_capacity(64 * 1024, stdout);
@@ -831,42 +831,30 @@ impl Actor {
             }
             let _ = tx.send(ProcEvent::Eof(generation));
         });
-        let ring = self.stderr.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let mut r = ring.lock().unwrap();
-                if r.len() >= STDERR_LINES {
-                    r.pop_front();
-                }
-                r.push_back(line);
-            }
-        });
-        self.proc_ = Some(Proc { child, stdin, job, pid });
+        let pid = started.pid;
+        self.proc_ = Some(started);
         self.started_at_ms = Some(now_ms());
         let uid = self.alloc_id();
         self.init_upstream_id = Some(uid);
-        self.init_deadline = Some(Instant::now() + self.opts.init_timeout);
+        self.init_deadline = Some(Instant::now() + self.s.opts.init_timeout);
         self.phase = Phase::Starting;
-        let init = jsonrpc::request(json!(uid), "initialize", self.init_params.clone());
-        self.write_upstream(&init).await;
-        tracing::info!(upstream = self.id, name = %self.name, pid, "started server");
+        self.write_upstream(&jsonrpc::request(json!(uid), "initialize", self.init_params.clone()));
+        tracing::info!(upstream = self.s.id, name = %self.s.name, pid, "started server");
     }
 
     async fn fail_start(&mut self, reason: String) {
+        self.kill_process().await;
         if self.launch.as_ref().is_some_and(|l| l.fast) && !self.fast_failed {
             // The shortcut did not work for this server; never try it again
             // and start it exactly as configured, keeping waiting sessions.
-            tracing::warn!(upstream = self.id, name = %self.name, "fast start failed ({reason}); using the configured command");
+            tracing::warn!(upstream = self.s.id, name = %self.s.name, "fast start failed ({reason}); using the configured command");
             self.fast_failed = true;
-            self.kill_process().await;
-            Box::pin(self.spawn_process()).await; // recursion is bounded: fast_failed is now set
+            Box::pin(self.spawn_process()).await; // bounded: fast_failed is now set
             return;
         }
-        tracing::warn!(upstream = self.id, name = %self.name, "{reason}");
-        self.last_error = Some(reason.clone());
-        self.kill_process().await;
-        let msg = format!("{} could not start: {reason}", self.name);
+        tracing::warn!(upstream = self.s.id, name = %self.s.name, "{reason}");
+        self.last_error = Some(last_line_of_stderr(&self.stderr).map_or(reason.clone(), |l| format!("{reason} ({l})")));
+        let msg = self.unavailable();
         for (conn, id) in std::mem::take(&mut self.waiting_init) {
             self.send_to(conn, &jsonrpc::error(id, jsonrpc::SERVER_UNAVAILABLE, msg.clone()));
         }
@@ -874,8 +862,10 @@ impl Actor {
         self.phase = Phase::Failed { retry_at: Instant::now() + FAILED_RETRY };
         self.init_upstream_id = None;
         self.init_deadline = None;
+        // Keep the failure (and its reason) around for sessions that arrive
+        // soon, and clean up after the idle limit if none do.
         if self.conns.is_empty() {
-            self.done = true;
+            self.idle_since = Some(Instant::now());
         }
     }
 
@@ -888,6 +878,18 @@ impl Actor {
         }
     }
 
+    /// Answers every request in flight with an error (the process is gone).
+    fn fail_pending(&mut self, message: &str) {
+        let pending: Vec<Pending> = self.pending.drain().map(|(_, p)| p).collect();
+        for p in pending {
+            if p.conn != 0 {
+                self.send_to(p.conn, &jsonrpc::error(p.client_id, jsonrpc::SERVER_UNAVAILABLE, message.to_string()));
+            }
+        }
+        self.by_client.clear();
+        self.progress.clear();
+    }
+
     async fn on_exit(&mut self) {
         let exit = self.kill_process().await;
         if matches!(self.phase, Phase::Stopping) {
@@ -897,22 +899,14 @@ impl Actor {
             Some(code) => format!("server exited with code {code}"),
             None => "server exited".into(),
         };
-        tracing::warn!(upstream = self.id, name = %self.name, "{reason}");
-        self.last_error = Some(reason.clone());
-        let pending: Vec<Pending> = self.pending.drain().map(|(_, p)| p).collect();
-        for p in pending {
-            if p.conn != 0 {
-                let err = jsonrpc::error(p.client_id, jsonrpc::SERVER_UNAVAILABLE, format!("{} stopped unexpectedly ({reason}); hangar is restarting it", self.name));
-                self.send_to(p.conn, &err);
-            }
-        }
-        self.by_client.clear();
-        self.progress.clear();
-        self.cache.clear();
         if matches!(self.phase, Phase::Starting) {
             self.fail_start(reason).await;
             return;
         }
+        tracing::warn!(upstream = self.s.id, name = %self.s.name, "{reason}");
+        self.last_error = Some(reason.clone());
+        self.fail_pending(&format!("{} stopped unexpectedly ({reason}); hangar is restarting it", self.s.name));
+        self.cache.clear();
         if self.conns.is_empty() {
             self.done = true;
             return;
@@ -924,8 +918,8 @@ impl Actor {
         }
         self.restarts += 1;
         if self.crashes.len() >= MAX_CRASHES {
-            let msg = format!("{} crashed {} times in a minute", self.name, self.crashes.len());
-            self.last_error = Some(msg.clone());
+            self.last_error = Some(format!("crashed {} times in a minute", self.crashes.len()));
+            let msg = self.unavailable();
             self.fail_queued(&msg);
             self.phase = Phase::Failed { retry_at: now + FAILED_RETRY };
             return;
@@ -937,43 +931,27 @@ impl Actor {
     /// Closes stdin, gives the server a moment to exit, then kills its tree.
     async fn stop_process(&mut self) {
         self.phase = Phase::Stopping;
-        if let Some(mut p) = self.proc_.take() {
-            let _ = p.stdin.shutdown().await;
-            drop(p.stdin);
-            if tokio::time::timeout(Duration::from_secs(2), p.child.wait()).await.is_err() {
-                if let Some(job) = &p.job {
-                    job.terminate();
-                }
-                let _ = p.child.start_kill();
-                let _ = p.child.wait().await;
-            }
-            if let Some(job) = p.job.take() {
-                job.terminate();
-            }
+        self.generation += 1;
+        if let Some(p) = self.proc_.take() {
+            process::stop(p, Duration::from_secs(2)).await;
         }
     }
 
     /// Makes sure the current process (if any) is gone. Returns its exit code.
     async fn kill_process(&mut self) -> Option<i32> {
+        self.generation += 1; // anything the old process still says is stale
         let mut p = self.proc_.take()?;
         let code = match tokio::time::timeout(Duration::from_millis(500), p.child.wait()).await {
             Ok(Ok(status)) => status.code(),
             _ => None,
         };
-        if let Some(job) = p.job.take() {
-            job.terminate();
-        }
-        let _ = p.child.start_kill();
-        let _ = p.child.wait().await;
+        process::stop(p, Duration::ZERO).await;
         code
     }
 
-    async fn write_upstream(&mut self, msg: &Value) {
-        let Some(p) = self.proc_.as_mut() else { return };
-        let line = jsonrpc::to_line(msg);
-        if p.stdin.write_all(line.as_bytes()).await.is_err() || p.stdin.flush().await.is_err() {
-            // The reader will report EOF; restart logic lives there.
-            tracing::debug!(upstream = self.id, "write to server failed");
+    fn write_upstream(&mut self, msg: &Value) {
+        if let Some(stdin) = self.proc_.as_ref().and_then(|p| p.stdin.as_ref()) {
+            let _ = stdin.send(jsonrpc::to_line(msg));
         }
     }
 
@@ -995,14 +973,10 @@ impl Actor {
         self.next_id += 1;
         id
     }
+}
 
-    fn push_stderr(&self, line: String) {
-        let mut r = self.stderr.lock().unwrap();
-        if r.len() >= STDERR_LINES {
-            r.pop_front();
-        }
-        r.push_back(line);
-    }
+fn last_line_of_stderr(ring: &Ring) -> Option<String> {
+    process::tail(ring, 1).pop().filter(|l| !l.trim().is_empty()).map(|l| l.chars().take(200).collect())
 }
 
 fn cache_key(method: &str, params: Option<&Value>) -> String {
@@ -1018,10 +992,6 @@ async fn sleep_until(deadline: Option<Instant>) {
         Some(t) => tokio::time::sleep_until(t.into()).await,
         None => std::future::pending().await,
     }
-}
-
-pub fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -1042,5 +1012,10 @@ mod tests {
         assert_eq!(upstream_init_params(&client, Share::Global)["capabilities"], json!({}));
         assert_eq!(upstream_init_params(&client, Share::Session)["capabilities"]["roots"], json!({}));
         assert_eq!(upstream_init_params(&client, Share::Project)["clientInfo"]["name"], "x");
+    }
+
+    #[test]
+    fn displays_mask_secrets() {
+        assert_eq!(display("npx", &["-y".into(), "srv".into(), "--api-key".into(), "sk-1".into()]), "npx -y srv --api-key ***");
     }
 }

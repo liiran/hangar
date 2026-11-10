@@ -149,7 +149,7 @@ pub fn edit_file(path: &Path, home: &Path, dry_run: bool, edit: impl FnOnce(&mut
     }
     let backups = home.join("backups");
     std::fs::create_dir_all(&backups)?;
-    let stamp = crate::pool::upstream::now_ms();
+    let stamp = crate::util::now_ms();
     std::fs::write(backups.join(format!("claude.json.{stamp}")), &text)?;
     let tmp = path.with_extension("json.hangar-tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(&doc)?)?;

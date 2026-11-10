@@ -28,7 +28,7 @@ pub fn temp_home(tag: &str) -> PathBuf {
 pub fn config(shares: &[(&str, Share)]) -> Config {
     let mut c = Config::default();
     for (name, share) in shares {
-        c.servers.insert(name.to_string(), ServerOverride { share: Some(*share) });
+        c.servers.insert(name.to_string(), ServerOverride { share: Some(*share), http_args: None });
     }
     c
 }

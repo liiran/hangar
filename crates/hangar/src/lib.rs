@@ -20,5 +20,6 @@ pub mod policy;
 pub mod pool;
 pub mod procs;
 pub mod sessions;
+pub mod util;
 
 pub use hangar_proto as proto;

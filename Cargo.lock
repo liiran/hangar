@@ -452,8 +452,10 @@ dependencies = [
 name = "hangar-proto"
 version = "0.1.0"
 dependencies = [
+ "getrandom",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -461,6 +463,7 @@ name = "hangar-shim"
 version = "0.1.0"
 dependencies = [
  "hangar-proto",
+ "serde",
  "serde_json",
  "windows-sys 0.59.0",
 ]

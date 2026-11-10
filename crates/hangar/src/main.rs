@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use hangar::bench::{self, fmt_bytes, Agent, Mode};
 use hangar::config::Config;
@@ -230,7 +230,7 @@ async fn status(home: &std::path::Path, as_json: bool) -> Result<()> {
         return Ok(());
     }
     let d = &v["daemon"];
-    let up = hangar::pool::upstream::now_ms().saturating_sub(d["started_at_ms"].as_u64().unwrap_or(0)) / 1000;
+    let up = hangar::util::now_ms().saturating_sub(d["started_at_ms"].as_u64().unwrap_or(0)) / 1000;
     println!(
         "hangar daemon {} (pid {}), up {}, {}",
         d["version"].as_str().unwrap_or("?"),
@@ -314,7 +314,10 @@ async fn up(home: &std::path::Path, no_open: bool) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     let port = info.ui_port.unwrap_or(daemon::DEFAULT_UI_PORT);
-    let url = format!("http://127.0.0.1:{port}/auth?t={}", info.token);
+    // A one-time code, not the token: the URL may end up in process lists.
+    let paired = daemon::send_control(home, "pair", json!({})).await?;
+    let code = paired["code"].as_str().context("the daemon did not issue a pairing code")?;
+    let url = format!("http://127.0.0.1:{port}/#pair={code}");
     if no_open {
         println!("{url}");
         return Ok(());

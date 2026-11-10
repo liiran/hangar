@@ -1,25 +1,29 @@
 //! Agent sessions: start, watch, answer and pause many Claude Code sessions.
 //!
-//! Each session runs `claude` headless (stream-json in and out). Its events
-//! are kept in `<home>/sessions/<id>/events.jsonl` and pushed to the UI.
-//! The [`Budget`] decides when a session may start; sessions that cannot
-//! start yet wait in a queue, and idle sessions can be hibernated (process
-//! stopped, resumed with `--resume` on the next message) to make room.
+//! Each session runs `claude` headless (see [`claude`]). Its events are kept
+//! on disk ([`store`]) and pushed to the UI. The [`Budget`] decides when a
+//! session may start; sessions that cannot start yet wait in a queue, and
+//! idle sessions can be paused (process stopped, resumed with `--resume` on
+//! the next message) to make room. A message the user sends always reaches
+//! Claude eventually: it waits in the session's outbox (saved to disk) until
+//! a running process has confirmed it started.
 
 pub mod claude;
+mod store;
+pub mod trust;
 
 use crate::budget::{Budget, Machine};
 use crate::config::Config;
-use crate::pool::upstream::now_ms;
 use crate::procs;
+use crate::util::now_ms;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use store::Store;
 use tokio::sync::{broadcast, mpsc};
 
 /// Longest text kept from one tool result; the full output stays in Claude's
@@ -76,6 +80,9 @@ pub struct SessionMeta {
     /// Peak memory of the session's process tree.
     #[serde(default)]
     pub peak_bytes: u64,
+    /// Messages Claude has not received yet (queued, paused, restarting).
+    #[serde(default)]
+    pub outbox: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +98,8 @@ pub struct Event {
 pub enum EventBody {
     /// A message the user sent.
     User { text: String },
-    /// A stream-json message from Claude Code (assistant, user/tool results, result, system).
+    /// A stream-json message from Claude Code (assistant, user/tool results,
+    /// result, system). Results carry `turn_cost_usd`, the cost of that turn.
     Claude { msg: Value },
     /// Claude asks for permission to use a tool.
     Permission {
@@ -103,6 +111,7 @@ pub enum EventBody {
         #[serde(default)]
         description: Option<String>,
     },
+    /// `allow`, `allow_always` (rules remembered for this session), `deny` or `cancelled`.
     Decision { request_id: String, behavior: String },
     Status { status: Status, #[serde(default)] detail: Option<String> },
     Error { message: String },
@@ -114,6 +123,8 @@ pub struct PendingPermission {
     pub tool_name: String,
     pub input: Value,
     pub suggestions: Option<Value>,
+    /// Whether "always allow" has session rules to remember.
+    pub can_remember: bool,
 }
 
 /// What the UI sees for one session.
@@ -142,33 +153,72 @@ pub struct NewSession {
     pub title: Option<String>,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    /// The user confirmed they trust the folder.
+    pub trust: bool,
 }
 
+/// `create` refused because the folder is not trusted yet.
+#[derive(Debug)]
+pub struct NeedsTrust(pub trust::TrustInfo);
+
+impl std::fmt::Display for NeedsTrust {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("this folder is not trusted yet")
+    }
+}
+
+impl std::error::Error for NeedsTrust {}
+
 pub const PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "bypassPermissions"];
+
+/// The running Claude process of a session.
+struct Run {
+    driver: claude::Driver,
+    /// Claude reported `system/init`: it is up and reading messages.
+    initialized: bool,
+    /// Messages written before `initialized`; re-sent if the process dies first.
+    unconfirmed: Vec<String>,
+    /// Last cumulative `total_cost_usd` reported by this process.
+    cost_seen: f64,
+    completed_turns: u64,
+    resumed: bool,
+}
 
 struct Session {
     meta: SessionMeta,
     events: Vec<Event>,
     next_seq: u64,
-    driver: Option<claude::Driver>,
+    run: Option<Run>,
     pending: BTreeMap<String, PendingPermission>,
-    /// Messages waiting for the process (queued or hibernated sessions).
-    outbox: Vec<String>,
     idle_since: Option<Instant>,
     memory: Option<u64>,
     mcp: Vec<Value>,
-    /// Set when we stop the process on purpose.
+    /// Set when we stop the process on purpose: the status to land in.
     stopping: Option<Status>,
+}
+
+impl Session {
+    fn new(meta: SessionMeta, next_seq: u64) -> Session {
+        Session { meta, events: Vec::new(), next_seq, run: None, pending: BTreeMap::new(), idle_since: None, memory: None, mcp: Vec::new(), stopping: None }
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.run.as_ref().map(|r| r.driver.pid)
+    }
 }
 
 pub struct Manager {
     home: PathBuf,
+    store: Store,
     claude_bin: Mutex<Option<PathBuf>>,
+    claude_json: Mutex<PathBuf>,
     inner: Mutex<Inner>,
     tx: broadcast::Sender<UiEvent>,
     driver_tx: mpsc::UnboundedSender<claude::DriverEvent>,
     hibernate_after: Option<Duration>,
     reclaim_after: Duration,
+    /// Set by `shutdown`: start nothing new.
+    closing: std::sync::atomic::AtomicBool,
 }
 
 struct Inner {
@@ -181,15 +231,18 @@ impl Manager {
     pub fn start(home: &Path, config: &Config) -> Arc<Manager> {
         let (tx, _) = broadcast::channel(4096);
         let (driver_tx, driver_rx) = mpsc::unbounded_channel();
-        let hibernate_after = (config.budget.hibernate_after_mins > 0).then(|| Duration::from_secs(config.budget.hibernate_after_mins * 60));
+        let b = &config.budget;
         let manager = Arc::new(Manager {
             home: home.to_path_buf(),
+            store: Store::new(home),
             claude_bin: Mutex::new(None),
-            inner: Mutex::new(Inner { sessions: HashMap::new(), queue: Vec::new(), budget: Budget::new(&config.budget) }),
+            claude_json: Mutex::new(crate::claude_config::claude_json_path()),
+            inner: Mutex::new(Inner { sessions: HashMap::new(), queue: Vec::new(), budget: Budget::new(b) }),
             tx,
             driver_tx,
-            hibernate_after,
-            reclaim_after: Duration::from_secs(config.budget.reclaim_idle_after_secs),
+            hibernate_after: (b.hibernate_after_mins > 0).then(|| Duration::from_secs(b.hibernate_after_mins * 60)),
+            reclaim_after: Duration::from_secs(b.reclaim_idle_after_secs),
+            closing: std::sync::atomic::AtomicBool::new(false),
         });
         manager.load();
         tokio::spawn(manager.clone().driver_loop(driver_rx));
@@ -201,37 +254,33 @@ impl Manager {
         *self.claude_bin.lock().unwrap() = path;
     }
 
+    /// Where Claude Code's own trust decisions are read from (tests point it elsewhere).
+    pub fn set_claude_json(&self, path: PathBuf) {
+        *self.claude_json.lock().unwrap() = path;
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<UiEvent> {
         self.tx.subscribe()
     }
 
-    fn dir(&self, id: &str) -> PathBuf {
-        self.home.join("sessions").join(id)
-    }
-
     fn load(&self) {
-        let Ok(entries) = std::fs::read_dir(self.home.join("sessions")) else { return };
         let mut inner = self.inner.lock().unwrap();
-        let mut queued = Vec::new();
-        for e in entries.flatten() {
-            let Ok(text) = std::fs::read_to_string(e.path().join("meta.json")) else { continue };
-            let Ok(mut meta) = serde_json::from_str::<SessionMeta>(&text) else { continue };
+        let mut waiting = Vec::new();
+        for (mut meta, next_seq) in self.store.load_all() {
             // The processes are gone after a daemon restart.
             if meta.status.is_live() {
                 meta.status = if meta.claude_session_id.is_some() { Status::Hibernated } else { Status::Stopped };
                 meta.status_detail = None;
             }
-            if meta.status == Status::Queued {
-                queued.push((meta.created_ms, meta.id.clone()));
+            // Messages the user already sent still have to reach Claude.
+            if meta.status == Status::Queued || !meta.outbox.is_empty() && meta.status != Status::Error {
+                meta.status = Status::Queued;
+                waiting.push((meta.created_ms, meta.id.clone()));
             }
-            let next_seq = count_lines(&e.path().join("events.jsonl")) + 1;
-            inner.sessions.insert(
-                meta.id.clone(),
-                Session { meta, events: Vec::new(), next_seq, driver: None, pending: BTreeMap::new(), outbox: Vec::new(), idle_since: None, memory: None, mcp: Vec::new(), stopping: None },
-            );
+            inner.sessions.insert(meta.id.clone(), Session::new(meta, next_seq));
         }
-        queued.sort();
-        inner.queue = queued.into_iter().map(|(_, id)| id).collect();
+        waiting.sort();
+        inner.queue = waiting.into_iter().map(|(_, id)| id).collect();
     }
 
     // ------------------------------------------------------------ queries
@@ -252,15 +301,11 @@ impl Manager {
         {
             let inner = self.inner.lock().unwrap();
             let s = inner.sessions.get(id).context("no such session")?;
-            if let Some(first) = s.events.first() {
-                if first.seq <= after + 1 {
-                    return Ok(s.events.iter().filter(|e| e.seq > after).cloned().collect());
-                }
+            if s.events.first().is_some_and(|first| first.seq <= after + 1) {
+                return Ok(s.events.iter().filter(|e| e.seq > after).cloned().collect());
             }
         }
-        // Not (all) in memory: read the log.
-        let text = std::fs::read_to_string(self.dir(id).join("events.jsonl")).unwrap_or_default();
-        Ok(text.lines().filter_map(|l| serde_json::from_str::<Event>(l).ok()).filter(|e| e.seq > after).collect())
+        Ok(self.store.events(id, after))
     }
 
     pub fn recent_projects(&self) -> Vec<String> {
@@ -274,6 +319,11 @@ impl Manager {
             }
         }
         out
+    }
+
+    /// Whether `cwd` is trusted, and what it would run.
+    pub fn trust(&self, cwd: &Path) -> trust::TrustInfo {
+        trust::inspect(&self.home, &self.claude_json.lock().unwrap(), cwd)
     }
 
     // ------------------------------------------------------------ commands
@@ -290,6 +340,13 @@ impl Manager {
         let mode = req.permission_mode.unwrap_or_else(|| "default".into());
         if !PERMISSION_MODES.contains(&mode.as_str()) {
             bail!("unknown permission mode {mode}");
+        }
+        let info = self.trust(&cwd);
+        if !info.trusted {
+            if !req.trust {
+                bail!(NeedsTrust(info));
+            }
+            trust::remember(&self.home, &cwd);
         }
         let id = new_id();
         let now = now_ms();
@@ -309,20 +366,18 @@ impl Manager {
             turns: 0,
             preview: String::new(),
             peak_bytes: 0,
+            outbox: vec![prompt.clone()],
         };
-        std::fs::create_dir_all(self.dir(&id))?;
+        self.store.create(&id)?;
         {
             let mut inner = self.inner.lock().unwrap();
-            inner.sessions.insert(
-                id.clone(),
-                Session { meta, events: Vec::new(), next_seq: 1, driver: None, pending: BTreeMap::new(), outbox: vec![prompt.clone()], idle_since: None, memory: None, mcp: Vec::new(), stopping: None },
-            );
+            inner.sessions.insert(id.clone(), Session::new(meta, 1));
             self.push_event(&mut inner, &id, EventBody::User { text: prompt });
             inner.queue.push(id.clone());
-            self.save_meta(&inner, &id);
+            self.save(&inner, &id);
         }
         self.pump_queue();
-        Ok(self.view_of(&id).context("session vanished")?)
+        self.view_of(&id).context("session vanished")
     }
 
     /// Sends a follow-up message, resuming the session if it is not running.
@@ -333,30 +388,35 @@ impl Manager {
         }
         let mut inner = self.inner.lock().unwrap();
         let s = inner.sessions.get_mut(id).context("no such session")?;
-        match s.meta.status {
-            Status::Queued => {
-                s.outbox.push(text.to_string());
-            }
-            Status::Starting | Status::Working | Status::NeedsYou | Status::Idle if s.driver.is_some() => {
-                s.driver.as_ref().unwrap().send_user(text);
+        let deliverable = s.stopping.is_none() && s.meta.status.is_live();
+        match s.run.as_mut().filter(|_| deliverable) {
+            Some(run) => {
+                run.driver.send_user(text);
+                if !run.initialized {
+                    run.unconfirmed.push(text.to_string());
+                }
                 s.idle_since = None;
+                if s.meta.status == Status::Idle {
+                    s.meta.status = Status::Working;
+                    s.meta.status_detail = None;
+                }
             }
-            _ => {
-                // Hibernated, stopped or failed: start again (resuming the conversation).
-                s.outbox.push(text.to_string());
+            None => {
+                // Not running, or on its way out: keep the message and
+                // (re)start the session once the old process is gone.
+                s.meta.outbox.push(text.to_string());
+                let exiting = s.run.is_some();
+                if !exiting {
+                    s.meta.status = Status::Queued;
+                    s.meta.status_detail = None;
+                }
                 if !inner.queue.iter().any(|q| q == id) {
                     inner.queue.push(id.to_string());
                 }
-                set_status(&mut inner, id, Status::Queued, None);
             }
         }
         self.push_event(&mut inner, id, EventBody::User { text: text.to_string() });
-        let s = inner.sessions.get_mut(id).unwrap();
-        if s.meta.status == Status::Idle {
-            s.meta.status = Status::Working;
-            s.meta.status_detail = None;
-        }
-        self.save_meta(&inner, id);
+        self.save(&inner, id);
         self.broadcast_session(&inner, id);
         drop(inner);
         self.pump_queue();
@@ -366,20 +426,21 @@ impl Manager {
     pub fn decide(&self, id: &str, request_id: &str, allow: bool, always: bool, message: Option<String>) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
         let s = inner.sessions.get_mut(id).context("no such session")?;
+        let run = s.run.as_ref().context("session is not running")?;
         let p = s.pending.remove(request_id).context("that request is no longer pending")?;
-        let driver = s.driver.as_ref().context("session is not running")?;
-        if allow {
-            let updated = if always { p.suggestions.clone() } else { None };
-            driver.allow(request_id, &p.input, updated);
+        let behavior = if allow {
+            let remembered = run.driver.allow(request_id, &p.input, if always { p.suggestions.as_ref() } else { None });
+            if remembered { "allow_always" } else { "allow" }
         } else {
-            driver.deny(request_id, message.as_deref().unwrap_or("The user declined this tool use."));
-        }
+            run.driver.deny(request_id, message.as_deref().unwrap_or("The user declined this tool use."));
+            "deny"
+        };
         let still_waiting = !s.pending.is_empty();
-        let behavior = if allow { if always { "allow_always" } else { "allow" } } else { "deny" };
         self.push_event(&mut inner, id, EventBody::Decision { request_id: request_id.into(), behavior: behavior.into() });
         if !still_waiting {
             set_status(&mut inner, id, Status::Working, None);
         }
+        self.save(&inner, id);
         self.broadcast_session(&inner, id);
         Ok(())
     }
@@ -387,22 +448,24 @@ impl Manager {
     pub fn interrupt(&self, id: &str) -> Result<()> {
         let inner = self.inner.lock().unwrap();
         let s = inner.sessions.get(id).context("no such session")?;
-        s.driver.as_ref().context("session is not running")?.interrupt();
+        s.run.as_ref().context("session is not running")?.driver.interrupt();
         Ok(())
     }
 
-    /// Stops the process. The conversation can be resumed later.
+    /// Stops the process and drops undelivered messages. The conversation can be resumed later.
     pub fn stop(self: &Arc<Self>, id: &str) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
         inner.queue.retain(|q| q != id);
         let s = inner.sessions.get_mut(id).context("no such session")?;
-        s.outbox.clear();
-        if let Some(d) = &s.driver {
+        s.meta.outbox.clear();
+        if let Some(run) = &s.run {
             s.stopping = Some(Status::Stopped);
-            d.kill();
+            run.driver.kill();
         } else {
             set_status(&mut inner, id, Status::Stopped, None);
         }
+        self.save(&inner, id);
+        self.broadcast_session(&inner, id);
         drop(inner);
         self.pump_queue();
         Ok(())
@@ -413,6 +476,9 @@ impl Manager {
         let mut inner = self.inner.lock().unwrap();
         if !inner.queue.iter().any(|q| q == id) {
             bail!("session is not queued");
+        }
+        if inner.sessions.get(id).is_some_and(|s| s.run.is_some()) {
+            bail!("the previous process is still stopping; try again in a moment");
         }
         inner.queue.retain(|q| q != id);
         self.launch(&mut inner, id);
@@ -429,13 +495,13 @@ impl Manager {
             if !PERMISSION_MODES.contains(&m.as_str()) {
                 bail!("unknown permission mode {m}");
             }
-            if let Some(d) = &s.driver {
-                d.set_permission_mode(&m);
+            if let Some(run) = &s.run {
+                run.driver.set_permission_mode(&m);
             }
             s.meta.permission_mode = m;
         }
         s.meta.updated_ms = now_ms();
-        self.save_meta(&inner, id);
+        self.save(&inner, id);
         self.broadcast_session(&inner, id);
         Ok(view(inner.sessions.get(id).unwrap(), &inner.queue))
     }
@@ -444,65 +510,61 @@ impl Manager {
         let mut inner = self.inner.lock().unwrap();
         let s = inner.sessions.remove(id).context("no such session")?;
         inner.queue.retain(|q| q != id);
-        if let Some(d) = &s.driver {
-            d.kill();
+        if let Some(run) = &s.run {
+            run.driver.kill();
         }
-        let _ = std::fs::remove_dir_all(self.dir(id));
+        self.store.remove(id);
         let _ = self.tx.send(UiEvent::Removed { session_id: id.to_string() });
         drop(inner);
         self.pump_queue();
         Ok(())
     }
 
-    /// Stops every running session (daemon shutdown).
+    /// Stops every running session (daemon shutdown); they come back paused.
     pub fn shutdown(&self) {
+        self.closing.store(true, std::sync::atomic::Ordering::SeqCst);
         let mut inner = self.inner.lock().unwrap();
         for s in inner.sessions.values_mut() {
-            if let Some(d) = &s.driver {
+            if let Some(run) = &s.run {
                 s.stopping = Some(if s.meta.claude_session_id.is_some() { Status::Hibernated } else { Status::Stopped });
-                d.kill();
+                run.driver.kill();
             }
         }
     }
 
-    // ------------------------------------------------------------ internals
+    // ------------------------------------------------------------ budget
 
     fn view_of(&self, id: &str) -> Option<SessionView> {
         let inner = self.inner.lock().unwrap();
         inner.sessions.get(id).map(|s| view(s, &inner.queue))
     }
 
-    fn running(inner: &Inner) -> usize {
-        inner.sessions.values().filter(|s| s.driver.is_some()).count()
-    }
-
     /// Starts queued sessions while the budget allows, oldest first.
     pub fn pump_queue(self: &Arc<Self>) {
+        if self.closing.load(std::sync::atomic::Ordering::SeqCst) {
+            return; // the daemon is going away; queued sessions start next time
+        }
         let mut inner = self.inner.lock().unwrap();
         loop {
-            let Some(id) = inner.queue.first().cloned() else { break };
+            // The next queued session whose previous process (if any) is gone.
+            let Some(pos) = inner.queue.iter().position(|q| inner.sessions.get(q).is_some_and(|s| s.run.is_none())) else { break };
+            let id = inner.queue[pos].clone();
             let (_, available) = procs::system_memory();
-            match inner.budget.admit(Self::running(&inner), available) {
+            let estimate = inner.budget.estimate();
+            // Sessions that just started have not grown yet: hold memory for them.
+            let ramping: u64 = inner.sessions.values().filter(|s| s.run.is_some()).map(|s| estimate.saturating_sub(s.memory.unwrap_or(0))).sum();
+            let running = inner.sessions.values().filter(|s| s.run.is_some()).count();
+            match inner.budget.admit(running, available.saturating_sub(ramping)) {
                 Ok(()) => {
-                    inner.queue.remove(0);
+                    inner.queue.remove(pos);
                     self.launch(&mut inner, &id);
                 }
                 Err(reason) => {
-                    // Make room by hibernating the longest-idle session, if any.
-                    let victim = inner
-                        .sessions
-                        .values()
-                        .filter(|s| s.meta.status == Status::Idle && s.driver.is_some() && s.meta.claude_session_id.is_some() && s.stopping.is_none())
-                        .filter(|s| s.idle_since.is_some_and(|t| t.elapsed() >= self.reclaim_after))
-                        .min_by_key(|s| s.idle_since)
-                        .map(|s| s.meta.id.clone());
-                    if let Some(v) = victim {
-                        tracing::info!(session = %v, "hibernating an idle session to make room");
-                        self.hibernate(&mut inner, &v);
-                    }
+                    let shortfall = (estimate + inner.budget.reserve_bytes).saturating_sub(available.saturating_sub(ramping));
+                    let cap_hit = inner.budget.max_sessions > 0 && running >= inner.budget.max_sessions;
+                    self.reclaim(&mut inner, if cap_hit { 0 } else { shortfall });
                     let detail = Some(reason);
-                    let changed = inner.sessions.get(&id).is_some_and(|s| s.meta.status_detail != detail);
-                    if changed {
+                    if inner.sessions.get(&id).is_some_and(|s| s.meta.status != Status::Queued || s.meta.status_detail != detail) {
                         set_status(&mut inner, &id, Status::Queued, detail);
                         self.broadcast_session(&inner, &id);
                     }
@@ -512,64 +574,101 @@ impl Manager {
         }
     }
 
+    /// Pauses idle sessions, longest idle first, to make room: one for a
+    /// session cap (`need == 0`), or enough to cover `need` bytes. Does
+    /// nothing while an earlier pause is still in progress, or if pausing
+    /// every candidate would not be enough.
+    fn reclaim(&self, inner: &mut Inner, need: u64) {
+        if inner.sessions.values().any(|s| s.stopping.is_some()) {
+            return;
+        }
+        let mut candidates: Vec<(Instant, String, u64)> = inner
+            .sessions
+            .values()
+            .filter(|s| s.meta.status == Status::Idle && s.run.is_some() && s.meta.claude_session_id.is_some())
+            .filter_map(|s| s.idle_since.filter(|t| t.elapsed() >= self.reclaim_after).map(|t| (t, s.meta.id.clone(), s.memory.unwrap_or(0))))
+            .collect();
+        candidates.sort();
+        let mut chosen = Vec::new();
+        let mut freed = 0u64;
+        for (_, id, mem) in candidates {
+            chosen.push(id);
+            freed += mem;
+            if freed >= need {
+                break;
+            }
+        }
+        if chosen.is_empty() || freed < need {
+            return;
+        }
+        for id in chosen {
+            tracing::info!(session = %id, "pausing an idle session to make room");
+            self.hibernate(inner, &id);
+        }
+    }
+
     fn hibernate(&self, inner: &mut Inner, id: &str) {
         if let Some(s) = inner.sessions.get_mut(id) {
-            if let Some(d) = &s.driver {
+            if let Some(run) = &s.run {
                 s.stopping = Some(Status::Hibernated);
-                d.kill();
+                run.driver.kill();
             }
         }
     }
 
-    fn launch(self: &Arc<Self>, inner: &mut Inner, id: &str) {
+    fn launch(&self, inner: &mut Inner, id: &str) {
         let claude = self.claude_bin.lock().unwrap().clone().or_else(crate::agent::find_claude);
         let Some(s) = inner.sessions.get_mut(id) else { return };
         let Some(claude) = claude else {
             s.meta.status = Status::Error;
             s.meta.status_detail = Some("could not find the claude executable (set HANGAR_CLAUDE)".into());
-            self.save_meta(inner, id);
+            self.save(inner, id);
             self.broadcast_session(inner, id);
             return;
         };
-        let outbox = std::mem::take(&mut s.outbox);
+        let resume = s.meta.claude_session_id.clone();
         let spec = claude::Launch {
             program: claude,
             cwd: PathBuf::from(&s.meta.cwd),
             model: s.meta.model.clone(),
             permission_mode: s.meta.permission_mode.clone(),
-            resume: s.meta.claude_session_id.clone(),
+            resume: resume.clone(),
             session_id: id.to_string(),
         };
         match claude::Driver::spawn(spec, self.driver_tx.clone()) {
             Ok(driver) => {
-                for text in outbox {
-                    driver.send_user(&text);
+                let outbox = std::mem::take(&mut s.meta.outbox);
+                for text in &outbox {
+                    driver.send_user(text);
                 }
-                s.driver = Some(driver);
+                s.run = Some(Run { driver, initialized: false, unconfirmed: outbox, cost_seen: 0.0, completed_turns: 0, resumed: resume.is_some() });
                 s.stopping = None;
                 s.idle_since = None;
                 set_status(inner, id, Status::Starting, None);
             }
-            Err(e) => {
-                set_status(inner, id, Status::Error, Some(format!("could not start claude: {e:#}")));
-            }
+            Err(e) => set_status(inner, id, Status::Error, Some(format!("could not start claude: {e:#}"))),
         }
+        self.save(inner, id);
         self.broadcast_session(inner, id);
     }
 
+    // ------------------------------------------------------------ driver events
+
     async fn driver_loop(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<claude::DriverEvent>) {
+        use claude::DriverEvent as E;
         while let Some(ev) = rx.recv().await {
             match ev {
-                claude::DriverEvent::Message { session_id, msg } => self.on_claude(&session_id, msg),
-                claude::DriverEvent::Permission { session_id, request } => self.on_permission(&session_id, request),
-                claude::DriverEvent::McpStatus { session_id, servers } => {
+                E::Message { session_id, pid, msg } => self.on_claude(&session_id, pid, msg),
+                E::Permission { session_id, pid, request } => self.on_permission(&session_id, pid, request),
+                E::PermissionCancelled { session_id, pid, request_id } => self.on_cancelled(&session_id, pid, &request_id),
+                E::McpStatus { session_id, pid, servers } => {
                     let mut inner = self.inner.lock().unwrap();
-                    if let Some(s) = inner.sessions.get_mut(&session_id) {
+                    if let Some(s) = inner.sessions.get_mut(&session_id).filter(|s| s.pid() == Some(pid)) {
                         s.mcp = servers;
+                        self.broadcast_session(&inner, &session_id);
                     }
-                    self.broadcast_session(&inner, &session_id);
                 }
-                claude::DriverEvent::Exited { session_id, pid, code, stderr } => {
+                E::Exited { session_id, pid, code, stderr } => {
                     self.on_exit(&session_id, pid, code, stderr);
                     self.pump_queue();
                 }
@@ -577,28 +676,39 @@ impl Manager {
         }
     }
 
-    fn on_claude(&self, id: &str, msg: Value) {
+    /// The session, if `pid` is its current process (older processes are ignored).
+    fn current<'a>(inner: &'a mut Inner, id: &str, pid: u32) -> Option<&'a mut Session> {
+        inner.sessions.get_mut(id).filter(|s| s.pid() == Some(pid))
+    }
+
+    fn on_claude(&self, id: &str, pid: u32, mut msg: Value) {
         let mut inner = self.inner.lock().unwrap();
-        let Some(s) = inner.sessions.get_mut(id) else { return };
+        let Some(s) = Self::current(&mut inner, id, pid) else { return };
+        let run = s.run.as_mut().expect("current session has a run");
         let kind = msg["type"].as_str().unwrap_or_default().to_string();
         let subtype = msg["subtype"].as_str().unwrap_or_default().to_string();
         let mut status = None;
         match (kind.as_str(), subtype.as_str()) {
             ("system", "init") => {
+                run.initialized = true;
+                run.unconfirmed.clear();
                 if let Some(sid) = msg["session_id"].as_str() {
                     s.meta.claude_session_id = Some(sid.to_string());
                 }
                 if s.meta.model.is_none() {
                     s.meta.model = msg["model"].as_str().map(String::from);
                 }
+                // Modes can change inside Claude (plan mode exits, for one).
+                if let Some(mode) = msg["permissionMode"].as_str().filter(|m| PERMISSION_MODES.contains(m)) {
+                    s.meta.permission_mode = mode.to_string();
+                }
                 if let Some(list) = msg["mcp_servers"].as_array() {
-                    s.mcp = list.clone();
+                    s.mcp = list.iter().map(|m| json!({"name": m["name"], "status": m["status"]})).collect();
                 }
                 if s.meta.status == Status::Starting {
                     status = Some(Status::Working);
                 }
             }
-            ("system", _) | ("rate_limit_event", _) | ("stream_event", _) => {}
             ("assistant", _) => {
                 if let Some(text) = first_text(&msg) {
                     s.meta.preview = truncate(&text, 160);
@@ -608,41 +718,48 @@ impl Manager {
                 }
             }
             ("result", _) => {
-                if let Some(c) = msg["total_cost_usd"].as_f64() {
-                    s.meta.cost_usd += c;
-                }
+                // total_cost_usd is a running total for the process.
+                let total = msg["total_cost_usd"].as_f64().unwrap_or(run.cost_seen);
+                let turn_cost = if total >= run.cost_seen { total - run.cost_seen } else { total };
+                run.cost_seen = total;
+                run.completed_turns += 1;
+                s.meta.cost_usd += turn_cost;
+                msg["turn_cost_usd"] = json!(turn_cost);
                 s.meta.turns += msg["num_turns"].as_u64().unwrap_or(0);
                 if let Some(sid) = msg["session_id"].as_str() {
                     s.meta.claude_session_id = Some(sid.to_string());
                 }
-                let failed = msg["is_error"].as_bool().unwrap_or(false);
-                if failed {
-                    let text = msg["result"].as_str().unwrap_or("the turn failed").to_string();
-                    s.meta.preview = truncate(&text, 160);
+                if msg["is_error"].as_bool().unwrap_or(false) {
+                    s.meta.preview = truncate(msg["result"].as_str().unwrap_or("the turn failed"), 160);
                 }
                 s.idle_since = Some(Instant::now());
                 status = Some(Status::Idle);
             }
             _ => {}
         }
-        let important = !matches!(kind.as_str(), "stream_event" | "rate_limit_event") && !(kind == "system" && subtype != "init" && subtype != "compact_boundary");
-        if important {
+        let keep = match kind.as_str() {
+            "stream_event" | "rate_limit_event" => false,
+            "system" => matches!(subtype.as_str(), "init" | "compact_boundary"),
+            _ => true,
+        };
+        if keep {
             self.push_event(&mut inner, id, EventBody::Claude { msg: slim(msg) });
         }
         if let Some(st) = status {
             let pending = inner.sessions.get(id).is_some_and(|s| !s.pending.is_empty());
             set_status(&mut inner, id, if pending { Status::NeedsYou } else { st }, None);
         }
-        self.save_meta(&inner, id);
+        self.save(&inner, id);
         self.broadcast_session(&inner, id);
     }
 
-    fn on_permission(&self, id: &str, req: claude::PermissionRequest) {
+    fn on_permission(&self, id: &str, pid: u32, req: claude::PermissionRequest) {
         let mut inner = self.inner.lock().unwrap();
-        let Some(s) = inner.sessions.get_mut(id) else { return };
+        let Some(s) = Self::current(&mut inner, id, pid) else { return };
+        let can_remember = req.suggestions.as_ref().and_then(claude::session_only).is_some();
         s.pending.insert(
             req.request_id.clone(),
-            PendingPermission { request_id: req.request_id.clone(), tool_name: req.tool_name.clone(), input: req.input.clone(), suggestions: req.suggestions.clone() },
+            PendingPermission { request_id: req.request_id.clone(), tool_name: req.tool_name.clone(), input: req.input.clone(), suggestions: req.suggestions.clone(), can_remember },
         );
         self.push_event(
             &mut inner,
@@ -650,30 +767,50 @@ impl Manager {
             EventBody::Permission { request_id: req.request_id, tool_name: req.tool_name, input: req.input, suggestions: req.suggestions, description: req.description },
         );
         set_status(&mut inner, id, Status::NeedsYou, None);
-        self.save_meta(&inner, id);
+        self.save(&inner, id);
+        self.broadcast_session(&inner, id);
+    }
+
+    fn on_cancelled(&self, id: &str, pid: u32, request_id: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(s) = Self::current(&mut inner, id, pid) else { return };
+        if s.pending.remove(request_id).is_none() {
+            return;
+        }
+        let still_waiting = !s.pending.is_empty();
+        let needs_you = s.meta.status == Status::NeedsYou;
+        self.push_event(&mut inner, id, EventBody::Decision { request_id: request_id.into(), behavior: "cancelled".into() });
+        if !still_waiting && needs_you {
+            set_status(&mut inner, id, Status::Working, None);
+        }
+        self.save(&inner, id);
         self.broadcast_session(&inner, id);
     }
 
     fn on_exit(&self, id: &str, pid: u32, code: Option<i32>, stderr: Vec<String>) {
         let mut inner = self.inner.lock().unwrap();
-        let peak;
-        {
-            let Some(s) = inner.sessions.get_mut(id) else { return };
-            if s.driver.as_ref().map(|d| d.pid) != Some(pid) {
-                return; // an older process of this session
-            }
-            s.driver = None;
-            s.pending.clear();
-            s.memory = None;
-            peak = s.meta.peak_bytes;
+        let Some(s) = Self::current(&mut inner, id, pid) else { return };
+        let run = s.run.take().expect("current session has a run");
+        s.pending.clear();
+        s.memory = None;
+        let peak = s.meta.peak_bytes;
+        if !run.initialized && !run.unconfirmed.is_empty() {
+            // Claude never started reading: those messages are still unsent.
+            let mut unsent = run.unconfirmed;
+            unsent.append(&mut s.meta.outbox);
+            s.meta.outbox = unsent;
         }
-        inner.budget.record_peak(peak);
-        let s = inner.sessions.get_mut(id).unwrap();
+        let tail = stderr.iter().rev().take(3).rev().cloned().collect::<Vec<_>>().join(" / ");
         let (status, detail) = match s.stopping.take() {
             Some(st) => (st, None),
+            None if !run.initialized && run.resumed => {
+                // A conversation that cannot be resumed would fail forever.
+                s.meta.claude_session_id = None;
+                let why = if tail.is_empty() { String::new() } else { format!(" ({tail})") };
+                (Status::Error, Some(format!("could not resume the conversation{why}; your next message starts a new one")))
+            }
             None if s.meta.status == Status::Idle => (if s.meta.claude_session_id.is_some() { Status::Hibernated } else { Status::Stopped }, None),
             None => {
-                let tail = stderr.iter().rev().take(3).rev().cloned().collect::<Vec<_>>().join(" / ");
                 let detail = match code {
                     Some(c) => format!("claude exited with code {c}{}", if tail.is_empty() { String::new() } else { format!(": {tail}") }),
                     None => "claude stopped".into(),
@@ -681,37 +818,50 @@ impl Manager {
                 (Status::Error, Some(detail))
             }
         };
+        // Only full turns say anything about what a session costs.
+        if run.completed_turns > 0 {
+            inner.budget.record_peak(peak);
+        }
+        let queued = inner.queue.iter().any(|q| q == id);
         if status == Status::Error {
             if let Some(d) = &detail {
                 self.push_event(&mut inner, id, EventBody::Error { message: d.clone() });
             }
         }
-        set_status(&mut inner, id, status, detail);
-        self.save_meta(&inner, id);
+        // Someone sent a message while it was stopping: start it again.
+        let has_outbox = inner.sessions.get(id).is_some_and(|s| !s.meta.outbox.is_empty());
+        if queued && has_outbox && status != Status::Error {
+            set_status(&mut inner, id, Status::Queued, None);
+        } else {
+            if status == Status::Error {
+                inner.queue.retain(|q| q != id);
+            }
+            set_status(&mut inner, id, status, detail);
+        }
+        self.save(&inner, id);
         self.broadcast_session(&inner, id);
     }
 
-    /// Samples memory every 2 s, hibernates long-idle sessions, re-checks the queue.
+    /// Samples memory every 2 s, pauses long-idle sessions, re-checks the queue.
     async fn tick_loop(self: Arc<Self>) {
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         loop {
             tick.tick().await;
-            let snap = procs::snapshot();
+            let snap = tokio::task::spawn_blocking(procs::snapshot).await.unwrap_or_default();
             {
                 let mut inner = self.inner.lock().unwrap();
                 let ids: Vec<String> = inner.sessions.keys().cloned().collect();
                 for id in ids {
                     let s = inner.sessions.get_mut(&id).unwrap();
-                    let Some(pid) = s.driver.as_ref().map(|d| d.pid) else { continue };
+                    let Some(pid) = s.pid() else { continue };
                     let used = procs::Usage::of(procs::tree(&snap, pid)).private_bytes;
-                    let changed = s.memory.map_or(true, |m| m.abs_diff(used) > (4 << 20));
+                    let changed = s.memory.is_none_or(|m| m.abs_diff(used) > (4 << 20));
                     s.memory = Some(used);
                     s.meta.peak_bytes = s.meta.peak_bytes.max(used);
-                    if let Some(limit) = self.hibernate_after {
-                        if s.meta.status == Status::Idle && s.idle_since.is_some_and(|t| t.elapsed() > limit) && s.meta.claude_session_id.is_some() {
-                            self.hibernate(&mut inner, &id);
-                            continue;
-                        }
+                    let idle_too_long = self.hibernate_after.is_some_and(|limit| s.meta.status == Status::Idle && s.idle_since.is_some_and(|t| t.elapsed() > limit));
+                    if idle_too_long && s.meta.claude_session_id.is_some() && s.stopping.is_none() {
+                        self.hibernate(&mut inner, &id);
+                        continue;
                     }
                     if changed {
                         self.broadcast_session(&inner, &id);
@@ -722,16 +872,14 @@ impl Manager {
         }
     }
 
+    // ------------------------------------------------------------ plumbing
+
     fn push_event(&self, inner: &mut Inner, id: &str, body: EventBody) {
         let Some(s) = inner.sessions.get_mut(id) else { return };
         let ev = Event { seq: s.next_seq, ts: now_ms(), body };
         s.next_seq += 1;
         s.meta.updated_ms = ev.ts;
-        if let Ok(line) = serde_json::to_string(&ev) {
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.dir(id).join("events.jsonl")) {
-                let _ = writeln!(f, "{line}");
-            }
-        }
+        self.store.append(id, &ev);
         s.events.push(ev.clone());
         if s.events.len() > MAX_EVENTS_IN_MEMORY {
             s.events.drain(..s.events.len() - MAX_EVENTS_IN_MEMORY);
@@ -739,13 +887,9 @@ impl Manager {
         let _ = self.tx.send(UiEvent::Event { session_id: id.to_string(), event: ev });
     }
 
-    fn save_meta(&self, inner: &Inner, id: &str) {
+    fn save(&self, inner: &Inner, id: &str) {
         if let Some(s) = inner.sessions.get(id) {
-            let path = self.dir(id).join("meta.json");
-            let tmp = path.with_extension("json.tmp");
-            if std::fs::write(&tmp, serde_json::to_vec_pretty(&s.meta).unwrap_or_default()).is_ok() {
-                let _ = std::fs::rename(&tmp, &path);
-            }
+            self.store.save_meta(&s.meta);
         }
     }
 
@@ -758,9 +902,6 @@ impl Manager {
 
 fn set_status(inner: &mut Inner, id: &str, status: Status, detail: Option<String>) {
     if let Some(s) = inner.sessions.get_mut(id) {
-        if s.meta.status != status {
-            tracing::debug!(session = id, ?status, "status");
-        }
         s.meta.status = status;
         s.meta.status_detail = detail;
         s.meta.updated_ms = now_ms();
@@ -770,11 +911,11 @@ fn set_status(inner: &mut Inner, id: &str, status: Status, detail: Option<String
 fn view(s: &Session, queue: &[String]) -> SessionView {
     SessionView {
         meta: s.meta.clone(),
-        pid: s.driver.as_ref().map(|d| d.pid),
+        pid: s.pid(),
         memory_bytes: s.memory,
         pending: s.pending.values().cloned().collect(),
         queue_position: queue.iter().position(|q| *q == s.meta.id).map(|p| p + 1),
-        mcp: s.mcp.iter().map(|m| json!({"name": m["name"], "status": m["status"]})).collect(),
+        mcp: s.mcp.clone(),
     }
 }
 
@@ -820,13 +961,12 @@ pub fn title_from(prompt: &str) -> String {
 }
 
 fn new_id() -> String {
-    let mut b = [0u8; 6];
-    getrandom::fill(&mut b).expect("OS randomness");
-    format!("s{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+    format!("s{}", crate::util::random_hex(6))
 }
 
-fn count_lines(path: &Path) -> u64 {
-    std::fs::read_to_string(path).map(|t| t.lines().count() as u64).unwrap_or(0)
+/// Session ids are `s` + 12 hex digits; anything else never reaches the disk.
+pub(crate) fn valid_id(id: &str) -> bool {
+    id.len() == 13 && id.starts_with('s') && id[1..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -849,6 +989,14 @@ mod tests {
         assert!(s.get("tool_use_result").is_none());
         let assistant = json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "x".repeat(MAX_BLOCK_TEXT * 2)}]}});
         assert_eq!(slim(assistant.clone()), assistant, "assistant text is never cut");
+    }
+
+    #[test]
+    fn ids_are_validated_before_touching_the_disk() {
+        assert!(valid_id(&new_id()));
+        assert!(!valid_id("../../etc"));
+        assert!(!valid_id("s12345678901z"));
+        assert!(!valid_id("x123456789012"));
     }
 
     #[test]
