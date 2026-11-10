@@ -1,1 +1,1 @@
-//! Shared helpers for integration tests.
+//! Fake MCP servers and agents for hangar's integration tests. Helpers live in `tests/common`.

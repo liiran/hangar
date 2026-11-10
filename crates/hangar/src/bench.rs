@@ -85,7 +85,9 @@ pub fn preset(name: &str, workdir: &Path) -> Result<ServerSet> {
     let fs_root = workdir.display().to_string();
     let set = match name {
         "popular" => vec![
-            ("playwright".into(), npx(&["@playwright/mcp@latest", "--headless"])),
+            // --isolated: without it a second session's browser fails with
+            // "Browser is already in use", pooled or not.
+            ("playwright".into(), npx(&["@playwright/mcp@latest", "--headless", "--isolated"])),
             ("context7".into(), npx(&["@upstash/context7-mcp@latest"])),
             ("memory".into(), npx(&["@modelcontextprotocol/server-memory"])),
             ("sequential-thinking".into(), npx(&["@modelcontextprotocol/server-sequential-thinking"])),
@@ -160,6 +162,9 @@ pub struct RunConfig {
     pub settle: Duration,
     pub warm_wave: bool,
     pub claude_bin: Option<PathBuf>,
+    /// Sim agent: every session opens a page in its browser and checks that
+    /// it sees only its own page.
+    pub browse: bool,
 }
 
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -386,18 +391,23 @@ async fn launch_session(index: usize, cfg: &RunConfig, pool: Option<&Pool>) -> R
     }
 }
 
-async fn launch_sim(_index: usize, cfg: &RunConfig, pool: Option<&Pool>) -> Result<(Session, Option<u64>)> {
+async fn launch_sim(index: usize, cfg: &RunConfig, pool: Option<&Pool>) -> Result<(Session, Option<u64>)> {
     let started = Instant::now();
     let mut handles = Vec::new();
     for (name, spec) in &cfg.servers {
         let cmd = server_command(name, spec, &cfg.workdir, pool);
         let root = cfg.workdir.display().to_string();
         let name = name.clone();
+        let browse = cfg.browse;
         handles.push(async move {
             let client = McpClient::spawn(cmd, vec![root]).with_context(|| format!("{name}: spawn"))?;
             let setup = async {
                 client.initialize("hangar-bench", READY_TIMEOUT).await?;
-                client.call("tools/list", json!({}), READY_TIMEOUT).await?;
+                let tools = client.call("tools/list", json!({}), READY_TIMEOUT).await?;
+                let has = |t: &str| tools["tools"].as_array().is_some_and(|a| a.iter().any(|x| x["name"] == t));
+                if browse && has("browser_navigate") {
+                    browse_and_check(&client, index).await?;
+                }
                 anyhow::Ok(())
             };
             match setup.await {
@@ -421,6 +431,31 @@ async fn launch_sim(_index: usize, cfg: &RunConfig, pool: Option<&Pool>) -> Resu
     }
     let ms = if errors.is_empty() { Some(started.elapsed().as_millis() as u64) } else { None };
     Ok((Session::Sim { clients, errors }, ms))
+}
+
+/// Opens a page titled after this session, then checks the session sees
+/// exactly that page and no other session's.
+async fn browse_and_check(client: &McpClient, index: usize) -> Result<()> {
+    let title = format!("hangar-session-{index}");
+    let url = format!("data:text/html,<title>{title}</title><h1>{title}</h1>");
+    let nav = client.call("tools/call", json!({"name": "browser_navigate", "arguments": {"url": url}}), READY_TIMEOUT).await?;
+    if nav["isError"] == true {
+        bail!("browser_navigate failed: {}", nav["content"][0]["text"].as_str().unwrap_or("?").lines().take(3).collect::<Vec<_>>().join(" "));
+    }
+    let tabs = client.call("tools/call", json!({"name": "browser_tabs", "arguments": {"action": "list"}}), READY_TIMEOUT).await?;
+    let text = tabs["content"][0]["text"].as_str().unwrap_or_default().to_string();
+    if !text.contains(&format!("[{title}]")) {
+        bail!("session {index} does not see its own page: {text}");
+    }
+    let seen: std::collections::BTreeSet<usize> = text
+        .split("hangar-session-")
+        .skip(1)
+        .filter_map(|rest| rest.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok())
+        .collect();
+    if seen.len() != 1 {
+        bail!("session {index} sees other sessions' pages {seen:?}: {text}");
+    }
+    Ok(())
 }
 
 /// Joins futures concurrently without pulling in the `futures` crate.
@@ -547,6 +582,7 @@ pub struct BenchOpts {
     pub reserve_bytes: u64,
     pub out: Option<PathBuf>,
     pub claude_bin: Option<PathBuf>,
+    pub browse: bool,
 }
 
 /// Runs every (sessions, mode) combination, each in a fresh child process.
@@ -590,6 +626,9 @@ pub async fn run(opts: BenchOpts) -> Result<Vec<RunResult>> {
                 .args(["--settle-ms", &opts.settle.as_millis().to_string()]);
             if opts.warm_wave {
                 cmd.arg("--warm-wave");
+            }
+            if opts.browse {
+                cmd.arg("--browse");
             }
             if let Some(c) = &opts.claude_bin {
                 cmd.arg("--claude-bin").arg(c);
@@ -692,9 +731,10 @@ pub fn render_markdown(results: &[RunResult], opts: &BenchOpts, servers: &Server
     let mut s = String::new();
     let (total, _) = procs::system_memory();
     s.push_str(&format!(
-        "## hangar bench: {} agent, preset `{}`\n\nServers: {}. Machine: {} RAM, {} logical CPUs, {}.\n\n",
+        "## hangar bench: {} agent, preset `{}`{}\n\nServers: {}. Machine: {} RAM, {} logical CPUs, {}.\n\n",
         opts.agent,
         opts.preset,
+        if opts.browse { ", every session opens a page in its browser" } else { "" },
         servers.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
         fmt_bytes(total),
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),

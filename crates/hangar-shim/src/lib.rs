@@ -139,7 +139,14 @@ fn connect(opts: &Opts, home: &Path, resume: Option<&serde_json::Value>) -> Resu
         }
         if !started {
             started = true;
-            start_daemon(home)?;
+            if let Err(e) = start_daemon(home) {
+                // On first connect, fall back to running the server directly
+                // right away. When reconnecting, someone else may bring a
+                // daemon back, so keep waiting.
+                if resume.is_none() {
+                    return Err(e);
+                }
+            }
         }
         if Instant::now() >= deadline {
             return Err("timed out waiting for the hangar daemon".into());
@@ -205,6 +212,12 @@ fn pump(stream: TcpStream, reader: BufReader<TcpStream>, opts: &Opts, home: &Pat
                 // The daemon went away while the client is still running.
                 // Reconnect and replay the client's initialize request so the
                 // client never notices.
+                // Park writers until a new connection exists, so requests sent
+                // meanwhile wait instead of vanishing into the dead socket.
+                {
+                    let mut w = state.writer.lock().unwrap();
+                    *w = (w.0 + 1, None);
+                }
                 let init = state.init.lock().unwrap().clone();
                 let Some(init) = init else {
                     eprintln!("hangar: lost the daemon before initialize; exiting");
@@ -340,7 +353,16 @@ fn run_direct(opts: &Opts) -> ExitCode {
     #[cfg(windows)]
     contain_children();
     let program = resolve_command(&opts.command).unwrap_or_else(|| PathBuf::from(&opts.command));
-    match Command::new(&program).args(&opts.args).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status() {
+    let mut cmd = Command::new(&program);
+    cmd.args(&opts.args).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    #[cfg(windows)]
+    {
+        // The shim has no console, so a console child would get a new,
+        // visible one. Give it a hidden console instead.
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    match cmd.status() {
         Ok(status) => ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8),
         Err(e) => {
             eprintln!("hangar-shim: could not start {}: {e}", program.display());
