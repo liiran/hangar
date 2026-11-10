@@ -35,5 +35,5 @@ mime_guess = "2"
 windows-sys.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
-sysinfo = "0.33"
+sysinfo = "0.37"
 libc = "0.2"

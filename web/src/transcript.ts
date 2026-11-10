@@ -87,10 +87,24 @@ export function toRows(events: SessionEvent[]): Row[] {
   return rows;
 }
 
+/** Shows `path` relative to `cwd` when it lies inside it. */
+export function relative(path: string, cwd?: string): string {
+  if (!cwd) return path;
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const p = norm(path);
+  const c = norm(cwd);
+  if (p.toLowerCase() === c.toLowerCase()) return ".";
+  if (p.toLowerCase().startsWith(c.toLowerCase() + "/")) return p.slice(c.length + 1);
+  return path;
+}
+
 /** A one-line summary of a tool call's input. */
-export function toolSummary(name: string, input: any): string {
+export function toolSummary(name: string, input: any, cwd?: string): string {
   if (!input || typeof input !== "object") return "";
-  const pick = (...keys: string[]) => keys.map((k) => input[k]).find((v) => typeof v === "string" && v.length > 0) as string | undefined;
+  const pick = (...keys: string[]) => {
+    const v = keys.map((k) => input[k]).find((v) => typeof v === "string" && v.length > 0) as string | undefined;
+    return v && /path|^file/.test(keys.join()) ? relative(v, cwd) : v;
+  };
   switch (name) {
     case "Bash":
       return pick("command") ?? "";
@@ -102,7 +116,7 @@ export function toolSummary(name: string, input: any): string {
       return pick("file_path", "notebook_path") ?? "";
     case "Glob":
     case "Grep":
-      return [pick("pattern"), pick("path")].filter(Boolean).join("  in  ");
+      return [input.pattern, input.path ? relative(input.path, cwd) : null].filter(Boolean).join("  in  ");
     case "WebFetch":
       return pick("url") ?? "";
     case "WebSearch":

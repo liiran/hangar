@@ -91,7 +91,7 @@ mod tests {
     use super::*;
 
     fn budget(reserve_mb: u64, max: usize) -> Budget {
-        Budget::new(&BudgetConfig { reserve_mb, max_sessions: max, initial_estimate_mb: 500, hibernate_after_mins: 0 })
+        Budget::new(&BudgetConfig { reserve_mb, max_sessions: max, initial_estimate_mb: 500, ..Default::default() })
     }
 
     #[test]

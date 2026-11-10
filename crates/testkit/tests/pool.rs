@@ -363,3 +363,44 @@ async fn probes_before_initialize_get_method_not_found() {
     assert_eq!(tool(&c, "echo", json!({"text": "after probe"})).await.unwrap(), "after probe");
     d.shutdown().await;
 }
+
+/// The `hangar` binary from the same build, if it was built.
+fn hangar_bin() -> Option<std::path::PathBuf> {
+    let me = std::env::current_exe().ok()?;
+    let dir = me.parent()?.parent()?;
+    let exe = dir.join(if cfg!(windows) { "hangar.exe" } else { "hangar" });
+    exe.is_file().then_some(exe)
+}
+
+#[tokio::test]
+async fn auto_started_daemon_does_not_hold_the_clients_pipes() {
+    let Some(bin) = hangar_bin() else {
+        eprintln!("skipped: build the workspace first (cargo build --release --workspace)");
+        return;
+    };
+    let home = temp_home("autostart");
+    let mut cmd = tokio::process::Command::new(shim());
+    cmd.arg("--name").arg("fake").arg("--").arg(fake_mcp());
+    cmd.env(hangar::proto::ENV_HOME, &home).env(hangar::proto::ENV_BIN, &bin).env_remove(hangar::proto::ENV_NO_AUTOSTART);
+    cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    let mut child = cmd.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    stdin.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"1\"}}}\n").await.unwrap();
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    let first = tokio::time::timeout(T, lines.next_line()).await.unwrap().unwrap().unwrap();
+    assert!(first.contains("fake-mcp"), "the shim started a daemon and got an answer: {first}");
+    let info = hangar::proto::read_daemon_info(&home).expect("daemon announced itself");
+    // Close the client side. Our end of stdout must see EOF even though the
+    // daemon (started from inside the shim) keeps running.
+    drop(stdin);
+    let eof = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Ok(Some(_)) = lines.next_line().await {}
+    })
+    .await;
+    assert!(eof.is_ok(), "stdout never closed: the daemon inherited the client's pipe");
+    assert!(hangar::procs::is_alive(info.pid), "the daemon outlives the shim");
+    hangar::daemon::send_control(&home, "stop", json!({})).await.unwrap();
+    assert!(eventually(Duration::from_secs(10), || !hangar::procs::is_alive(info.pid)).await);
+}

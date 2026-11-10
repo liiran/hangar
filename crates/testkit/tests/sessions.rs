@@ -123,6 +123,32 @@ async fn the_budget_queues_sessions_instead_of_overcommitting() {
 }
 
 #[tokio::test]
+async fn idle_sessions_are_paused_to_make_room_and_resume_later() {
+    let home = temp_home("sess-reclaim");
+    let mut cfg = Config::default();
+    cfg.budget.max_sessions = 1;
+    cfg.budget.reclaim_idle_after_secs = 0;
+    let m = manager(&home, cfg);
+    let a = m.create(new(&home, "first")).unwrap().meta.id;
+    wait_status(&m, &a, Status::Idle).await;
+    // B needs the only slot: A is idle, so hangar pauses A instead of making B wait.
+    let b = m.create(new(&home, "second")).unwrap().meta.id;
+    wait_status(&m, &a, Status::Hibernated).await;
+    wait_status(&m, &b, Status::Idle).await;
+    // Messaging A brings it back, pausing B in turn.
+    m.send(&a, "back again").unwrap();
+    wait_status(&m, &b, Status::Hibernated).await;
+    wait_status(&m, &a, Status::Idle).await;
+    for _ in 0..40 {
+        if texts(&m, &a).len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(texts(&m, &a), vec!["echo: first", "echo: back again"]);
+}
+
+#[tokio::test]
 async fn start_now_bypasses_the_queue() {
     let home = temp_home("sess-startnow");
     let mut cfg = Config::default();

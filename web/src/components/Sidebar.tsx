@@ -58,7 +58,7 @@ export function Sidebar({ onNew, onPool }: { onNew: () => void; onPool: () => vo
                     </div>
                     <div className="mt-0.5 flex items-center gap-2 pl-4 text-[11.5px] text-faint">
                       <span className="truncate">{basename(s.cwd)}</span>
-                      {s.status === "needs_you" && s.pending[0] && <span className="truncate text-amber-400">· {s.pending[0].tool_name}</span>}
+                      {s.status === "needs_you" && s.pending[0] && <span className="truncate text-amber-500 [@media(prefers-color-scheme:light)]:text-amber-700">· {s.pending[0].tool_name}</span>}
                       {s.status === "queued" && s.queue_position != null && <span>· #{s.queue_position} in line</span>}
                       {s.memory_bytes != null && <span className="ml-auto shrink-0 tabular-nums">{bytes(s.memory_bytes)}</span>}
                     </div>

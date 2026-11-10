@@ -175,7 +175,7 @@ async fn write_line(w: &mut tokio::net::tcp::OwnedWriteHalf, v: &impl Serialize)
 async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     stream.set_nodelay(true)?;
     let (rd, mut wr) = stream.into_split();
-    let mut reader = BufReader::with_capacity(256 * 1024, rd);
+    let mut reader = BufReader::with_capacity(16 * 1024, rd);
     let mut first = String::new();
     tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut first)).await.context("handshake timed out")??;
     let value: Value = serde_json::from_str(first.trim()).context("handshake is not JSON")?;
@@ -268,7 +268,7 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     };
     drop(tx);
 
-    let mut buf = Vec::with_capacity(64 * 1024);
+    let mut buf = Vec::with_capacity(4 * 1024);
     loop {
         buf.clear();
         match reader.read_until(b'\n', &mut buf).await {

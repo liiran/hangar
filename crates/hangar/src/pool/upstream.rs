@@ -815,7 +815,7 @@ impl Actor {
         let stderr = child.stderr.take().expect("piped stderr");
         let tx = self.ev_tx.clone();
         tokio::spawn(async move {
-            let mut reader = BufReader::with_capacity(256 * 1024, stdout);
+            let mut reader = BufReader::with_capacity(64 * 1024, stdout);
             let mut buf = Vec::new();
             loop {
                 buf.clear();

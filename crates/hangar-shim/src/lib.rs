@@ -304,11 +304,33 @@ fn write_to_daemon(state: &Pump, line: &[u8]) {
     }
 }
 
+/// Stops children from inheriting this process's stdin, stdout and stderr.
+///
+/// Windows gives a child every inheritable handle of its parent, not just the
+/// ones passed as its stdio. A long-lived daemon started from here would keep
+/// our client's pipes open, so the client would never see them close. Rust
+/// duplicates handles it passes to children explicitly, so `Stdio::inherit`
+/// still works afterwards.
+pub fn keep_std_handles_private() {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+        for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let h = GetStdHandle(id);
+            if !h.is_null() && h != INVALID_HANDLE_VALUE {
+                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+}
+
 /// Starts `hangar daemon` detached from the client's process tree.
 fn start_daemon(home: &Path) -> Result<(), String> {
     if std::env::var(ENV_NO_AUTOSTART).map(|v| v == "1").unwrap_or(false) {
         return Err("no daemon running and autostart is disabled".into());
     }
+    keep_std_handles_private();
     let bin = hangar_bin().ok_or("could not find the hangar binary")?;
     let mut cmd = Command::new(&bin);
     cmd.arg("daemon").arg("--quiet").env(hangar_proto::ENV_HOME, home).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());

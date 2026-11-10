@@ -280,6 +280,7 @@ async fn up(home: &std::path::Path, no_open: bool) -> Result<()> {
         None => false,
     };
     if !running {
+        hangar_shim::keep_std_handles_private();
         let exe = std::env::current_exe()?;
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("daemon").arg("--quiet").env(hangar::proto::ENV_HOME, home);

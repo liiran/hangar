@@ -65,11 +65,14 @@ pub struct BudgetConfig {
     /// Stop the agent process of a session that has been idle this long and
     /// resume it on the next message. 0 = never.
     pub hibernate_after_mins: u64,
+    /// When a session is waiting for memory, pause sessions that have been
+    /// idle at least this long to make room (longest-idle first).
+    pub reclaim_idle_after_secs: u64,
 }
 
 impl Default for BudgetConfig {
     fn default() -> Self {
-        BudgetConfig { reserve_mb: 0, max_sessions: 0, initial_estimate_mb: 600, hibernate_after_mins: 0 }
+        BudgetConfig { reserve_mb: 0, max_sessions: 0, initial_estimate_mb: 600, hibernate_after_mins: 0, reclaim_idle_after_secs: 30 }
     }
 }
 

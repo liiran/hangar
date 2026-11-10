@@ -4,7 +4,7 @@ import type { Session, SessionEvent } from "../api";
 import { api } from "../api";
 import { duration } from "../format";
 import { report } from "../store";
-import { toRows, toolSummary, type Row } from "../transcript";
+import { relative, toRows, toolSummary, type Row } from "../transcript";
 import { Markdown } from "./Markdown";
 import { Button, cx } from "./ui";
 
@@ -87,7 +87,7 @@ function RowView({ row, session }: { row: Row; session: Session }) {
     case "thinking":
       return <Collapsible icon={<Brain className="size-3.5" />} label="Thinking" body={row.text} />;
     case "tool":
-      return <ToolRow row={row} />;
+      return <ToolRow row={row} cwd={session.cwd} />;
     case "permission":
       return <PermissionRow row={row} session={session} />;
     case "result":
@@ -111,6 +111,61 @@ function RowView({ row, session }: { row: Row; session: Session }) {
   }
 }
 
+/** Shows what the user is approving in the most readable form for the tool. */
+function PermissionPreview({ tool, input, cwd, description }: { tool: string; input: any; cwd: string; description?: string | null }) {
+  const box = "mt-2.5 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-3 font-mono text-[12px] ring-1 ring-inset ring-line";
+  const path = typeof input?.file_path === "string" ? relative(input.file_path, cwd) : null;
+  if (tool === "Bash" && typeof input?.command === "string") {
+    return (
+      <>
+        {input.description && <p className="mt-1 text-[12.5px] text-muted">{input.description}</p>}
+        <pre className={box}>
+          <span className="text-faint select-none">$ </span>
+          {input.command}
+        </pre>
+      </>
+    );
+  }
+  if (tool === "Write" && path && typeof input?.content === "string") {
+    return (
+      <>
+        <p className="mt-1 text-[12.5px] text-muted">
+          Create or overwrite <span className="font-mono text-fg">{path}</span>
+        </p>
+        <pre className={box}>{input.content}</pre>
+      </>
+    );
+  }
+  if ((tool === "Edit" || tool === "MultiEdit") && path) {
+    const edits: { old_string: string; new_string: string }[] = tool === "Edit" ? [input] : Array.isArray(input.edits) ? input.edits : [];
+    return (
+      <>
+        <p className="mt-1 text-[12.5px] text-muted">
+          Edit <span className="font-mono text-fg">{path}</span>
+        </p>
+        <div className={box}>
+          {edits.map((e, i) => (
+            <div key={i} className={i > 0 ? "mt-3 border-t border-line pt-3" : ""}>
+              {String(e.old_string ?? "").split("\n").map((l, j) => (
+                <div key={`o${j}`} className="bg-rose-500/10 text-rose-300 [@media(prefers-color-scheme:light)]:text-rose-700">- {l}</div>
+              ))}
+              {String(e.new_string ?? "").split("\n").map((l, j) => (
+                <div key={`n${j}`} className="bg-emerald-500/10 text-emerald-300 [@media(prefers-color-scheme:light)]:text-emerald-700">+ {l}</div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </>
+    );
+  }
+  return (
+    <>
+      {description && <p className="mt-1 text-[12.5px] text-muted">{description}</p>}
+      <pre className={box}>{JSON.stringify(input, null, 2)}</pre>
+    </>
+  );
+}
+
 function Collapsible({ icon, label, body, mono }: { icon: React.ReactNode; label: React.ReactNode; body: string; mono?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
@@ -125,10 +180,10 @@ function Collapsible({ icon, label, body, mono }: { icon: React.ReactNode; label
   );
 }
 
-function ToolRow({ row }: { row: Extract<Row, { kind: "tool" }> }) {
+function ToolRow({ row, cwd }: { row: Extract<Row, { kind: "tool" }>; cwd: string }) {
   const [open, setOpen] = useState(false);
   const Icon = TOOL_ICONS[row.name] ?? Hammer;
-  const summary = toolSummary(row.name, row.input);
+  const summary = toolSummary(row.name, row.input, cwd);
   const failed = row.result?.isError;
   return (
     <div className={cx("rounded-xl bg-panel ring-1 ring-inset", failed ? "ring-rose-500/30" : "ring-line")}>
@@ -166,7 +221,7 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
       setBusy(false);
     }
   };
-  const summary = toolSummary(row.tool, row.input);
+  const summary = toolSummary(row.tool, row.input, session.cwd);
   if (!live) {
     const label = row.decision === "deny" ? "Denied" : row.decision === "allow_always" ? "Always allowed" : row.decision ? "Allowed" : "Expired";
     return (
@@ -185,10 +240,7 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
         <ShieldQuestion className="size-4" />
         Claude wants to use {row.tool}
       </div>
-      {row.description && <p className="mt-1 text-[12.5px] text-muted">{row.description}</p>}
-      <pre className="mt-2.5 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-3 font-mono text-[12px]">
-        {row.tool === "Bash" && typeof row.input?.command === "string" ? row.input.command : JSON.stringify(row.input, null, 2)}
-      </pre>
+      <PermissionPreview tool={row.tool} input={row.input} cwd={session.cwd} description={row.description} />
       <div className="mt-3 flex flex-wrap gap-2">
         <Button variant="primary" disabled={busy} onClick={() => decide("allow")}>
           <Check className="size-4" /> Allow

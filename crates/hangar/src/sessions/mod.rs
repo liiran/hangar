@@ -168,6 +168,7 @@ pub struct Manager {
     tx: broadcast::Sender<UiEvent>,
     driver_tx: mpsc::UnboundedSender<claude::DriverEvent>,
     hibernate_after: Option<Duration>,
+    reclaim_after: Duration,
 }
 
 struct Inner {
@@ -188,6 +189,7 @@ impl Manager {
             tx,
             driver_tx,
             hibernate_after,
+            reclaim_after: Duration::from_secs(config.budget.reclaim_idle_after_secs),
         });
         manager.load();
         tokio::spawn(manager.clone().driver_loop(driver_rx));
@@ -491,7 +493,7 @@ impl Manager {
                         .sessions
                         .values()
                         .filter(|s| s.meta.status == Status::Idle && s.driver.is_some() && s.meta.claude_session_id.is_some() && s.stopping.is_none())
-                        .filter(|s| s.idle_since.is_some_and(|t| t.elapsed() > Duration::from_secs(30)))
+                        .filter(|s| s.idle_since.is_some_and(|t| t.elapsed() >= self.reclaim_after))
                         .min_by_key(|s| s.idle_since)
                         .map(|s| s.meta.id.clone());
                     if let Some(v) = victim {
