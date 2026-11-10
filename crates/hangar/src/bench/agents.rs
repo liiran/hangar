@@ -20,13 +20,25 @@ pub struct Pool {
     pub shim: PathBuf,
 }
 
-/// Starts `hangar daemon` (no UI) in a fresh home under `workdir`.
+/// Where the warmup records which npx packages real npx just resolved.
+pub fn npx_record_dir(workdir: &Path) -> PathBuf {
+    workdir.join("npx-record")
+}
+
+/// Starts `hangar daemon` (no UI) in a fresh home under `workdir`, the way
+/// `hangar up` does: detached, with no console of its own.
 pub async fn start_pool(workdir: &Path, fast_npx: bool) -> Result<Pool> {
     let home = workdir.join(format!("home-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home)?;
     if !fast_npx {
         std::fs::write(home.join("config.toml"), "[pool]\nfast_npx = false\n")?;
+    }
+    // A real home remembers when npx last resolved each tagged package; carry
+    // over what the warmup's real npx runs recorded.
+    let record = npx_record_dir(workdir).join(crate::launch::FRESH_FILE);
+    if record.is_file() {
+        std::fs::copy(&record, home.join(crate::launch::FRESH_FILE))?;
     }
     let exe = std::env::current_exe()?;
     let shim = exe.with_file_name(if cfg!(windows) { "hangar-shim.exe" } else { "hangar-shim" });
@@ -36,7 +48,8 @@ pub async fn start_pool(workdir: &Path, fast_npx: bool) -> Result<Pool> {
     let mut cmd = Command::new(&exe);
     cmd.args(["daemon", "--quiet", "--no-ui"]).env(hangar_proto::ENV_HOME, &home);
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    crate::procs::hide_window(&mut cmd);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0000_0008); // DETACHED_PROCESS
     let child = cmd.spawn().context("starting the pool daemon")?;
     let pid = child.id().unwrap_or(0);
     std::mem::forget(child); // the caller's job owns it

@@ -358,6 +358,12 @@ impl Manager {
         if !PERMISSION_MODES.contains(&mode.as_str()) {
             bail!("unknown permission mode {mode}");
         }
+        let model = req.model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+        if let Some(m) = &model
+            && !valid_model(m)
+        {
+            bail!("{m:?} is not a model name");
+        }
         let info = self.trust(&cwd);
         if !info.trusted {
             if !req.trust {
@@ -374,7 +380,7 @@ impl Manager {
             cwd: cwd.display().to_string(),
             created_ms: now,
             updated_ms: now,
-            model: req.model.filter(|m| !m.is_empty()),
+            model,
             permission_mode: mode,
             claude_session_id: None,
             status: Status::Queued,
@@ -996,6 +1002,12 @@ fn new_id() -> String {
     format!("s{}", crate::util::random_hex(6))
 }
 
+/// Model names become a `claude --model` argument: letters, digits and
+/// `.-_:[]/` only, never starting with `-` (which would read as a flag).
+fn valid_model(m: &str) -> bool {
+    !m.is_empty() && m.len() <= 100 && !m.starts_with('-') && m.chars().all(|c| c.is_ascii_alphanumeric() || ".-_:[]/".contains(c))
+}
+
 /// Session ids are `s` + 12 hex digits; anything else never reaches the disk.
 pub(crate) fn valid_id(id: &str) -> bool {
     id.len() == 13 && id.starts_with('s') && id[1..].chars().all(|c| c.is_ascii_hexdigit())
@@ -1021,6 +1033,16 @@ mod tests {
         assert!(s.get("tool_use_result").is_none());
         let assistant = json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "x".repeat(MAX_BLOCK_TEXT * 2)}]}});
         assert_eq!(slim(assistant.clone()), assistant, "assistant text is never cut");
+    }
+
+    #[test]
+    fn model_names_cannot_smuggle_flags() {
+        for ok in ["haiku", "opus", "claude-sonnet-5-5", "claude-opus-5-5[1m]", "us.anthropic.claude-haiku-5-5"] {
+            assert!(valid_model(ok), "{ok}");
+        }
+        for bad in ["--dangerously-skip-permissions", "-p", "haiku --verbose", "a;b", "x\ny", ""] {
+            assert!(!valid_model(bad), "{bad:?}");
+        }
     }
 
     #[test]

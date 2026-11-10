@@ -383,6 +383,9 @@ fn per_session_estimate(results: &[RunResult], mode: Mode, agent: Agent, servers
 /// terminated afterwards, so nothing survives into the measured runs.
 async fn warmup(servers: &ServerSet, workdir: &Path) -> Result<()> {
     let job = Job::new_kill_on_close()?;
+    let record = agents::npx_record_dir(workdir);
+    std::fs::create_dir_all(&record)?;
+    let record = &record;
     let mut tasks = Vec::new();
     for (name, spec) in servers {
         let cmd = server_command(name, spec, workdir, None);
@@ -392,6 +395,11 @@ async fn warmup(servers: &ServerSet, workdir: &Path) -> Result<()> {
             let _ = job.assign_pid(client.pid());
             let ok = client.initialize("hangar-warmup", READY_TIMEOUT).await.is_ok();
             client.shutdown_like_agent().await;
+            if ok {
+                // Real npx just resolved this package: as on any machine that
+                // used it recently, pooled runs may start the cached copy.
+                crate::launch::note_npx_ran(Some(record.as_path()), spec);
+            }
             (name, ok)
         });
     }

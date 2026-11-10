@@ -6,29 +6,44 @@
 
 ## Results
 
-Five real Claude Code sessions started at once, each with five popular MCP servers (Playwright, Context7, Memory, Sequential Thinking, Filesystem). Measured by `hangar bench --agent claude`, which drives real headless Claude Code and reads readiness from its own `mcp_status` (no prompt is sent, so no tokens are spent).
+Three real Claude Code sessions started at once, each with five popular MCP servers (Playwright, Context7, Memory, Sequential Thinking, Filesystem). Measured by `hangar bench --agent claude`, which drives real headless Claude Code and reads readiness from its own `mcp_status` (no prompt is sent, so no tokens are spent).
 
-| 5 sessions | Without hangar | With hangar | Change |
+| 3 sessions | Without hangar | With hangar | Change |
 |---|---:|---:|---:|
-| MCP memory (private bytes) | 3.97 GB | 870 MB | **−79%** |
-| MCP processes | 130 | 58 | −55% |
-| CPU spent starting MCP servers | 43.7 s | 13.2 s | **−70%** |
-| Time until MCP tools are ready (p95) | 8.0 s | 3.0 s | **2.7× faster** |
-| Whole footprint, Claude Code included | 6.04 GB | 2.99 GB | −50% |
+| MCP memory (private bytes) | 2.39 GB | 599 MB | **−75%** |
+| MCP processes | 78 | 37 | −53% |
+| CPU spent starting MCP servers | 24.3 s | 6.9 s | **−72%** |
+| Time until MCP tools are ready (p95) | 6.1 s | 1.8 s | **3.4× faster** |
+| Whole footprint, Claude Code included | 3.64 GB | 1.85 GB | −49% |
 
-When every session also uses its browser (5 simulated sessions, each opening a page and checking that it sees only its own): **5.13 GB → 1.44 GB (−72%)**, tools ready in 1.9 s instead of 9.3 s.
+Five simulated sessions (the same servers, a minimal MCP client per server instead of Claude): **3.96 GB → 845 MB (−79%)**, startup CPU 36.7 s → 5.8 s (−84%), tools ready in 1.4 s instead of 7.4 s. When every session also drives its browser (3 sessions, each opening a page and checking it sees only its own): **3.20 GB → 1.01 GB (−68%)**. Every run had zero failed sessions and zero leftover processes, in both modes.
 
 Where the savings come from, at 5 simulated sessions:
 
 | | MCP memory | Startup CPU |
 |---|---:|---:|
-| Every session starts its own servers | 3.94 GB | 36.8 s |
-| Shared servers only | 2.06 GB (−48%) | 19.1 s (−48%) |
-| Shared servers + npx fast path | 846 MB (−79%) | 5.7 s (−84%) |
+| Every session starts its own servers | 3.96 GB | 36.7 s |
+| Shared servers only | 2.06 GB (−48%) | 19.6 s (−47%) |
+| Shared servers + npx fast path | 845 MB (−79%) | 5.8 s (−84%) |
 
-At 10 simulated sessions the pooled setup used 1.46 GB. The unpooled run was skipped by the benchmark's own memory guard: it needed about 7.9 GB plus a 2 GB reserve, and 9.4 GB was free.
+The fast-path row assumes npx resolved each tagged package within the last day (the benchmark's warmup does, as daily use would). On the first start of a day, pooled startup looks like the "shared servers only" row.
+
+With hangar, 5 real sessions used 857 MB of MCP memory and 10 simulated ones 1.45 GB. Their unpooled runs were skipped by the benchmark's own memory guard: with about 6.5 GB free, they would have left less than the 2 GB reserve.
 
 Measured on Windows 11, Ryzen 5 9600X (12 threads), 31 GB RAM, Claude Code 2.1.321, Node 22. Full tables, the method, and the caveats are in [bench/README.md](bench/README.md). Rerun everything with `bash bench/run-all.sh`.
+
+## Quality: nothing is traded away
+
+Saving memory would be worthless if sessions got worse answers. `hangar verify` runs the same scripted tool calls against each server started directly and through the pool, then compares the answers (timestamps masked). It also proves, from the pool's own request counters, that the pooled answers really came through the pool and not through the shim's direct fallback.
+
+| | Result |
+|---|---|
+| Tool answers, direct vs. pooled (Memory, Filesystem, Sequential Thinking, Playwright, Context7) | **21 of 21 identical** |
+| Servers whose pooled calls were provably served by the pool | 5 of 5 |
+| Extra latency per tool call through the pool (p50, 300 calls) | +0.11 ms (Memory), +0.10 ms (Filesystem), +0.94 ms (Playwright, over HTTP) |
+| Real Claude Code (Haiku) tasks that need MCP: store and recall, read a file, read a web page | **9 of 9 succeeded both ways**, same turns, same cost; all 9 pooled runs went through the pool |
+
+The Claude tasks run with Claude's built-in tools turned off, so the only way to succeed is through the MCP server. Full tables: [verify.md](bench/results/verify.md).
 
 ## Why
 
@@ -75,16 +90,18 @@ On Windows with the GNU toolchain, put a MinGW `bin` folder (for `dlltool` and `
                                                                                                     a context per session)
 ```
 
-The shim is an 800 KB windowless binary using about 1.2 MB of memory per instance. It forwards newline-delimited JSON-RPC, replays the client's `initialize` if the daemon restarts, and runs the server itself if the daemon is unreachable, so wrapping a server never breaks it.
+The shim is a 900 KB windowless binary using about 1.2 MB of memory per instance. It forwards newline-delimited JSON-RPC, answers requests a vanished daemon left open, replays the client's `initialize` when it reconnects, and runs the server itself if the daemon is unreachable, so wrapping a server never breaks it.
 
 The daemon gives each server a **share level** and never changes what a server returns:
 
 | Level | Who shares one process | Used for |
 |---|---|---|
 | `global` | every session | stateless API clients and docs (Context7, GitHub, search, fetch, Memory) |
-| `project` | sessions in the same folder | unknown servers (the safe default) |
+| `project` | sessions in the same folder | servers you mark `project` in the config |
 | `native` | every session, each with its own state inside the server | Playwright with `--isolated`: one browser, an isolated context per session |
-| `session` | one session, as today, but supervised | stateful servers (filesystem roots, sequential thinking, browsers without `--isolated`) |
+| `session` | one session, as today, but supervised | stateful servers (filesystem roots, sequential thinking, browsers without `--isolated`) and every server hangar does not know (the safe default) |
+
+Sessions whose environments carry different credentials (anything that looks like a key, token or secret) never share a process, whatever the level.
 
 For shared servers the daemon:
 
@@ -96,14 +113,23 @@ For shared servers the daemon:
 
 Two launch optimizations apply at every level:
 
-- **npx fast path.** npx names its cache folder `sha512(package spec)[..16]`, so hangar can start a cached package's entry script with `node` directly. That skips two launcher processes (about 70 MB) and npm's registry round-trip. If the fast start fails, hangar uses the configured command.
+- **npx fast path.** npx names its cache folder `sha512(package spec)[..16]`, so hangar can start a cached package's entry script with `node` directly. That skips two launcher processes (about 70 MB) and npm's registry round-trip. Exact versions always qualify; tags like `@latest` only if hangar saw real npx resolve them within the last day, so you still get updates. The entry script must live inside its package folder. If the fast start fails, hangar uses the configured command.
 - **No console for the shim.** Windows starts no `conhost.exe` for it.
 
 ## How sessions work
 
 Each session is a headless `claude` process speaking the same stream-json control protocol the official Agent SDKs use. Permission prompts arrive as `can_use_tool` requests and wait for you in the UI. Stopped or paused sessions resume the same conversation with `--resume`. Events are kept in `~/.hangar/sessions/<id>/events.jsonl`, so history survives restarts.
 
-The app is served on `127.0.0.1` only. It needs an HttpOnly, SameSite=Strict cookie that `hangar up` sets from a token only your user can read, checks the `Host` header against DNS rebinding, and refuses cross-origin writes.
+A folder's own Claude settings can run commands (hooks), pre-approve tools and start MCP servers. Interactive Claude Code asks before trusting a new folder; headless mode does not, so hangar does: the first session in a folder shows exactly what it would run and starts only after you confirm. "Allow for session" remembers a rule for that session only, never in the project's settings files.
+
+## Security
+
+Everything listens on `127.0.0.1` only, and nothing runs without a secret only your user can read.
+
+- **Daemon and shims.** The daemon writes a random token to `~/.hangar/daemon.json` (owner-only on Unix). A shim first makes the daemon prove it knows the token (a SHA-256 challenge), and only then sends its token, command and environment. A process that does not know the token cannot start anything through the daemon, and a fake daemon cannot collect a shim's environment.
+- **The app.** `hangar up` opens the app with a one-time pairing code (128 random bits, single use, valid 2 minutes), never the token. The page trades it for a separate UI token kept in the page's storage and sent as a header, so other sites cannot ride on it the way they could with a cookie. The API also checks `Host` (against DNS rebinding) and `Origin`, and serves a strict Content-Security-Policy. Images in Claude's replies render as links, so a reply cannot make the app fetch a URL.
+- **Processes.** Every server and every Claude process runs in a kill-on-close job object, so nothing outlives hangar, even if it crashes. Arguments passed to `claude` are whitelisted (permission modes) or validated (model names cannot start with `-`). Session ids are validated before they touch the disk; config edits are atomic, backed up and never pass through a world-readable file.
+- **One gap to know about.** Playwright's multi-session mode is an HTTP server on a random loopback port without authentication of its own, so on a machine shared with other users, another local user could reach it. Set `share = "session"` for Playwright there.
 
 ## Commands
 
@@ -113,6 +139,7 @@ The app is served on `127.0.0.1` only. It needs an HttpOnly, SameSite=Strict coo
 | `hangar status` | the daemon and every pooled server, with memory and sessions |
 | `hangar wrap` / `unwrap` | route Claude Code's stdio MCP servers through the pool, or undo it |
 | `hangar bench` | measure memory, CPU and startup time, pooled vs. not, on your own machine |
+| `hangar verify` | check pooled servers answer exactly like direct ones and time each call; `--with-claude` also runs real Claude tasks both ways |
 | `hangar stop` | stop the daemon and every server it runs |
 
 ## Configuration
@@ -137,26 +164,34 @@ hibernate_after_mins = 0    # pause idle sessions on a timer; 0 = only when room
 ## Development
 
 ```sh
-cargo test --release --workspace   # 67 tests: unit, pool integration, sessions and API
-cd web && npm run dev               # UI dev server, proxied to a running daemon on :7317
+cargo test --workspace                      # Rust: unit, pool, sessions, API and CLI tests
+cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all --check
+cd web && npm test                          # UI logic
+cargo build --workspace && npm run e2e      # the app in a real browser against a real daemon (fake Claude, no network)
+cargo build --release && npm run e2e:claude # one real Claude Code (Haiku) session through the API; costs well under a cent
+npm run dev                                 # UI dev server on :5173, proxied to a daemon on :7317
 ```
 
-The integration tests run real shim processes against an in-process daemon, with a scriptable fake MCP server and a fake `claude` that speaks the stream-json protocol. They cover routing under concurrent overlapping ids, progress isolation, caching, crash restart, idle shutdown, subscriptions, roots safety, fallback, reconnect after a daemon restart, approvals, the budget queue, idle reclaim, resume, and the API's cookie, Host and Origin checks.
+The integration tests run real shim processes against an in-process daemon, with a scriptable fake MCP server (stdio and HTTP) and a fake `claude` that speaks the stream-json protocol. They cover routing under concurrent overlapping ids, progress isolation, caching, crash restart, idle shutdown, subscriptions, roots safety, fallback, reconnect after a daemon restart, impostor daemons, approvals and withdrawn approvals, the budget queue, idle reclaim, resume, workspace trust, pairing, and the API's token, Host, Origin and CSP checks.
 
 | Path | |
 |---|---|
 | `crates/hangar-shim` | the stand-in a client launches instead of a server |
+| `crates/hangar-proto` | the shim ↔ daemon handshake and discovery file |
 | `crates/hangar/src/pool` | upstream actors (stdio and multi-session HTTP), sharing and routing |
-| `crates/hangar/src/sessions` | the Claude Code driver, session state and the budget |
-| `crates/hangar/src/bench.rs` | the benchmark harness |
-| `web/` | the React + TypeScript + Tailwind app |
+| `crates/hangar/src/sessions` | the Claude Code driver, session state, storage and workspace trust |
+| `crates/hangar/src/budget.rs` | the memory budget |
+| `crates/hangar/src/api.rs` | the app's HTTP and WebSocket API |
+| `crates/hangar/src/bench`, `verify.rs` | the benchmark and the quality check |
+| `crates/testkit` | fake MCP servers, fake `claude`, and the integration tests |
+| `web/` | the React + TypeScript + Tailwind app, its unit tests and `e2e/` scripts |
 
 ## Limitations
 
-- Windows is the tested platform. The Unix code paths type-check (`cargo check --target x86_64-unknown-linux-gnu` and `x86_64-apple-darwin`) but have not been run.
-- Claude Code only for now; Codex is next.
+- Windows is the tested platform. The Unix code paths pass `cargo clippy` for `x86_64-unknown-linux-gnu` and `x86_64-apple-darwin` but have not been run, and `hangar bench` refuses to run there because it relies on Windows job accounting to count every process.
+- Claude Code only for now.
 - Claude Code 2.1.3xx first probes servers with `server/discover` from a newer MCP revision. hangar answers like today's servers do (method not found), and Claude falls back to `initialize`.
-- The npx fast path skips npm's update check for `@latest` packages, so it runs the version npx last cached. Set `fast_npx = false` to keep the check.
+- Between real npx runs (at most a day apart), the fast path starts the version of an `@latest` package that npx last cached. Set `fast_npx = false` to check the registry on every start.
 - Killing Claude Code left no orphaned server processes in this benchmark, pooled or not, so that is not claimed as a win. hangar's job objects guarantee it either way.
 
 ## License

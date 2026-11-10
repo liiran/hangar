@@ -83,8 +83,11 @@ pub fn is_exact(pkg_spec: &str) -> bool {
     })
 }
 
+/// The file in a state dir that records when real npx last resolved each package.
+pub const FRESH_FILE: &str = "npx-fresh.json";
+
 fn fresh_file(dir: &Path) -> PathBuf {
-    dir.join("npx-fresh.json")
+    dir.join(FRESH_FILE)
 }
 
 static FRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
