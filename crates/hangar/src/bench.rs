@@ -620,10 +620,10 @@ pub async fn run(opts: BenchOpts) -> Result<Vec<RunResult>> {
                 let (_, avail) = procs::system_memory();
                 if need + opts.reserve_bytes > avail {
                     println!(
-                        "  skip {mode:>6} x{n:<3} needs ~{} but only {} is free (keeping {} in reserve)",
+                        "  skip {mode:>6} x{n:<3} needs ~{} plus a {} reserve; only {} is free",
                         fmt_bytes(need),
-                        fmt_bytes(avail),
-                        fmt_bytes(opts.reserve_bytes)
+                        fmt_bytes(opts.reserve_bytes),
+                        fmt_bytes(avail)
                     );
                     continue;
                 }

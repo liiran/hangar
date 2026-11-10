@@ -10,23 +10,23 @@ Five real Claude Code sessions started at once, each with five popular MCP serve
 
 | 5 sessions | Without hangar | With hangar | Change |
 |---|---:|---:|---:|
-| MCP memory (private bytes) | 3.63 GB | 883 MB | **−76%** |
+| MCP memory (private bytes) | 3.97 GB | 870 MB | **−79%** |
 | MCP processes | 130 | 58 | −55% |
-| CPU spent starting MCP servers | 47.0 s | 12.4 s | **−74%** |
-| Time until MCP tools are ready (p95) | 11.0 s | 3.0 s | **3.7× faster** |
-| Whole footprint, Claude Code included | 5.72 GB | 2.96 GB | −48% |
+| CPU spent starting MCP servers | 43.7 s | 13.2 s | **−70%** |
+| Time until MCP tools are ready (p95) | 8.0 s | 3.0 s | **2.7× faster** |
+| Whole footprint, Claude Code included | 6.04 GB | 2.99 GB | −50% |
 
-When every session also uses its browser (5 simulated sessions, each opening a page and checking that it sees only its own): **5.10 GB → 1.43 GB (−72%)**, tools ready in 2.7 s instead of 11.3 s.
+When every session also uses its browser (5 simulated sessions, each opening a page and checking that it sees only its own): **5.13 GB → 1.44 GB (−72%)**, tools ready in 1.9 s instead of 9.3 s.
 
 Where the savings come from, at 5 simulated sessions:
 
 | | MCP memory | Startup CPU |
 |---|---:|---:|
-| Every session starts its own servers | 3.95 GB | 36.8 s |
-| Shared servers only | 2.05 GB (−48%) | 19.3 s (−48%) |
-| Shared servers + npx fast path | 872 MB (−78%) | 6.2 s (−83%) |
+| Every session starts its own servers | 3.94 GB | 36.8 s |
+| Shared servers only | 2.06 GB (−48%) | 19.1 s (−48%) |
+| Shared servers + npx fast path | 846 MB (−79%) | 5.7 s (−84%) |
 
-At 10 simulated sessions the pooled setup used 1.47 GB. The unpooled run was skipped by the benchmark's own memory guard, which estimated it needed about 8 GB and only 7.7 GB was free.
+At 10 simulated sessions the pooled setup used 1.46 GB. The unpooled run was skipped by the benchmark's own memory guard: it needed about 7.9 GB plus a 2 GB reserve, and 9.4 GB was free.
 
 Measured on Windows 11, Ryzen 5 9600X (12 threads), 31 GB RAM, Claude Code 2.1.321, Node 22. Full tables, the method, and the caveats are in [bench/README.md](bench/README.md). Rerun everything with `bash bench/run-all.sh`.
 

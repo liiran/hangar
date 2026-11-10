@@ -11,16 +11,16 @@
       "filesystem"
     ],
     "session_ready_ms": [
-      4150,
-      4150,
-      4150
+      3406,
+      3791,
+      3411
     ],
     "failures": [],
     "mcp": {
-      "processes": 74,
-      "private_bytes": 2016985088,
-      "working_set": 2421841920,
-      "cpu_ms": 16130
+      "processes": 96,
+      "private_bytes": 2749485056,
+      "working_set": 3421925376,
+      "cpu_ms": 21259
     },
     "agents": {
       "processes": 0,
@@ -31,24 +31,24 @@
     "breakdown": {
       "daemon": {
         "processes": 1,
-        "private_bytes": 15425536,
-        "working_set": 20082688,
-        "cpu_ms": 92
+        "private_bytes": 8163328,
+        "working_set": 14340096,
+        "cpu_ms": 171
       },
       "server": {
-        "processes": 58,
-        "private_bytes": 1983381504,
-        "working_set": 2321829888,
-        "cpu_ms": 15720
+        "processes": 80,
+        "private_bytes": 2723524608,
+        "working_set": 3325411328,
+        "cpu_ms": 20830
       },
       "shim": {
         "processes": 15,
-        "private_bytes": 18178048,
-        "working_set": 79929344,
-        "cpu_ms": 318
+        "private_bytes": 17797120,
+        "working_set": 82173952,
+        "cpu_ms": 258
       }
     },
-    "cpu_ms": 17266,
+    "cpu_ms": 22890,
     "leftovers": {
       "processes": 0,
       "private_bytes": 0,
@@ -57,6 +57,6 @@
     },
     "leftover_names": [],
     "warm_ready_ms": [],
-    "wall_ms": 12256
+    "wall_ms": 11898
   }
 ]

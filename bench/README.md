@@ -23,24 +23,24 @@ Machine: Windows 11, AMD Ryzen 5 9600X (6 cores / 12 threads), 31 GB RAM, Node 2
 
 | Sessions | Mode | MCP processes | MCP memory | Claude memory | CPU to start | Ready p95 |
 |---:|---|---:|---:|---:|---:|---:|
-| 1 | direct | 26 | 821 MB | 436 MB | 6.6 s | 3.6 s |
-| 1 | pooled | 18 | 350 MB | 437 MB | 3.1 s | 1.5 s |
-| 3 | direct | 78 | 2.39 GB | 1.29 GB | 25.2 s | 5.8 s |
-| 3 | pooled | 38 | 607 MB | 1.24 GB | 7.6 s | 1.8 s |
-| 5 | direct | 130 | 3.63 GB | 2.09 GB | 47.0 s | 11.0 s |
-| 5 | pooled | 58 | 883 MB | 2.10 GB | 12.4 s | 3.0 s |
+| 1 | direct | 26 | 816 MB | 431 MB | 6.9 s | 3.9 s |
+| 1 | pooled | 18 | 347 MB | 421 MB | 3.6 s | 1.8 s |
+| 3 | direct | 78 | 2.38 GB | 1.27 GB | 24.8 s | 5.3 s |
+| 3 | pooled | 38 | 604 MB | 1.23 GB | 6.8 s | 2.1 s |
+| 5 | direct | 130 | 3.97 GB | 2.07 GB | 43.7 s | 8.0 s |
+| 5 | pooled | 58 | 870 MB | 2.14 GB | 13.2 s | 3.0 s |
 
 ## Simulated agents ([sim.md](results/sim.md))
 
 | Sessions | Mode | MCP processes | MCP memory | CPU to start | Ready p95 |
 |---:|---|---:|---:|---:|---:|
-| 1 | direct | 25 | 818 MB | 6.0 s | 2.1 s |
-| 1 | pooled | 17 | 346 MB | 2.2 s | 698 ms |
-| 5 | direct | 125 | 3.95 GB | 36.8 s | 7.8 s |
-| 5 | pooled | 53 | 872 MB | 6.2 s | 1.2 s |
-| 10 | pooled | 98 | 1.47 GB | 10.2 s | 1.8 s |
+| 1 | direct | 25 | 813 MB | 5.6 s | 2.2 s |
+| 1 | pooled | 17 | 344 MB | 2.4 s | 955 ms |
+| 5 | direct | 125 | 3.94 GB | 36.8 s | 6.9 s |
+| 5 | pooled | 53 | 846 MB | 5.7 s | 1.3 s |
+| 10 | pooled | 98 | 1.46 GB | 11.3 s | 1.7 s |
 
-The 10-session direct run was skipped by the memory guard: it needed about 8 GB and 7.7 GB was free. A second wave of sessions joining already-warm servers was ready in 400 ms (1 session) and 730 ms p95 (5 sessions). The per-session servers still start cold, so this is not instant.
+The 10-session direct run was skipped by the memory guard: it needed about 7.9 GB plus the 2 GB reserve, and 9.4 GB was free. A second wave of sessions joining already-warm servers was ready in 606 ms (1 session) and 1.2 s p95 (5 sessions). The per-session servers still start cold, so this is not instant.
 
 ## Every session uses its browser ([sim-browse.md](results/sim-browse.md))
 
@@ -48,12 +48,12 @@ Each session opens a page titled with its own number and then checks, through `b
 
 | Sessions | Mode | MCP processes | MCP memory | CPU to start | Ready p95 |
 |---:|---|---:|---:|---:|---:|
-| 1 | direct | 33 | 1.07 GB | 8.5 s | 2.6 s |
-| 1 | pooled | 25 | 629 MB | 4.6 s | 987 ms |
-| 3 | direct | 99 | 3.20 GB | 29.5 s | 6.0 s |
-| 3 | pooled | 47 | 1.03 GB | 7.7 s | 1.6 s |
-| 5 | direct | 165 | 5.10 GB | 50.8 s | 11.3 s |
-| 5 | pooled | 69 | 1.43 GB | 11.4 s | 2.7 s |
+| 1 | direct | 33 | 1.08 GB | 8.1 s | 2.1 s |
+| 1 | pooled | 25 | 608 MB | 4.1 s | 1.1 s |
+| 3 | direct | 99 | 3.20 GB | 28.9 s | 5.3 s |
+| 3 | pooled | 47 | 1.02 GB | 7.1 s | 1.2 s |
+| 5 | direct | 165 | 5.13 GB | 50.4 s | 9.3 s |
+| 5 | pooled | 69 | 1.44 GB | 10.6 s | 1.9 s |
 
 ## Where the savings come from ([sim-no-fast-npx.md](results/sim-no-fast-npx.md))
 
@@ -61,9 +61,9 @@ Five simulated sessions, with the npx fast path turned off so only sharing is me
 
 | | MCP processes | MCP memory | CPU to start | Ready p95 |
 |---|---:|---:|---:|---:|
-| direct | 125 | 3.95 GB | 36.8 s | 7.8 s |
-| pooled, sharing only | 92 | 2.05 GB | 19.3 s | 3.9 s |
-| pooled, sharing + fast path | 53 | 872 MB | 6.2 s | 1.2 s |
+| direct | 125 | 3.94 GB | 36.8 s | 6.9 s |
+| pooled, sharing only | 92 | 2.06 GB | 19.1 s | 4.1 s |
+| pooled, sharing + fast path | 53 | 846 MB | 5.7 s | 1.3 s |
 
 Context7 and Memory are shared by every session, and Playwright is one process with a context per session. Sequential Thinking and Filesystem keep per-session state, so they still run once per session. The fast path makes those per-session copies cheaper too, which is why it matters even with sharing.
 
@@ -73,3 +73,4 @@ Context7 and Memory are shared by every session, and Playwright is one process w
 - **The fast path skips npm's registry check.** That check is part of why `npx -y pkg@latest` is slow, and skipping it means running the version npx last cached. `fast_npx = false` restores the check.
 - **One machine.** Numbers depend on the machine, the antivirus, the npm cache and which servers you run. Run `hangar bench` with `--preset <your .mcp.json>` to measure your own setup.
 - **The baseline** ([baseline-sim.md](results/baseline-sim.md)) was recorded before any pooling code existed.
+- **Run-to-run variation.** An earlier full run of the same matrix (in git history) gave the same picture within a few percent; for example, 5 real Claude Code sessions measured −76% MCP memory there and −79% here.
