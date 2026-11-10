@@ -25,12 +25,19 @@ use tokio::sync::{mpsc, watch};
 pub struct DaemonOptions {
     pub home: PathBuf,
     pub config: Config,
+    /// Serve the web UI on this port (0 = any free port). `None` = no UI.
+    pub ui_port: Option<u16>,
 }
+
+/// The UI's default port; any free port is used if it is taken.
+pub const DEFAULT_UI_PORT: u16 = 7317;
 
 /// A running daemon. Dropping it does not stop it; call [`Daemon::shutdown`].
 pub struct Daemon {
     pub info: DaemonInfo,
     pub pool: Arc<Pool>,
+    pub sessions: Arc<crate::sessions::Manager>,
+    ui: Option<tokio::task::JoinHandle<()>>,
     pub home: PathBuf,
     shutdown_tx: watch::Sender<bool>,
     accept: tokio::task::JoinHandle<()>,
@@ -67,20 +74,36 @@ impl Daemon {
         let token = random_token();
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.context("binding the shim port")?;
         let port = listener.local_addr()?.port();
+        let ui_listener = match opts.ui_port {
+            None => None,
+            Some(p) => Some(match TcpListener::bind(("127.0.0.1", p)).await {
+                Ok(l) => l,
+                Err(_) => TcpListener::bind(("127.0.0.1", 0)).await.context("binding the UI port")?,
+            }),
+        };
+        let ui_port = match &ui_listener {
+            Some(l) => Some(l.local_addr()?.port()),
+            None => None,
+        };
         let info = DaemonInfo {
             pid: std::process::id(),
             shim_port: port,
-            ui_port: None,
+            ui_port,
             token: token.clone(),
             version: env!("CARGO_PKG_VERSION").into(),
             started_at_ms: crate::pool::upstream::now_ms(),
         };
-        write_info(&opts.home, &info)?;
-
         let p = &opts.config.pool;
         let pool = Pool::new(PoolOptions { idle_timeout: p.idle_timeout(), session_grace: p.session_grace(), init_timeout: p.init_timeout(), fast_npx: p.fast_npx });
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let sessions = crate::sessions::Manager::start(&opts.home, &opts.config);
+        let ui = ui_listener.map(|l| {
+            let state = crate::api::AppState { manager: sessions.clone(), pool: pool.clone(), token: token.clone(), port: ui_port.unwrap_or(0) };
+            tokio::spawn(crate::api::serve(l, state, shutdown_tx.subscribe()))
+        });
         let shared = Arc::new(Shared { pool: pool.clone(), config: opts.config, token, info: info.clone(), shutdown_tx: shutdown_tx.clone() });
+        // Announce ourselves only once everything is listening.
+        write_info(&opts.home, &info)?;
 
         let accept = tokio::spawn(async move {
             loop {
@@ -99,7 +122,7 @@ impl Daemon {
             }
         });
         tracing::info!(port, home = %opts.home.display(), "hangar daemon listening");
-        Ok(Daemon { info, pool, home: opts.home, shutdown_tx, accept, _lock: lock })
+        Ok(Daemon { info, pool, sessions, ui, home: opts.home, shutdown_tx, accept, _lock: lock })
     }
 
     /// Resolves when someone asks the daemon to stop (`hangar stop`).
@@ -115,6 +138,10 @@ impl Daemon {
     pub async fn shutdown(self) {
         let _ = self.shutdown_tx.send(true);
         let _ = self.accept.await;
+        if let Some(ui) = self.ui {
+            let _ = tokio::time::timeout(Duration::from_secs(3), ui).await;
+        }
+        self.sessions.shutdown();
         self.pool.shutdown().await;
         // Only remove the discovery file if it is still ours.
         if hangar_proto::read_daemon_info(&self.home).is_some_and(|i| i.token == self.info.token) {

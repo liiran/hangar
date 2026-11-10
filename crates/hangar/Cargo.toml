@@ -27,6 +27,9 @@ getrandom = "0.3"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 futures-util = "0.3"
+axum = { version = "0.8", features = ["ws"] }
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

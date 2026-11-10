@@ -34,7 +34,7 @@ pub fn config(shares: &[(&str, Share)]) -> Config {
 }
 
 pub async fn start_daemon(home: &Path, config: Config) -> Daemon {
-    Daemon::start(DaemonOptions { home: home.to_path_buf(), config }).await.expect("daemon starts")
+    Daemon::start(DaemonOptions { home: home.to_path_buf(), config, ui_port: None }).await.expect("daemon starts")
 }
 
 pub fn fake_mcp() -> &'static str {

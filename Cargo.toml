@@ -14,7 +14,7 @@ hangar-proto = { path = "crates/hangar-proto" }
 hangar-shim = { path = "crates/hangar-shim" }
 hangar = { path = "crates/hangar" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 windows-sys = { version = "0.59", features = [

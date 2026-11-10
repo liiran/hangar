@@ -324,7 +324,7 @@ async fn start_pool(workdir: &Path, fast_npx: bool) -> Result<Pool> {
         bail!("hangar-shim not found next to {}", exe.display());
     }
     let mut cmd = Command::new(&exe);
-    cmd.arg("daemon").arg("--quiet").env(hangar_proto::ENV_HOME, &home).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    cmd.arg("daemon").arg("--quiet").arg("--no-ui").env(hangar_proto::ENV_HOME, &home).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let child = cmd.spawn().context("starting the pool daemon")?;

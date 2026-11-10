@@ -13,3 +13,6 @@ hangar-shim.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
