@@ -1,0 +1,120 @@
+// Turns a session's event log into rows to render.
+
+import type { SessionEvent } from "./api";
+
+export type Row =
+  | { kind: "user"; key: string; text: string; ts: number }
+  | { kind: "text"; key: string; text: string }
+  | { kind: "thinking"; key: string; text: string }
+  | { kind: "tool"; key: string; id: string; name: string; input: any; result?: { text: string; isError: boolean } }
+  | { kind: "permission"; key: string; requestId: string; tool: string; input: any; decision: string | null; description?: string | null }
+  | { kind: "result"; key: string; cost: number | null; durationMs: number | null; turns: number | null; isError: boolean; text: string | null }
+  | { kind: "error"; key: string; message: string };
+
+function resultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((b: any) => (b?.type === "text" ? b.text : b?.type === "image" ? "[image]" : ""))
+      .filter(Boolean)
+      .join("\n");
+  }
+  return content == null ? "" : JSON.stringify(content, null, 2);
+}
+
+export function toRows(events: SessionEvent[]): Row[] {
+  const rows: Row[] = [];
+  const tools = new Map<string, Extract<Row, { kind: "tool" }>>();
+  const perms = new Map<string, Extract<Row, { kind: "permission" }>>();
+  for (const e of events) {
+    const key = String(e.seq);
+    switch (e.kind) {
+      case "user":
+        rows.push({ kind: "user", key, text: e.text, ts: e.ts });
+        break;
+      case "claude": {
+        const m = e.msg;
+        if (m.type === "assistant") {
+          if (m.parent_tool_use_id) break; // inside a subagent; its tool row stands for it
+          (m.message?.content ?? []).forEach((b: any, i: number) => {
+            const k = `${key}.${i}`;
+            if (b.type === "text" && b.text?.trim()) rows.push({ kind: "text", key: k, text: b.text });
+            else if (b.type === "thinking" && b.thinking?.trim()) rows.push({ kind: "thinking", key: k, text: b.thinking });
+            else if (b.type === "tool_use") {
+              const row = { kind: "tool" as const, key: k, id: b.id, name: b.name, input: b.input };
+              tools.set(b.id, row);
+              rows.push(row);
+            }
+          });
+        } else if (m.type === "user") {
+          const content = m.message?.content;
+          if (Array.isArray(content)) {
+            for (const b of content) {
+              if (b.type === "tool_result" && tools.has(b.tool_use_id)) {
+                tools.get(b.tool_use_id)!.result = { text: resultText(b.content), isError: !!b.is_error };
+              }
+            }
+          }
+        } else if (m.type === "result") {
+          rows.push({
+            kind: "result",
+            key,
+            cost: m.total_cost_usd ?? null,
+            durationMs: m.duration_ms ?? null,
+            turns: m.num_turns ?? null,
+            isError: !!m.is_error,
+            text: m.is_error ? m.result ?? null : null,
+          });
+        }
+        break;
+      }
+      case "permission": {
+        const row = { kind: "permission" as const, key, requestId: e.request_id, tool: e.tool_name, input: e.input, decision: null, description: e.description };
+        perms.set(e.request_id, row);
+        rows.push(row);
+        break;
+      }
+      case "decision": {
+        const p = perms.get(e.request_id);
+        if (p) p.decision = e.behavior;
+        break;
+      }
+      case "error":
+        rows.push({ kind: "error", key, message: e.message });
+        break;
+    }
+  }
+  return rows;
+}
+
+/** A one-line summary of a tool call's input. */
+export function toolSummary(name: string, input: any): string {
+  if (!input || typeof input !== "object") return "";
+  const pick = (...keys: string[]) => keys.map((k) => input[k]).find((v) => typeof v === "string" && v.length > 0) as string | undefined;
+  switch (name) {
+    case "Bash":
+      return pick("command") ?? "";
+    case "Read":
+    case "Write":
+    case "Edit":
+    case "MultiEdit":
+    case "NotebookEdit":
+      return pick("file_path", "notebook_path") ?? "";
+    case "Glob":
+    case "Grep":
+      return [pick("pattern"), pick("path")].filter(Boolean).join("  in  ");
+    case "WebFetch":
+      return pick("url") ?? "";
+    case "WebSearch":
+      return pick("query") ?? "";
+    case "Task":
+    case "Agent":
+      return pick("description", "prompt") ?? "";
+    case "TodoWrite":
+      return Array.isArray(input.todos) ? `${input.todos.length} items` : "";
+    default: {
+      const first = Object.values(input).find((v) => typeof v === "string") as string | undefined;
+      return first ?? "";
+    }
+  }
+}

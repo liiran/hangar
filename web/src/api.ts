@@ -1,0 +1,120 @@
+// Types and calls for the daemon's JSON API (crates/hangar/src/api.rs).
+
+export type Status = "queued" | "starting" | "working" | "needs_you" | "idle" | "hibernated" | "stopped" | "error";
+
+export interface Pending {
+  request_id: string;
+  tool_name: string;
+  input: Record<string, unknown>;
+  suggestions: unknown[] | null;
+}
+
+export interface Session {
+  id: string;
+  title: string;
+  cwd: string;
+  created_ms: number;
+  updated_ms: number;
+  model: string | null;
+  permission_mode: string;
+  claude_session_id: string | null;
+  status: Status;
+  status_detail: string | null;
+  cost_usd: number;
+  turns: number;
+  preview: string;
+  peak_bytes: number;
+  pid: number | null;
+  memory_bytes: number | null;
+  pending: Pending[];
+  queue_position: number | null;
+  mcp: { name: string; status: string }[];
+}
+
+export type EventBody =
+  | { kind: "user"; text: string }
+  | { kind: "claude"; msg: any }
+  | { kind: "permission"; request_id: string; tool_name: string; input: any; suggestions?: unknown; description?: string | null }
+  | { kind: "decision"; request_id: string; behavior: string }
+  | { kind: "status"; status: Status; detail?: string | null }
+  | { kind: "error"; message: string };
+
+export type SessionEvent = { seq: number; ts: number } & EventBody;
+
+export interface Usage {
+  processes: number;
+  private_bytes: number;
+  working_set: number;
+  cpu_ms: number;
+}
+
+export interface Server {
+  id: number;
+  name: string;
+  share: "global" | "project" | "native" | "session";
+  scope: string;
+  command: string;
+  launch: string | null;
+  fast_path: boolean;
+  pid: number | null;
+  state: string;
+  sessions: { conn: number; name: string; session: string | null; client_pid: number | null }[];
+  restarts: number;
+  requests: number;
+  cache_hits: number;
+  last_error: string | null;
+  memory: Usage;
+}
+
+export interface Machine {
+  total_bytes: number;
+  available_bytes: number;
+  reserve_bytes: number;
+  estimate_bytes: number;
+}
+
+export interface System {
+  machine: Machine;
+  servers: Server[];
+  saved_bytes: number;
+  daemon_bytes: number;
+  version: string;
+}
+
+export interface AppState extends System {
+  sessions: Session[];
+  projects: string[];
+  home: string;
+}
+
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`/api${path}`, {
+    method,
+    headers: body === undefined ? {} : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(data.error ?? `${res.status} ${res.statusText}`, res.status);
+  return data as T;
+}
+
+export const api = {
+  state: () => call<AppState>("GET", "/state"),
+  events: (id: string, after = 0) => call<SessionEvent[]>("GET", `/sessions/${id}/events?after=${after}`),
+  create: (b: { cwd: string; prompt: string; model?: string; permission_mode?: string }) => call<Session>("POST", "/sessions", b),
+  send: (id: string, text: string) => call("POST", `/sessions/${id}/messages`, { text }),
+  decide: (id: string, requestId: string, behavior: "allow" | "allow_always" | "deny") =>
+    call("POST", `/sessions/${id}/permissions/${encodeURIComponent(requestId)}`, { behavior }),
+  interrupt: (id: string) => call("POST", `/sessions/${id}/interrupt`),
+  stop: (id: string) => call("POST", `/sessions/${id}/stop`),
+  startNow: (id: string) => call("POST", `/sessions/${id}/start`),
+  update: (id: string, b: { title?: string; permission_mode?: string }) => call<Session>("PATCH", `/sessions/${id}`, b),
+  remove: (id: string) => call("DELETE", `/sessions/${id}`),
+  stopServer: (id: number) => call("POST", `/servers/${id}/stop`),
+};
