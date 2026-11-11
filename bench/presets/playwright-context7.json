@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "playwright": { "command": "cmd", "args": ["/c", "npx", "-y", "@playwright/mcp@latest", "--headless", "--isolated"] },
+    "context7": { "command": "cmd", "args": ["/c", "npx", "-y", "@upstash/context7-mcp@latest"] }
+  }
+}

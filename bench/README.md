@@ -1,6 +1,6 @@
 # Benchmarks
 
-`hangar bench` measures what N agent sessions cost with their MCP servers started the usual way (every session starts its own copy) versus through the hangar pool. `bash bench/run-all.sh` reproduces every table here in about 15 minutes.
+`hangar bench` measures what N agent sessions cost with their MCP servers started the usual way (every session starts its own copy) versus through the hangar pool. `bash bench/run-all.sh` reproduces every table here in about 25 minutes.
 
 ## Method
 
@@ -20,7 +20,24 @@
 
 Machine: Windows 11, AMD Ryzen 5 9600X (6 cores / 12 threads), 31 GB RAM (about 6.5 GB free during this run), Node 22.19, Claude Code 2.1.321.
 
-## Real Claude Code ([claude.md](results/claude.md))
+## Playwright and Context7 ([claude-pw-c7.md](results/claude-pw-c7.md))
+
+The two local servers people add most, alone: `--preset bench/presets/playwright-context7.json`. Measured 2026-11-11 with about 12 GB free.
+
+| Real Claude Code sessions | Mode | MCP processes | MCP memory | Claude memory | CPU to start | Ready p95 |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | direct | 11 | 336 MB | 432 MB | 3.7 s | 2.7 s |
+| 1 | pooled | 8 | 151 MB | 430 MB | 2.1 s | 1.5 s |
+| 3 | direct | 33 | 1012 MB | 1.27 GB | 13.4 s | 4.8 s |
+| 3 | pooled | 14 | 158 MB | 1.25 GB | 4.9 s | 2.2 s |
+| 5 | direct | 55 | 1.64 GB | 1.96 GB | 21.9 s | 7.0 s |
+| 5 | pooled | 20 | 169 MB | 2.05 GB | 6.4 s | 1.9 s |
+
+Pooled, the servers cost about the same for 5 sessions as for 1: one Context7 and one Playwright, plus a 1.2 MB shim per session per server. At 1 session the saving is the npx fast path alone (no `cmd` and `npx` launcher processes).
+
+When every session also opens a page in its browser ([sim-browse-pw-c7.md](results/sim-browse-pw-c7.md)), direct mode starts a browser per session and the pool one browser with a context per session: 1 session 610 → 400 MB, 3 sessions 1.78 GB → 555 MB, 5 sessions **2.86 GB → 718 MB (−75%)**. Simulated sessions without browsing ([sim-pw-c7.md](results/sim-pw-c7.md)) reach 10: **3.12 GB → 190 MB (−94%)**, 100 processes → 25, tools ready in 1.7 s instead of 13.3 s.
+
+## Five popular servers, real Claude Code ([claude.md](results/claude.md))
 
 | Sessions | Mode | MCP processes | MCP memory | Claude memory | CPU to start | Ready p95 |
 |---:|---|---:|---:|---:|---:|---:|
