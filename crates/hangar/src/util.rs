@@ -8,6 +8,19 @@ pub fn user_home() -> std::path::PathBuf {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(std::path::PathBuf::from).unwrap_or_default()
 }
 
+/// Locks a mutex even if a thread panicked while holding it, so one bad
+/// request cannot make every later one fail. hangar's shared state is
+/// updated in small steps that leave it usable at every point.
+pub trait Locked<T> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> Locked<T> for std::sync::Mutex<T> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -34,29 +47,174 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-const SECRET_WORDS: &[&str] = &["key", "token", "secret", "password", "passwd", "auth", "credential", "bearer"];
+const SECRET_WORDS: &[&str] = &["key", "token", "secret", "password", "passwd", "auth", "credential", "bearer", "cookie", "signature"];
+/// Short names that only count as a whole word (`GITHUB_PAT`, not `PATH`).
+const SECRET_NAMES: &[&str] = &["pat", "pass", "pwd", "dsn", "sas", "jwt", "otp", "pin"];
+/// Names that say which account, server or data a program works with.
+const IDENTITY_NAMES: &[&str] = &[
+    "url",
+    "uri",
+    "host",
+    "endpoint",
+    "profile",
+    "kubeconfig",
+    "config",
+    "account",
+    "tenant",
+    "org",
+    "organization",
+    "project",
+    "workspace",
+    "region",
+    "user",
+    "username",
+    "login",
+    "email",
+    "headers",
+    "header",
+    "database",
+    "db",
+    "file",
+    "path",
+    "dir",
+    "home",
+    "root",
+];
+
+/// The words of a variable or flag name: `--api-key` and `API_KEY` are both `api`, `key`.
+fn name_words(name: &str) -> Vec<String> {
+    name.to_ascii_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect()
+}
 
 /// Whether a variable or flag name suggests it holds a credential.
 pub fn looks_secret(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    SECRET_WORDS.iter().any(|w| n.contains(w))
+    SECRET_WORDS.iter().any(|w| n.contains(w)) || name_words(name).iter().any(|w| SECRET_NAMES.contains(&w.as_str()))
+}
+
+/// Whether two sessions with different values for this variable should get
+/// separate servers: it holds a credential, or picks an account, a server
+/// or a data location (`AWS_PROFILE`, `DATABASE_URL`, `MEMORY_FILE_PATH`).
+/// `PATH` and `HOME`-like variables every program has do not count.
+pub fn separates_sessions(name: &str) -> bool {
+    const COMMON: &[&str] = &[
+        "PATH",
+        "PATHEXT",
+        "HOME",
+        "HOMEPATH",
+        "HOMEDRIVE",
+        "USERPROFILE",
+        "USERNAME",
+        "USER",
+        "LOGNAME",
+        "USERDOMAIN",
+        "USERDOMAIN_ROAMINGPROFILE",
+        "SYSTEMROOT",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "COMMONPROGRAMFILES",
+        "COMMONPROGRAMFILES(X86)",
+        "COMMONPROGRAMW6432",
+        "ALLUSERSPROFILE",
+        "PUBLIC",
+        "SYSTEMDRIVE",
+        "COMSPEC",
+        "PWD",
+        "OLDPWD",
+        "SHELL",
+        "PSMODULEPATH",
+        "ONEDRIVE",
+        "DRIVERDATA",
+        "XDG_RUNTIME_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_DIRS",
+        "XDG_CONFIG_DIRS",
+        "MANPATH",
+        "INFOPATH",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "EXEPATH",
+        "ORIGINAL_PATH",
+        "MSYSTEM_PREFIX",
+        "PKG_CONFIG_PATH",
+        "ACLOCAL_PATH",
+        "NVM_DIR",
+        "NVM_HOME",
+        "NVM_SYMLINK",
+        "PNPM_HOME",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "GOPATH",
+        "GOROOT",
+        "JAVA_HOME",
+        "ANDROID_HOME",
+        "CONDA_PREFIX",
+        "VIRTUAL_ENV",
+        "PYENV_ROOT",
+    ];
+    if looks_secret(name) {
+        return true;
+    }
+    !COMMON.contains(&name.to_ascii_uppercase().as_str()) && name_words(name).iter().any(|w| IDENTITY_NAMES.contains(&w.as_str()))
+}
+
+/// A URL for display: a password, a bare token before `@`, and the values
+/// of query parameters whose names look secret become `***`.
+fn redact_url(p: &str) -> Option<String> {
+    let scheme = p.find("://")?;
+    let (head, rest) = p.split_at(scheme + 3);
+    let (rest, changed_user) = match rest.find('@').filter(|at| !rest[..*at].contains('/')) {
+        Some(at) => (format!("***@{}", &rest[at + 1..]), true),
+        None => (rest.to_string(), false),
+    };
+    let Some((base, query)) = rest.split_once('?') else { return changed_user.then(|| format!("{head}{rest}")) };
+    let mut changed = changed_user;
+    let query: Vec<String> = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((name, _)) if looks_secret(name) => {
+                changed = true;
+                format!("{name}=***")
+            }
+            _ => pair.to_string(),
+        })
+        .collect();
+    changed.then(|| format!("{head}{base}?{}", query.join("&")))
 }
 
 /// A command line for display, with likely secrets replaced by `***`:
-/// the value after a flag such as `--api-key`, `NAME=value` pairs whose
-/// name mentions a key or token, and URLs with embedded credentials.
+/// the value after a flag such as `--api-key` or `--header`, `NAME=value`
+/// pairs whose name mentions a key or token, anything after `Bearer`, and
+/// credentials inside URLs.
 pub fn redact_command(parts: &[String]) -> String {
     let mut out = Vec::with_capacity(parts.len());
     let mut hide_next = false;
+    let pair = |p: &str| p.split_once('=').filter(|(name, _)| looks_secret(name) && !name.contains('/')).map(|(name, _)| format!("{name}=***"));
     for p in parts {
         if hide_next {
             out.push("***".to_string());
             hide_next = false;
             continue;
         }
+        if p.to_ascii_lowercase().contains("bearer ") || p.to_ascii_lowercase().starts_with("authorization:") {
+            out.push("***".to_string());
+            continue;
+        }
         if p.starts_with('-') {
             let (flag, value) = p.split_once('=').map_or((p.as_str(), None), |(f, v)| (f, Some(v)));
-            if looks_secret(flag) {
+            // Headers nearly always carry credentials.
+            let header = matches!(flag, "-H" | "--header" | "--headers");
+            if looks_secret(flag) || header {
                 match value {
                     Some(_) => out.push(format!("{flag}=***")),
                     None => {
@@ -66,24 +224,24 @@ pub fn redact_command(parts: &[String]) -> String {
                 }
                 continue;
             }
-        } else if let Some((name, _)) = p.split_once('=')
-            && looks_secret(name)
-            && !name.contains('/')
-        {
-            out.push(format!("{name}=***"));
+            // `--env=NAME=value`, `-eNAME=value`
+            if let Some(hidden) = value.and_then(pair) {
+                out.push(format!("{flag}={hidden}"));
+                continue;
+            }
+        } else if let Some(hidden) = pair(p) {
+            out.push(hidden);
             continue;
         }
-        if let Some(at) = p.find('@')
-            && let Some(scheme) = p.find("://")
-            && scheme < at
-            && p[scheme + 3..at].contains(':')
-        {
-            out.push(format!("{}://***@{}", &p[..scheme], &p[at + 1..]));
-            continue;
-        }
-        out.push(p.clone());
+        out.push(redact_url(p).unwrap_or_else(|| p.clone()));
     }
     out.iter().map(|s| if s.contains(' ') { format!("\"{s}\"") } else { s.clone() }).collect::<Vec<_>>().join(" ")
+}
+
+/// Text from another program, safe to print in a terminal: control
+/// characters (which could move the cursor or rewrite lines) are dropped.
+pub fn printable(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control() || *c == '\t').collect()
 }
 
 /// Writes a file only the current user can read (Unix: mode 0600 from
@@ -146,6 +304,53 @@ mod tests {
         assert_eq!(redact_command(&s(&["npx", "-y", "tavily-mcp", "--api-key", "tvly-123"])), "npx -y tavily-mcp --api-key ***");
         assert_eq!(redact_command(&s(&["srv", "--token=abc", "--port", "80"])), "srv --token=*** --port 80");
         assert_eq!(redact_command(&s(&["env", "GITHUB_TOKEN=ghp_x", "node", "a.js"])), "env GITHUB_TOKEN=*** node a.js");
+        assert_eq!(redact_command(&s(&["npx", "mcp-remote", "https://host/mcp?apiKey=SECRET&v=2"])), "npx mcp-remote https://host/mcp?apiKey=***&v=2");
+        assert_eq!(redact_command(&s(&["git", "clone", "https://ghp_abc@github.com/o/r"])), "git clone https://***@github.com/o/r");
+        assert_eq!(redact_command(&s(&["srv", "--header", "Authorization: Bearer abc", "-H", "X-Api: 1"])), "srv --header *** -H ***");
+        assert_eq!(redact_command(&s(&["docker", "run", "--env=API_KEY=abc", "-e", "DB_PASS=x", "img"])), "docker run --env=API_KEY=*** -e DB_PASS=*** img");
+        assert_eq!(redact_command(&s(&["srv", "Bearer abc.def"])), "srv ***");
+        assert_eq!(
+            redact_command(&s(&["npx", "-y", "@scope/pkg@1.2.3", "https://example.com/a?b=1"])),
+            "npx -y @scope/pkg@1.2.3 https://example.com/a?b=1",
+            "ordinary arguments are untouched"
+        );
+    }
+
+    #[test]
+    fn knows_which_variables_tell_sessions_apart() {
+        for name in [
+            "GITHUB_PAT",
+            "DB_PASS",
+            "PGPASSWORD",
+            "AWS_PROFILE",
+            "DATABASE_URL",
+            "MONGODB_URI",
+            "KUBECONFIG",
+            "OPENAPI_MCP_HEADERS",
+            "MEMORY_FILE_PATH",
+            "AZURE_CONFIG_DIR",
+            "ANTHROPIC_BASE_URL",
+        ] {
+            assert!(separates_sessions(name), "{name}");
+        }
+        for name in [
+            "PATH",
+            "Path",
+            "HOME",
+            "USERPROFILE",
+            "TEMP",
+            "LANG",
+            "NUMBER_OF_PROCESSORS",
+            "TERM",
+            "COLORTERM",
+            "PROCESSOR_ARCHITECTURE",
+            "NVM_HOME",
+            "ComSpec",
+        ] {
+            assert!(!separates_sessions(name), "{name}");
+        }
+        assert!(looks_secret("GITHUB_PAT") && !looks_secret("PATH") && !looks_secret("COMPATIBLE"));
+        assert_eq!(printable("ok\x1b[2Jgone\r\n\tx"), "ok[2Jgone\tx");
         assert_eq!(redact_command(&s(&["pg", "postgres://user:pw@db:5432/x"])), "pg postgres://***@db:5432/x");
         assert_eq!(redact_command(&s(&["npx", "@scope/pkg@latest", "--headless"])), "npx @scope/pkg@latest --headless");
         assert_eq!(redact_command(&s(&["node", "C:/My Dir/a.js"])), "node \"C:/My Dir/a.js\"");

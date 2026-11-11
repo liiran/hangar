@@ -142,10 +142,22 @@ pub fn unwrap_doc(doc: &mut Value, originals: &mut Originals) -> Vec<Change> {
             let key = format!("{ptr}/{name}");
             let restored = match (originals.remove(&key), unwrapped_parts(server)) {
                 // Use the recorded original unless the entry was edited since.
+                // The recorded original says whether the entry had `args` at
+                // all. Everything else stays as it is now, so a key changed
+                // in `env` after wrapping is not rolled back.
                 (Some(orig), Some((cmd, args)))
                     if orig.get("command") == Some(&cmd) && orig.get("args").map_or(args.is_empty(), |a| *a == Value::Array(args.clone())) =>
                 {
-                    orig
+                    let mut s = server.clone();
+                    s["command"] = cmd;
+                    match (orig.get("args"), s.as_object_mut()) {
+                        (Some(a), _) => s["args"] = a.clone(),
+                        (None, Some(o)) => {
+                            o.remove("args");
+                        }
+                        (None, None) => {}
+                    }
+                    s
                 }
                 (_, Some((cmd, args))) => {
                     let mut s = server.clone();

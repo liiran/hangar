@@ -5,6 +5,7 @@
 //! server may send to its client (`ping`, `roots/list`) the way an agent would.
 
 use crate::jsonrpc::{self, Kind};
+use crate::util::Locked;
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -74,13 +75,13 @@ impl McpClient {
                 match jsonrpc::classify(&msg) {
                     Kind::Response { id } => {
                         let key = jsonrpc::id_key(id);
-                        let waiter = pending.lock().unwrap().as_mut().and_then(|p| p.remove(&key));
+                        let waiter = pending.locked().as_mut().and_then(|p| p.remove(&key));
                         if let Some(tx) = waiter {
                             let _ = tx.send(msg);
                         }
                     }
                     Kind::Request { id, method } => {
-                        server_requests.lock().unwrap().push(msg.clone());
+                        server_requests.locked().push(msg.clone());
                         let reply = match method {
                             "ping" => jsonrpc::result(id.clone(), json!({})),
                             "roots/list" => jsonrpc::result(id.clone(), json!({"roots": roots_value})),
@@ -95,7 +96,7 @@ impl McpClient {
                 }
             }
             // Fail every request still waiting, and every later one.
-            pending.lock().unwrap().take();
+            pending.locked().take();
         });
 
         // Replies to server requests go through the same stdin.
@@ -127,12 +128,12 @@ impl McpClient {
     pub async fn request_with_id(&self, id: Value, method: &str, params: Value, timeout: Duration) -> Result<Value> {
         let key = jsonrpc::id_key(&id);
         let (tx, rx) = oneshot::channel();
-        match self.pending.lock().unwrap().as_mut() {
+        match self.pending.locked().as_mut() {
             Some(p) => p.insert(key.clone(), tx),
             None => bail!("server closed before {method}"),
         };
         let forget = || {
-            if let Some(p) = self.pending.lock().unwrap().as_mut() {
+            if let Some(p) = self.pending.locked().as_mut() {
                 p.remove(&key);
             }
         };
@@ -198,7 +199,7 @@ impl McpClient {
     }
 
     pub fn server_requests(&self) -> Vec<Value> {
-        self.server_requests.lock().unwrap().clone()
+        self.server_requests.locked().clone()
     }
 
     /// Closes stdin, the normal way a client ends a stdio session.
@@ -210,7 +211,7 @@ impl McpClient {
     /// direct child process (its descendants are left to fend for themselves).
     pub async fn shutdown_like_agent(&self) {
         self.close_stdin().await;
-        let child = self.child.lock().unwrap().take();
+        let child = self.child.locked().take();
         if let Some(mut child) = child {
             let _ = child.start_kill();
             let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
@@ -218,7 +219,7 @@ impl McpClient {
     }
 
     pub async fn wait_exit(&self, timeout: Duration) -> Option<std::process::ExitStatus> {
-        let child = self.child.lock().unwrap().take();
+        let child = self.child.locked().take();
         let mut child = child?;
         tokio::time::timeout(timeout, child.wait()).await.ok().and_then(Result::ok)
     }

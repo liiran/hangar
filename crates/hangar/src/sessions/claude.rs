@@ -12,6 +12,7 @@
 //! the last line of output, so the manager never mixes up two processes.
 
 use crate::procs;
+use crate::util::Locked;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -236,7 +237,7 @@ impl Driver {
 
     /// Kills the process and everything it started.
     pub fn kill(&self) {
-        if let Some(k) = self.kill.lock().unwrap().take() {
+        if let Some(k) = self.kill.locked().take() {
             let _ = k.send(());
         }
     }

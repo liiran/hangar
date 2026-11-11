@@ -9,9 +9,12 @@
 //!   one-time pairing code that `hangar up` puts in the URL fragment, and
 //!   keeps it in storage scoped to this exact origin, so pages on other
 //!   ports cannot read it. There is no cookie for other ports to receive;
-//! * requests from any other origin are refused;
+//! * requests from any other origin are refused, including ones a browser
+//!   marks as cross-site (`Sec-Fetch-Site`), so another site cannot even
+//!   load an icon to learn that hangar is running;
 //! * pages are served with a strict Content-Security-Policy (no remote
-//!   scripts, images or connections).
+//!   scripts, images or connections), may not be framed, and API answers
+//!   are never cached.
 
 use crate::daemon::Pairing;
 use crate::pool::Pool;
@@ -30,7 +33,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
+const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; \
                    font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'";
 
 #[derive(Clone)]
@@ -70,6 +73,8 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState, mut shutd
         .route("/sessions/{id}/start", post(start_now))
         .route("/servers/{id}/stop", post(stop_server))
         .route("/ws", get(ws))
+        // An unknown API path is an error, not the app's page.
+        .fallback(|| async { err(StatusCode::NOT_FOUND, "no such API path") })
         .layer(middleware::from_fn_with_state(state.clone(), require_token));
     let app = Router::new()
         .route("/api/pair", post(pair))
@@ -88,28 +93,56 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState, mut shutd
         .await;
 }
 
-fn our_origins(port: u16) -> [String; 2] {
-    [format!("127.0.0.1:{port}"), format!("localhost:{port}")]
+/// Whether a request may be answered at all, judged by where the browser
+/// says it comes from. `host` is the only name hangar answers to.
+///
+/// * Host must be exactly our loopback address and port (DNS rebinding).
+///   `localhost` is not accepted: only 127.0.0.1 is bound, so another
+///   program could be the one answering on `localhost`.
+/// * An Origin, when sent, must be ours. One that cannot be read is refused.
+/// * `Sec-Fetch-Site`, which browsers set themselves: `same-origin` and
+///   `none` (typed, bookmarked, opened by `hangar up`) pass. Another site,
+///   or another port on this machine, may only open the page itself as a
+///   top-level navigation; it gets no API, script, image or frame.
+fn request_allowed(headers: &HeaderMap, host: &str, is_api: bool) -> Result<(), &'static str> {
+    let text = |name: &header::HeaderName| headers.get(name).map(|v| v.to_str().ok());
+    if text(&header::HOST).flatten() != Some(host) {
+        return Err("wrong host");
+    }
+    match text(&header::ORIGIN) {
+        None => {}
+        Some(Some(origin)) if origin == format!("http://{host}") => {}
+        Some(_) => return Err("cross-origin request refused"),
+    }
+    match headers.get("sec-fetch-site").map(|v| v.to_str().unwrap_or_default()) {
+        None | Some("same-origin") | Some("none") => Ok(()),
+        Some(_) => {
+            let fetch = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or_default();
+            if !is_api && fetch("sec-fetch-mode") == "navigate" && fetch("sec-fetch-dest") == "document" { Ok(()) } else { Err("cross-site request refused") }
+        }
+    }
 }
 
-/// Host must be our loopback address (DNS rebinding); an Origin, when sent,
-/// must be ours (cross-site requests). Adds security headers to every answer.
+/// Refuses requests that do not come from hangar's own page (see
+/// [`request_allowed`]) and adds security headers to every answer.
 async fn same_origin_only(State(st): State<AppState>, req: Request, next: Next) -> Response {
-    let hosts = our_origins(st.port);
-    let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
-    if !hosts.iter().any(|h| h == host) {
-        return (StatusCode::FORBIDDEN, "wrong host").into_response();
-    }
-    if let Some(origin) = req.headers().get(header::ORIGIN).and_then(|o| o.to_str().ok())
-        && !hosts.iter().any(|h| origin == format!("http://{h}"))
-    {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": "cross-origin request refused"}))).into_response();
-    }
-    let mut res = next.run(req).await;
+    let host = format!("127.0.0.1:{}", st.port);
+    let is_api = req.uri().path().starts_with("/api/");
+    let mut res = match request_allowed(req.headers(), &host, is_api) {
+        Ok(()) => next.run(req).await,
+        Err(why) => (StatusCode::FORBIDDEN, Json(json!({"error": format!("{why}; open hangar at http://{host} (run `hangar up`)")}))).into_response(),
+    };
     let h = res.headers_mut();
     h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    h.insert("cross-origin-opener-policy", HeaderValue::from_static("same-origin"));
+    h.insert("cross-origin-resource-policy", HeaderValue::from_static("same-origin"));
+    // Conversations and the token must never sit in a browser or proxy cache.
+    if is_api {
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     res
 }
 
@@ -285,12 +318,17 @@ struct TrustQuery {
     cwd: String,
 }
 
+/// Reads files the folder controls, so off the async threads.
 async fn get_trust(State(st): State<AppState>, Query(q): Query<TrustQuery>) -> Response {
     let cwd = std::path::PathBuf::from(q.cwd.trim());
-    if !cwd.is_dir() {
-        return err(StatusCode::BAD_REQUEST, format!("{} is not a folder", cwd.display()));
+    let manager = st.manager.clone();
+    let info =
+        tokio::task::spawn_blocking(move || if cwd.is_dir() { Ok(manager.trust(&cwd)) } else { Err(format!("{} is not a folder", cwd.display())) }).await;
+    match info {
+        Ok(Ok(info)) => Json(info).into_response(),
+        Ok(Err(e)) => err(StatusCode::BAD_REQUEST, e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
-    Json(st.manager.trust(&cwd)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -302,6 +340,7 @@ struct CreateBody {
     permission_mode: Option<String>,
     #[serde(default)]
     trust: bool,
+    trust_seen: Option<String>,
     #[serde(default)]
     create_folder: bool,
 }
@@ -314,6 +353,7 @@ async fn create_session(State(st): State<AppState>, Json(b): Json<CreateBody>) -
         model: b.model,
         permission_mode: b.permission_mode,
         trust: b.trust,
+        trust_seen: b.trust_seen,
         create_folder: b.create_folder,
     };
     match st.manager.create(req) {

@@ -100,7 +100,12 @@ export interface Trust {
   trusted: boolean;
   hooks: string[];
   allow_rules: string[];
+  /** With their whole command lines. */
   mcp_servers: string[];
+  /** Every other setting the folder makes, one line per key. */
+  settings: string[];
+  /** Names exactly what is listed; sent back so trust covers what was shown. */
+  fingerprint: string;
 }
 
 /** What the folder picker shows for a typed path (see crates/hangar/src/folders.rs). */
@@ -156,7 +161,7 @@ export const api = {
   trust: (cwd: string) => call<Trust>("GET", `/trust?cwd=${q(cwd)}`),
   folders: (path: string) => call<Folders>("GET", `/folders?path=${q(path)}`),
   searchFolders: (words: string) => call<{ entries: FolderEntry[] }>("GET", `/folders/search?q=${q(words)}`),
-  create: (b: { cwd: string; prompt: string; model?: string; permission_mode?: string; trust?: boolean; create_folder?: boolean }) =>
+  create: (b: { cwd: string; prompt: string; model?: string; permission_mode?: string; trust?: boolean; trust_seen?: string; create_folder?: boolean }) =>
     call<Session>("POST", "/sessions", b),
   send: (id: string, text: string) => call("POST", `/sessions/${id}/messages`, { text }),
   decide: (id: string, requestId: string, behavior: "allow" | "allow_always" | "deny") => call("POST", `/sessions/${id}/permissions/${q(requestId)}`, { behavior }),

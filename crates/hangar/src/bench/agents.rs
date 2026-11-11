@@ -27,12 +27,19 @@ pub fn npx_record_dir(workdir: &Path) -> PathBuf {
 
 /// Starts `hangar daemon` (no UI) in a fresh home under `workdir`, the way
 /// `hangar up` does: detached, with no console of its own.
-pub async fn start_pool(workdir: &Path, fast_npx: bool) -> Result<Pool> {
+pub async fn start_pool(workdir: &Path, fast_npx: bool, shared_browser: bool) -> Result<Pool> {
     let home = workdir.join(format!("home-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home)?;
+    let mut config = String::new();
     if !fast_npx {
-        std::fs::write(home.join("config.toml"), "[pool]\nfast_npx = false\n")?;
+        config.push_str("[pool]\nfast_npx = false\n");
+    }
+    if shared_browser {
+        config.push_str("[servers.\"@playwright/mcp\"]\nshare = \"native\"\n");
+    }
+    if !config.is_empty() {
+        std::fs::write(home.join("config.toml"), config)?;
     }
     // A real home remembers when npx last resolved each tagged package; carry
     // over what the warmup's real npx runs recorded.

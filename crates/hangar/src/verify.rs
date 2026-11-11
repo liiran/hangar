@@ -283,7 +283,8 @@ pub async fn run(opts: VerifyOpts) -> Result<Report> {
     let servers = servers(&workdir);
     println!("hangar verify: {} servers, {} latency calls each", servers.len(), opts.calls);
 
-    let pool = bench::start_pool(&workdir, true).await?;
+    // Playwright is checked in its shared mode too, which is opt-in.
+    let pool = bench::start_pool(&workdir, true, true).await?;
     let mut parity = Vec::new();
     let mut lat = Vec::new();
     for server in &servers {

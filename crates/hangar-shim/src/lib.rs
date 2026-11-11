@@ -186,7 +186,8 @@ fn handshake(stream: TcpStream, info: &DaemonInfo, opts: &Opts, resume: Option<&
         name: opts.name.clone(),
         spec: opts.spec(),
         cwd: std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default(),
-        env: std::env::vars().collect::<BTreeMap<_, _>>(),
+        // Variables that are not valid Unicode cannot be sent as JSON; they are left out.
+        env: std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect::<BTreeMap<_, _>>(),
         session: opts.session.clone(),
         client_pid: parent_pid(),
         shim_pid: std::process::id(),

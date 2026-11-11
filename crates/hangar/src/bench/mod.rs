@@ -112,6 +112,9 @@ pub struct RunConfig {
     pub browse: bool,
     /// Pooled runs: use the npx fast path (off measures sharing alone).
     pub fast_npx: bool,
+    /// Pooled runs: one shared Playwright browser (`share = "native"`),
+    /// which hangar leaves off unless the user turns it on.
+    pub shared_browser: bool,
     /// End sessions by killing the agent (a crash) instead of closing stdin.
     pub kill_agents: bool,
 }
@@ -133,7 +136,7 @@ pub async fn run_once(cfg: RunConfig) -> Result<RunResult> {
     let cfg = Arc::new(cfg);
 
     let pool = Arc::new(match cfg.mode {
-        Mode::Pooled => Some(start_pool(&cfg.workdir, cfg.fast_npx).await?),
+        Mode::Pooled => Some(start_pool(&cfg.workdir, cfg.fast_npx, cfg.shared_browser).await?),
         Mode::Direct => None,
     });
 
@@ -274,6 +277,7 @@ pub struct BenchOpts {
     pub claude_bin: Option<PathBuf>,
     pub browse: bool,
     pub fast_npx: bool,
+    pub shared_browser: bool,
     pub kill_agents: bool,
 }
 
@@ -332,7 +336,9 @@ pub async fn run(opts: BenchOpts) -> Result<Vec<RunResult>> {
                 .arg("--json")
                 .arg(&out)
                 .args(["--settle-ms", &opts.settle.as_millis().to_string()]);
-            for (on, flag) in [(opts.warm_wave, "--warm-wave"), (opts.browse, "--browse"), (!opts.fast_npx, "--no-fast-npx")] {
+            for (on, flag) in
+                [(opts.warm_wave, "--warm-wave"), (opts.browse, "--browse"), (!opts.fast_npx, "--no-fast-npx"), (opts.shared_browser, "--shared-browser")]
+            {
                 if on {
                     cmd.arg(flag);
                 }
@@ -467,6 +473,7 @@ mod tests {
             claude_bin: None,
             browse: false,
             fast_npx: true,
+            shared_browser: false,
             kill_agents: false,
         };
         let servers = vec![("a".to_string(), npx_spec(&["x"]))];

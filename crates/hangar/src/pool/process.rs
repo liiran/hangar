@@ -3,6 +3,7 @@
 
 use crate::launch::Launch;
 use crate::procs::{self, Job};
+use crate::util::Locked;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -16,7 +17,7 @@ pub type Ring = Arc<Mutex<VecDeque<String>>>;
 const RING_LINES: usize = 200;
 
 pub fn push(ring: &Ring, line: String) {
-    let mut r = ring.lock().unwrap();
+    let mut r = ring.locked();
     if r.len() >= RING_LINES {
         r.pop_front();
     }
@@ -24,7 +25,7 @@ pub fn push(ring: &Ring, line: String) {
 }
 
 pub fn tail(ring: &Ring, n: usize) -> Vec<String> {
-    let r = ring.lock().unwrap();
+    let r = ring.locked();
     r.iter().skip(r.len().saturating_sub(n)).cloned().collect()
 }
 

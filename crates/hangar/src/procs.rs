@@ -373,6 +373,7 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use super::ProcInfo;
+    use crate::util::Locked;
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
     pub fn snapshot() -> Vec<ProcInfo> {
@@ -420,7 +421,7 @@ mod imp {
             Ok(Job { roots: std::sync::Mutex::new(Vec::new()) })
         }
         pub fn assign_pid(&self, pid: u32) -> std::io::Result<()> {
-            self.roots.lock().unwrap().push(pid);
+            self.roots.locked().push(pid);
             Ok(())
         }
         pub fn assign_self(&self) -> std::io::Result<()> {
@@ -428,12 +429,12 @@ mod imp {
         }
         pub fn cpu_ms(&self) -> u64 {
             let snap = snapshot();
-            let roots = self.roots.lock().unwrap().clone();
+            let roots = self.roots.locked().clone();
             super::trees(&snap, &roots).iter().map(|p| p.cpu_ms).sum()
         }
         pub fn pids(&self) -> Vec<u32> {
             let snap = snapshot();
-            let roots = self.roots.lock().unwrap().clone();
+            let roots = self.roots.locked().clone();
             super::trees(&snap, &roots).iter().map(|p| p.pid).collect()
         }
         pub fn terminate(&self) {

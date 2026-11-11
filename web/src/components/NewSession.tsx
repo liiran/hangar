@@ -2,6 +2,7 @@ import { ChevronRight, Cpu, Shield, ShieldAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type Trust } from "../api";
 import { basename, bytes, MODELS, PERMISSION_MODES } from "../format";
+import { visible } from "../safe";
 import { mergeRecent } from "../folders";
 import { askNotificationPermission, report, saved, upsertSession, useStore } from "../store";
 import { useUI } from "../ui";
@@ -48,7 +49,9 @@ export function NewSession({ onClose }: { onClose: () => void }) {
     setBusy(true);
     askNotificationPermission();
     try {
-      const s = await api.create({ cwd: cwd.trim(), prompt, model: model || undefined, permission_mode: mode, trust: trusted, create_folder: isNew || undefined });
+      // Trust is given for the notice that was on screen: if the folder's
+      // settings changed since, the daemon asks again with the new ones.
+      const s = await api.create({ cwd: cwd.trim(), prompt, model: model || undefined, permission_mode: mode, trust: trusted, trust_seen: folder.trust?.fingerprint, create_folder: isNew || undefined });
       saved.set(LAST_CWD, cwd.trim());
       upsertSession(s);
       select(s.id);
@@ -56,8 +59,10 @@ export function NewSession({ onClose }: { onClose: () => void }) {
     } catch (e) {
       setBusy(false);
       // The folder needs trusting first: show what it would run.
-      if (e instanceof ApiError && e.status === 409 && e.data.trust) folder.setTrust(e.data.trust);
-      else report(e);
+      if (e instanceof ApiError && e.status === 409 && e.data.trust) {
+        folder.setTrust(e.data.trust);
+        setTrusted(false);
+      } else report(e);
     }
   };
 
@@ -165,9 +170,10 @@ function useFolder(cwd: string, isNew: boolean) {
 
 function TrustNotice({ trust, trusted, onChange, folder }: { trust: Trust; trusted: boolean; onChange: (v: boolean) => void; folder: string }) {
   const lists = [
-    { title: "Hooks that run commands", items: trust.hooks },
+    { title: "Hooks it runs", items: trust.hooks },
     { title: "Tools it allows without asking", items: trust.allow_rules },
     { title: "MCP servers it starts", items: trust.mcp_servers },
+    { title: "Other settings it changes", items: trust.settings ?? [] },
   ].filter((l) => l.items.length > 0);
   return (
     <div className="mb-3 rounded-lg bg-s-needs/[0.06] p-3.5 text-[12.5px] ring-1 ring-inset ring-s-needs/30">
@@ -176,16 +182,15 @@ function TrustNotice({ trust, trusted, onChange, folder }: { trust: Trust; trust
       </div>
       <p className="mt-1 text-muted">Claude Code follows {folder}'s own settings. Start here only if you trust what is in it.</p>
       {lists.length === 0 ? (
-        <p className="mt-2 text-faint">It has no hooks, pre-approved tools or MCP servers of its own.</p>
+        <p className="mt-2 text-faint">hangar found no settings, hooks, pre-approved tools or MCP servers in it. Its files can still carry instructions for Claude (CLAUDE.md, for one).</p>
       ) : (
         lists.map((l) => (
           <div key={l.title} className="mt-2.5">
             <div className="text-[11.5px] text-faint">{l.title}</div>
-            <ul className="mt-1 max-h-28 overflow-y-auto rounded-md bg-code px-2.5 py-1.5 font-mono text-[11.5px] ring-1 ring-inset ring-line">
-              {l.items.map((i) => (
-                <li key={i} className="truncate" title={i}>
-                  {i}
-                </li>
+            {/* Shown whole: nothing here is cut off or hidden behind a scroll bar. */}
+            <ul dir="ltr" className="mt-1 space-y-1 rounded-md bg-code px-2.5 py-1.5 font-mono text-[11.5px] [overflow-wrap:anywhere] whitespace-pre-wrap ring-1 ring-inset ring-line">
+              {l.items.map((i, n) => (
+                <li key={n}>{visible(i)}</li>
               ))}
             </ul>
           </div>

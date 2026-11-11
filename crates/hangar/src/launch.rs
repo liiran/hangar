@@ -12,6 +12,7 @@
 //! no network and no guessing. If anything about the command is unusual, or
 //! the fast start fails, hangar uses the configured command unchanged.
 
+use crate::util::Locked;
 use hangar_proto::ServerSpec;
 use serde_json::Value;
 use sha2::{Digest, Sha512};
@@ -98,7 +99,7 @@ pub fn note_npx_ran(state_dir: Option<&Path>, spec: &ServerSpec) {
     if is_exact(&pkg) {
         return;
     }
-    let _guard = FRESH_LOCK.lock().unwrap();
+    let _guard = FRESH_LOCK.locked();
     let path = fresh_file(dir);
     let mut map: serde_json::Map<String, Value> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     map.insert(pkg, Value::from(crate::util::now_ms()));

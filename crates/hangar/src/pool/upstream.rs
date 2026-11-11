@@ -754,6 +754,9 @@ impl Actor {
                         }
                     }
                     "notifications/cancelled" if shared => {}
+                    // A shared server's log lines can quote one session's
+                    // request; they are not passed on to every session.
+                    "notifications/message" if shared => {}
                     other => {
                         self.invalidate_for(other);
                         self.broadcast(&msg);

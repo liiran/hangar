@@ -97,6 +97,9 @@ enum Command {
         /// Pooled runs: turn off the npx fast path, to measure sharing alone.
         #[arg(long)]
         no_fast_npx: bool,
+        /// Pooled runs: one shared Playwright browser (`share = "native"` in config.toml; off by default).
+        #[arg(long)]
+        shared_browser: bool,
         #[arg(long, value_enum, default_value = "close")]
         teardown: Teardown,
     },
@@ -142,6 +145,8 @@ enum Command {
         browse: bool,
         #[arg(long)]
         no_fast_npx: bool,
+        #[arg(long)]
+        shared_browser: bool,
         #[arg(long, value_enum, default_value = "close")]
         teardown: Teardown,
     },
@@ -157,7 +162,22 @@ async fn main() -> Result<()> {
         Command::Unwrap { dry_run } => cli::wrap(&home, dry_run, false)?,
         Command::Status { json } => cli::status(&home, json).await?,
         Command::Stop => cli::stop(&home).await?,
-        Command::Bench { sessions, preset, modes, agent, settle_ms, warm_wave, no_warmup, reserve_gb, out, claude_bin, browse, no_fast_npx, teardown } => {
+        Command::Bench {
+            sessions,
+            preset,
+            modes,
+            agent,
+            settle_ms,
+            warm_wave,
+            no_warmup,
+            reserve_gb,
+            out,
+            claude_bin,
+            browse,
+            no_fast_npx,
+            shared_browser,
+            teardown,
+        } => {
             bench::run(bench::BenchOpts {
                 sessions,
                 preset,
@@ -171,6 +191,7 @@ async fn main() -> Result<()> {
                 claude_bin,
                 browse,
                 fast_npx: !no_fast_npx,
+                shared_browser,
                 kill_agents: teardown == Teardown::Kill,
             })
             .await?;
@@ -181,7 +202,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::BenchRun { mode, agent, sessions, preset, workdir, json, settle_ms, warm_wave, claude_bin, browse, no_fast_npx, teardown } => {
+        Command::BenchRun { mode, agent, sessions, preset, workdir, json, settle_ms, warm_wave, claude_bin, browse, no_fast_npx, shared_browser, teardown } => {
             let servers = bench::preset(&preset, &workdir)?;
             let result = bench::run_once(bench::RunConfig {
                 mode,
@@ -194,6 +215,7 @@ async fn main() -> Result<()> {
                 claude_bin,
                 browse,
                 fast_npx: !no_fast_npx,
+                shared_browser,
                 kill_agents: teardown == Teardown::Kill,
             })
             .await?;

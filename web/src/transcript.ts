@@ -1,13 +1,14 @@
 // Turns a session's event log into rows to render.
 
 import type { SessionEvent } from "./api";
+import { visible } from "./safe";
 
 export type Row =
   | { kind: "user"; key: string; text: string; ts: number }
   | { kind: "text"; key: string; text: string }
   | { kind: "thinking"; key: string; text: string }
   | { kind: "tool"; key: string; id: string; name: string; input: any; result?: { text: string; isError: boolean } }
-  | { kind: "permission"; key: string; requestId: string; tool: string; input: any; decision: string | null; description?: string | null }
+  | { kind: "permission"; key: string; requestId: string; tool: string; input: any; decision: string | null; description?: string | null; superseded?: boolean }
   | { kind: "result"; key: string; cost: number | null; durationMs: number | null; turns: number | null; isError: boolean; text: string | null }
   | { kind: "error"; key: string; message: string };
 
@@ -36,12 +37,14 @@ export function toRows(events: SessionEvent[]): Row[] {
         const m = e.msg;
         if (m.type === "assistant") {
           if (m.parent_tool_use_id) break; // inside a subagent; its tool row stands for it
-          (m.message?.content ?? []).forEach((b: any, i: number) => {
+          const content = Array.isArray(m.message?.content) ? m.message.content : [];
+          content.forEach((b: any, i: number) => {
             const k = `${key}.${i}`;
-            if (b.type === "text" && b.text?.trim()) rows.push({ kind: "text", key: k, text: b.text });
-            else if (b.type === "thinking" && b.thinking?.trim()) rows.push({ kind: "thinking", key: k, text: b.thinking });
+            if (!b || typeof b !== "object") return;
+            if (b.type === "text" && typeof b.text === "string" && b.text.trim()) rows.push({ kind: "text", key: k, text: b.text });
+            else if (b.type === "thinking" && typeof b.thinking === "string" && b.thinking.trim()) rows.push({ kind: "thinking", key: k, text: b.thinking });
             else if (b.type === "tool_use") {
-              const row = { kind: "tool" as const, key: k, id: b.id, name: b.name, input: b.input };
+              const row = { kind: "tool" as const, key: k, id: String(b.id), name: String(b.name), input: b.input };
               tools.set(b.id, row);
               rows.push(row);
             }
@@ -50,7 +53,7 @@ export function toRows(events: SessionEvent[]): Row[] {
           const content = m.message?.content;
           if (Array.isArray(content)) {
             for (const b of content) {
-              if (b.type === "tool_result" && tools.has(b.tool_use_id)) {
+              if (b?.type === "tool_result" && tools.has(b.tool_use_id)) {
                 tools.get(b.tool_use_id)!.result = { text: resultText(b.content), isError: !!b.is_error };
               }
             }
@@ -70,7 +73,11 @@ export function toRows(events: SessionEvent[]): Row[] {
         break;
       }
       case "permission": {
-        const row = { kind: "permission" as const, key, requestId: e.request_id, tool: e.tool_name, input: e.input, decision: null, description: e.description };
+        const row = { kind: "permission" as const, key, requestId: e.request_id, tool: String(e.tool_name), input: e.input, decision: null, description: e.description };
+        // If an id is ever used again, the older unanswered request must not
+        // come back to life showing its old content.
+        const earlier = perms.get(e.request_id);
+        if (earlier && earlier.decision == null) earlier.superseded = true;
         perms.set(e.request_id, row);
         rows.push(row);
         break;
@@ -99,8 +106,12 @@ export function relative(path: string, cwd?: string): string {
   return path;
 }
 
-/** A one-line summary of a tool call's input. */
+/** A one-line summary of a tool call's input, with invisible characters written out. */
 export function toolSummary(name: string, input: any, cwd?: string): string {
+  return visible(summarize(name, input, cwd));
+}
+
+function summarize(name: string, input: any, cwd?: string): string {
   if (!input || typeof input !== "object") return "";
   const pick = (...keys: string[]) => {
     const v = keys.map((k) => input[k]).find((v) => typeof v === "string" && v.length > 0) as string | undefined;
@@ -117,7 +128,7 @@ export function toolSummary(name: string, input: any, cwd?: string): string {
       return pick("file_path", "notebook_path") ?? "";
     case "Glob":
     case "Grep":
-      return [input.pattern, input.path ? relative(input.path, cwd) : null].filter(Boolean).join("  in  ");
+      return [pick("pattern"), typeof input.path === "string" && input.path ? relative(input.path, cwd) : null].filter(Boolean).join("  in  ");
     case "WebFetch":
       return pick("url") ?? "";
     case "WebSearch":

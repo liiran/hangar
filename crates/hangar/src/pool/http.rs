@@ -17,6 +17,7 @@ use super::{PoolKey, PoolOptions};
 use crate::jsonrpc::{self, Kind};
 use crate::launch::{self, FastPath, Launch};
 use crate::policy::Share;
+use crate::util::Locked;
 use crate::util::now_ms;
 use futures_util::StreamExt;
 use hangar_proto::ServerSpec;
@@ -75,7 +76,8 @@ pub fn start(spawn: HttpSpawn) -> Upstream {
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
     let (url_tx, _) = watch::channel(Endpoint::Waiting);
     let handle = Upstream::from_parts(spawn.id, spawn.key.clone(), tx);
-    let http = reqwest::Client::builder().no_proxy().connect_timeout(Duration::from_secs(5)).build().expect("http client");
+    let http =
+        reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(5)).build().expect("http client");
     let actor = HttpActor {
         s: spawn,
         http,
@@ -492,14 +494,14 @@ impl Ctx {
     /// Relays a server message; marks its request answered if it is a response.
     fn relay(&self, msg: &Value) {
         if let Kind::Response { id } = jsonrpc::classify(msg) {
-            self.inflight.lock().unwrap().remove(&jsonrpc::id_key(id));
+            self.inflight.locked().remove(&jsonrpc::id_key(id));
         }
         let _ = self.to_client.send(jsonrpc::to_line(msg));
     }
 
     /// Answers every unanswered request with an error.
     fn fail_inflight(&self, why: &str) {
-        let ids: Vec<Value> = self.inflight.lock().unwrap().drain().map(|(_, v)| v).collect();
+        let ids: Vec<Value> = self.inflight.locked().drain().map(|(_, v)| v).collect();
         for id in ids {
             self.reply_error(&id, why);
         }
@@ -701,12 +703,12 @@ async fn forward(ctx: Ctx, msg: Value) {
     };
     let key = id.as_ref().map(jsonrpc::id_key);
     if let (Some(id), Some(key)) = (&id, &key) {
-        ctx.inflight.lock().unwrap().insert(key.clone(), id.clone());
+        ctx.inflight.locked().insert(key.clone(), id.clone());
     }
-    let answered = |ctx: &Ctx| key.as_ref().is_none_or(|k| !ctx.inflight.lock().unwrap().contains_key(k));
+    let answered = |ctx: &Ctx| key.as_ref().is_none_or(|k| !ctx.inflight.locked().contains_key(k));
     let fail = |ctx: &Ctx, why: String| {
         if let (Some(id), Some(key)) = (&id, &key)
-            && ctx.inflight.lock().unwrap().remove(key).is_some()
+            && ctx.inflight.locked().remove(key).is_some()
         {
             ctx.reply_error(id, &why);
         }

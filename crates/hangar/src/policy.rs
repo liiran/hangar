@@ -154,12 +154,15 @@ pub fn decide(spec: &ServerSpec, name: &str, config: &Config) -> Decision {
     }
     if let Some(pkg) = &package {
         if pkg == "@playwright/mcp" {
-            return match builtin_http {
-                Some(args) => {
-                    Decision { http_args: Some(args), ..Decision::new(Share::Native, package, "one browser, a separate isolated context per session") }
-                }
-                None => Decision::new(Share::Session, package, "without --isolated, Playwright keeps one persistent profile that only one session can use"),
+            // One shared browser means Playwright listens on a local port
+            // that has no password, which any program on this machine could
+            // use. That is the user's call to make, so it is off by default.
+            let reason = if builtin_http.is_some() {
+                "one per session; share = \"native\" in config.toml runs one shared browser (only on a PC you do not share)"
+            } else {
+                "without --isolated, Playwright keeps one persistent profile that only one session can use"
             };
+            return Decision::new(Share::Session, package, reason);
         }
         if let Some((_, share, reason)) = REGISTRY.iter().find(|(p, _, _)| p == pkg) {
             return Decision::new(*share, package, *reason);
@@ -193,7 +196,11 @@ mod tests {
         let c = Config::default();
         assert_eq!(decide(&spec("npx", &["-y", "@upstash/context7-mcp@latest"]), "context7", &c).share, Share::Global);
         assert_eq!(decide(&spec("npx", &["-y", "@playwright/mcp"]), "pw", &c).share, Share::Session);
-        assert_eq!(decide(&spec("npx", &["-y", "@playwright/mcp", "--isolated"]), "pw", &c).share, Share::Native);
+        assert_eq!(
+            decide(&spec("npx", &["-y", "@playwright/mcp", "--isolated"]), "pw", &c).share,
+            Share::Session,
+            "a shared browser opens a local port, so it is opt-in"
+        );
         assert_eq!(decide(&spec("node", &["mine.js"]), "mine", &c).share, Share::Session, "unknown servers are never shared by default");
     }
 
@@ -214,7 +221,10 @@ mod tests {
         let d = decide(&spec("node", &["web.js"]), "web", &c);
         assert_eq!((d.share, d.http_args.unwrap().len()), (Share::Native, 2));
         assert_eq!(decide(&spec("node", &["bare.js"]), "bare", &c).share, Share::Session, "no way to reach it over HTTP");
-        let pw = decide(&spec("npx", &["@playwright/mcp", "--isolated"]), "pw", &Config::default());
+        c.servers.insert("@playwright/mcp".into(), ServerOverride { share: Some(Share::Native), http_args: None });
+        let pw = decide(&spec("npx", &["@playwright/mcp", "--isolated"]), "pw", &c);
+        assert_eq!(pw.share, Share::Native, "opted in");
         assert!(pw.http_args.unwrap().contains(&"{port}".to_string()));
+        assert_eq!(decide(&spec("npx", &["@playwright/mcp"]), "pw", &c).share, Share::Session, "sharing needs --isolated");
     }
 }

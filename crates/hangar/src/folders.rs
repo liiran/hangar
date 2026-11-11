@@ -149,9 +149,28 @@ pub fn create(path: &str, home: &Path) -> Result<String> {
     Ok(show(&p))
 }
 
+/// Whether the last part of `path` is a Windows device name (`CON`, `NUL`,
+/// `COM1`, with or without an extension). Those "exist" everywhere and are
+/// never folders.
+pub fn is_device_name(path: &Path) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_ascii_uppercase()) else { return false };
+    let stem = name.split('.').next().unwrap_or_default().trim_end();
+    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| n.len() == 1 && n.chars().all(|c| c.is_ascii_digit()));
+    matches!(stem, "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
+}
+
 fn valid_name(name: &str) -> bool {
     let bad = |c: char| c.is_control() || (cfg!(windows) && r#"<>:"/\|?*"#.contains(c)) || c == '/';
-    !name.is_empty() && name != "." && name != ".." && !name.chars().any(bad) && !name.ends_with(' ') && !(cfg!(windows) && name.ends_with('.'))
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.chars().any(bad)
+        && !name.ends_with(' ')
+        && !(cfg!(windows) && name.ends_with('.'))
+        && !is_device_name(Path::new(name))
 }
 
 /// `~` means the home folder; on Windows `C:` means `C:\`.

@@ -62,6 +62,7 @@ pub fn render_markdown(results: &[RunResult], opts: &BenchOpts, servers: &Server
     let (total, _) = procs::system_memory();
     let notes = [
         opts.browse.then_some(", every session opens a page in its browser"),
+        opts.shared_browser.then_some(", one shared Playwright browser (share = \"native\")"),
         (!opts.fast_npx).then_some(", npx fast path off"),
         opts.kill_agents.then_some(", sessions end by killing the agent"),
     ];

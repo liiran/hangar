@@ -14,6 +14,7 @@ use crate::jsonrpc;
 use crate::policy::{self, Share};
 use crate::pool::{AttachRequest, Pool, PoolOptions};
 use crate::procs;
+use crate::util::Locked;
 use crate::util::{constant_time_eq, make_private, now_ms, random_hex, write_private};
 use anyhow::{Context, Result, bail};
 use hangar_proto::{Challenge, DaemonInfo, Hello, Proof, WIRE_VERSION, Welcome};
@@ -53,7 +54,7 @@ pub struct Pairing {
 impl Pairing {
     pub fn issue(&self) -> String {
         let code = random_hex(16);
-        let mut codes = self.codes.lock().unwrap();
+        let mut codes = self.codes.locked();
         codes.retain(|_, t| t.elapsed() < PAIRING_TTL);
         codes.insert(code.clone(), Instant::now());
         code
@@ -61,7 +62,7 @@ impl Pairing {
 
     /// Consumes `code`; true if it was issued and is still fresh.
     pub fn redeem(&self, code: &str) -> bool {
-        let mut codes = self.codes.lock().unwrap();
+        let mut codes = self.codes.locked();
         let found = codes.keys().find(|k| constant_time_eq(k, code)).cloned();
         match found.and_then(|k| codes.remove(&k)) {
             Some(t) => t.elapsed() < PAIRING_TTL,
@@ -144,7 +145,8 @@ impl Daemon {
         let sessions = crate::sessions::Manager::start(&opts.home, &opts.config);
         let pairing = Arc::new(Pairing::default());
         let ui = ui_listener.map(|l| {
-            // The UI has its own token, which never touches the disk.
+            // The UI has its own token, which the daemon never writes to disk
+            // (the page keeps it in its own storage until the daemon restarts).
             let state = crate::api::AppState::new(sessions.clone(), pool.clone(), random_hex(24), pairing.clone(), ui_port.unwrap_or(0));
             tokio::spawn(crate::api::serve(l, state, shutdown_tx.subscribe()))
         });
@@ -157,7 +159,11 @@ impl Daemon {
             loop {
                 tokio::select! {
                     accepted = listener.accept() => {
-                        let Ok((stream, _)) = accepted else { continue };
+                        let Ok((stream, _)) = accepted else {
+                            // Out of sockets, most likely: wait instead of spinning.
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            continue;
+                        };
                         let shared = shared.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle(stream, shared).await {
@@ -222,8 +228,23 @@ async fn read_limited(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>, li
     Ok(line)
 }
 
+/// Connections that have not shown the token yet. Each may make the daemon
+/// hold a few megabytes for up to 20 s, so their number is capped.
+static UNPROVEN: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
+
+/// The two fields of a handshake line that are read before anything else,
+/// without building the rest of it in memory.
+#[derive(serde::Deserialize)]
+struct Credentials {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    control: Option<String>,
+}
+
 async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     stream.set_nodelay(true)?;
+    let unproven = UNPROVEN.acquire().await?;
     let (rd, mut wr) = stream.into_split();
     // Lines longer than this are still read whole; it is just the up-front allocation.
     let mut reader = BufReader::with_capacity(16 * 1024, rd);
@@ -243,15 +264,21 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
 
     // 2. The client proves it holds the token too.
     let second = read_limited(&mut reader, MAX_HELLO, Duration::from_secs(10)).await?;
-    let value: Value = serde_json::from_str(second.trim()).context("handshake is not JSON")?;
-    let token_ok = constant_time_eq(value.get("token").and_then(Value::as_str).unwrap_or_default(), &shared.token);
-    if let Some(cmd) = value.get("control").and_then(Value::as_str) {
-        let answer = if token_ok { control(cmd, &value, &shared).await } else { json!({"ok": false, "error": "bad token"}) };
-        write_line(&mut wr, &answer).await?;
+    // The token is checked before the line is parsed in full: whoever sent
+    // it may be anyone on this machine.
+    let who: Credentials = serde_json::from_str(second.trim()).context("handshake is not JSON")?;
+    if !constant_time_eq(&who.token, &shared.token) {
+        if who.control.is_some() {
+            write_line(&mut wr, &json!({"ok": false, "error": "bad token"})).await?;
+        } else {
+            write_line(&mut wr, &Welcome { ok: false, error: Some("bad token".into()), ..Default::default() }).await?;
+        }
         return Ok(());
     }
-    if !token_ok {
-        write_line(&mut wr, &Welcome { ok: false, error: Some("bad token".into()), ..Default::default() }).await?;
+    drop(unproven);
+    let value: Value = serde_json::from_str(second.trim()).context("handshake is not JSON")?;
+    if let Some(cmd) = who.control.as_deref() {
+        write_line(&mut wr, &control(cmd, &value, &shared).await).await?;
         return Ok(());
     }
     let hello: Hello = serde_json::from_value(value).context("bad hello")?;

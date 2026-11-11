@@ -5,6 +5,7 @@ pub mod process;
 pub mod upstream;
 
 use crate::policy::Share;
+use crate::util::Locked;
 use anyhow::{Result, anyhow};
 use hangar_proto::ServerSpec;
 use serde_json::Value;
@@ -112,7 +113,7 @@ impl Pool {
         // When an upstream finishes, drop it from the map (unless replaced).
         let on_exit: Arc<OnExit> = Arc::new(move |id, key| {
             if let Some(map) = map.upgrade() {
-                let mut m = map.lock().unwrap();
+                let mut m = map.locked();
                 if m.get(key).is_some_and(|u| u.id == id) {
                     m.remove(key);
                 }
@@ -148,7 +149,7 @@ impl Pool {
         let client_init = req.init.get("params").cloned().unwrap_or(Value::Null);
         for _ in 0..5 {
             let upstream = {
-                let mut map = self.upstreams.lock().unwrap();
+                let mut map = self.upstreams.locked();
                 match map.get(&key) {
                     Some(u) if u.is_alive() => u.clone(),
                     _ => {
@@ -213,24 +214,24 @@ impl Pool {
     }
 
     fn forget(&self, key: &PoolKey, id: u64) {
-        let mut map = self.upstreams.lock().unwrap();
+        let mut map = self.upstreams.locked();
         if map.get(key).is_some_and(|u| u.id == id) {
             map.remove(key);
         }
     }
 
     pub fn upstreams(&self) -> Vec<Upstream> {
-        self.upstreams.lock().unwrap().values().cloned().collect()
+        self.upstreams.locked().values().cloned().collect()
     }
 
     /// Stats of every upstream that answers within a second.
     fn served_counter(&self, name: &str) -> Arc<AtomicU64> {
-        self.served.lock().unwrap().entry(name.to_string()).or_default().clone()
+        self.served.locked().entry(name.to_string()).or_default().clone()
     }
 
     /// Requests forwarded to servers since the pool started, by server name.
     pub fn served(&self) -> std::collections::BTreeMap<String, u64> {
-        self.served.lock().unwrap().iter().map(|(name, n)| (name.clone(), n.load(Ordering::Relaxed))).collect()
+        self.served.locked().iter().map(|(name, n)| (name.clone(), n.load(Ordering::Relaxed))).collect()
     }
 
     pub async fn stats(&self) -> Vec<UpstreamStats> {
@@ -257,7 +258,7 @@ impl Pool {
 
     /// Stops every server and waits until they are gone.
     pub async fn shutdown(&self) {
-        let all: Vec<Upstream> = self.upstreams.lock().unwrap().drain().map(|(_, u)| u).collect();
+        let all: Vec<Upstream> = self.upstreams.locked().drain().map(|(_, u)| u).collect();
         let mut waits = Vec::new();
         for u in all {
             let (reply, rx) = oneshot::channel();
@@ -271,20 +272,25 @@ impl Pool {
     }
 }
 
-/// Hash of credential-looking variables in the session's environment that
-/// the config does not declare (those are part of the spec fingerprint).
+/// Hash of the variables in the session's environment that say whose
+/// credentials, account or data a server would use, and that the config
+/// does not declare (those are part of the spec fingerprint). Sessions that
+/// differ in any of them never share a process. It goes by variable names
+/// (see [`crate::util::separates_sessions`]), so it is a strong hint, not
+/// a guarantee: `share = "session"` in config.toml is the sure way.
 fn credential_fingerprint(env: &BTreeMap<String, String>, spec: &ServerSpec) -> String {
-    let mut h = hangar_proto::Fnv::new();
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
     for (k, v) in env {
         let is_ours = k.starts_with("HANGAR_") || k.starts_with("CLAUDE_CODE_") || k == "CLAUDECODE";
-        if crate::util::looks_secret(k) && !is_ours && !spec.env.contains_key(k) {
-            h.write(k.as_bytes());
-            h.write(b"=");
-            h.write(v.as_bytes());
-            h.write(b";");
+        if crate::util::separates_sessions(k) && !is_ours && !spec.env.contains_key(k) {
+            h.update((k.len() as u64).to_le_bytes());
+            h.update(k.as_bytes());
+            h.update((v.len() as u64).to_le_bytes());
+            h.update(v.as_bytes());
         }
     }
-    format!("{:016x}", h.finish())
+    h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
 fn normalize_dir(p: &std::path::Path) -> String {

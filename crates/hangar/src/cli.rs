@@ -97,7 +97,7 @@ pub async fn status(home: &Path, as_json: bool) -> Result<()> {
         println!(
             "{}",
             row([
-                &truncate(s["name"].as_str().unwrap_or("?"), 22),
+                &truncate(&hangar::util::printable(s["name"].as_str().unwrap_or("?")), 22),
                 s["share"].as_str().unwrap_or("?"),
                 s["state"].as_str().unwrap_or("?"),
                 &s["pid"].as_u64().map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
@@ -109,7 +109,7 @@ pub async fn status(home: &Path, as_json: bool) -> Result<()> {
             ])
         );
         if let Some(err) = s["last_error"].as_str() {
-            println!("    last error: {err}");
+            println!("    last error: {}", hangar::util::printable(err));
         }
     }
     println!("\n{} servers, {} session attachments, {} total", servers.len(), sessions, fmt_bytes(total));
@@ -146,7 +146,7 @@ pub async fn up(home: &Path, no_open: bool) -> Result<()> {
         return Ok(());
     }
     println!("hangar is running at http://127.0.0.1:{port}");
-    open_app(&url);
+    open_app(home, &url);
     Ok(())
 }
 
@@ -180,7 +180,8 @@ fn spawn_detached_daemon(home: &Path) -> Result<()> {
 
 /// Opens `url` in the default browser: as a chromeless app window when that
 /// is Chrome, Edge or another Chromium browser, else in a tab.
-fn open_app(url: &str) {
+#[cfg_attr(windows, allow(unused_variables))]
+fn open_app(home: &Path, url: &str) {
     #[cfg(windows)]
     {
         let app = |exe: &Path| is_chromium(exe) && std::process::Command::new(exe).arg(format!("--app={url}")).spawn().is_ok();
@@ -202,14 +203,27 @@ fn open_app(url: &str) {
         }
         let _ = std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn();
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     {
-        let _ = std::process::Command::new("open").arg(url).spawn();
+        // Other users can read a process's arguments here, so the browser
+        // is given a private file that leads to the one-time link.
+        let target = launcher(home, url).map_or_else(|| url.to_string(), |p| p.display().to_string());
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let _ = std::process::Command::new(opener).arg(target).spawn();
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    }
+}
+
+/// A page only this user can read that sends the browser on to `url`. The
+/// code in it is single-use and expires in two minutes.
+#[cfg(any(unix, test))]
+fn launcher(home: &Path, url: &str) -> Option<PathBuf> {
+    let page = format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>hangar</title><script>location.replace({})</script>",
+        serde_json::to_string(url).ok()?.replace('<', concat!("\\", "u003c"))
+    );
+    let path = home.join("open.html");
+    hangar::util::write_private(&path, page.as_bytes()).ok()?;
+    Some(path)
 }
 
 /// The program that opens web links, as chosen in Windows settings.
@@ -298,6 +312,18 @@ fn fmt_duration(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_launcher_page_leads_to_the_link() {
+        let home = std::env::temp_dir().join(format!("hangar-launcher-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let path = launcher(&home, "http://127.0.0.1:7317/#pair=abc\"</script>").unwrap();
+        let page = std::fs::read_to_string(&path).unwrap();
+        assert!(page.contains(concat!(r#"location.replace("http://127.0.0.1:7317/#pair=abc\""#, "\\", r#"u003c/script>")"#)), "{page}");
+        assert_eq!(page.matches("</script>").count(), 1, "the link cannot end the script early");
+        assert_eq!(page.matches("</script>").count(), 1, "the link cannot end the script early");
+        let _ = std::fs::remove_dir_all(home);
+    }
 
     #[test]
     fn the_default_browser_command_names_its_program() {

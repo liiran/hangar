@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, ApiError, setToken, socketProtocols, socketUrl, type Session, type SessionEvent, type System } from "./api";
+import { visible } from "./safe";
 import { isNewer, mergeEvents, notice, pairCode } from "./sync";
 
 type Conn = "connecting" | "live" | "offline" | "unauthorized";
@@ -273,9 +274,11 @@ function notify(prev: Session | undefined, next: Session) {
   if (!kind) return;
   if (document.visibilityState === "visible" && useStore.getState().selected === next.id) return;
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-  const title = kind === "needs_you" ? `${next.title} needs you` : kind === "failed" ? `${next.title} failed` : `${next.title} is done`;
-  const body =
-    kind === "needs_you" ? `Wants to use ${next.pending[0]?.tool_name ?? "a tool"}` : kind === "failed" ? (next.status_detail ?? "The session stopped with an error") : next.preview || "Finished its turn";
+  const name = visible(next.title);
+  const title = kind === "needs_you" ? `${name} needs you` : kind === "failed" ? `${name} failed` : `${name} is done`;
+  // Only what hangar itself knows: the model's words and error text stay
+  // in the app, not in the notification center or on a lock screen.
+  const body = kind === "needs_you" ? `Wants to use ${visible(next.pending[0]?.tool_name ?? "a tool").slice(0, 60)}` : kind === "failed" ? "Stopped with an error" : "Finished its turn";
   const n = new Notification(title, { body, tag: next.id });
   n.onclick = () => {
     window.focus();

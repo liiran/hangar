@@ -16,6 +16,7 @@ pub mod trust;
 use crate::budget::{Budget, Machine};
 use crate::config::Config;
 use crate::procs;
+use crate::util::Locked;
 use crate::util::now_ms;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -173,6 +174,9 @@ pub struct NewSession {
     pub permission_mode: Option<String>,
     /// The user confirmed they trust the folder.
     pub trust: bool,
+    /// The fingerprint of the trust notice the user saw. If the folder's
+    /// settings changed since, the confirmation does not count.
+    pub trust_seen: Option<String>,
     /// `cwd` is a new folder to make first (its parent must exist).
     pub create_folder: bool,
 }
@@ -280,12 +284,12 @@ impl Manager {
     }
 
     pub fn set_claude_bin(&self, path: Option<PathBuf>) {
-        *self.claude_bin.lock().unwrap() = path;
+        *self.claude_bin.locked() = path;
     }
 
     /// Where Claude Code's own trust decisions are read from (tests point it elsewhere).
     pub fn set_claude_json(&self, path: PathBuf) {
-        *self.claude_json.lock().unwrap() = path;
+        *self.claude_json.locked() = path;
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<UiEvent> {
@@ -293,7 +297,7 @@ impl Manager {
     }
 
     fn load(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         let mut waiting = Vec::new();
         for (mut meta, next_seq) in self.store.load_all() {
             // The processes are gone after a daemon restart.
@@ -315,22 +319,22 @@ impl Manager {
     // ------------------------------------------------------------ queries
 
     pub fn list(&self) -> Vec<SessionView> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.locked();
         let mut v: Vec<SessionView> = inner.sessions.values().map(|s| view(s, &inner.queue)).collect();
         v.sort_by_key(|v| std::cmp::Reverse(v.meta.created_ms));
         v
     }
 
     pub fn machine(&self) -> Machine {
-        self.inner.lock().unwrap().budget.machine()
+        self.inner.locked().budget.machine()
     }
 
     /// Events after `after`, oldest first.
     pub fn events(&self, id: &str, after: u64) -> Result<Vec<Event>> {
         {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.locked();
             let s = inner.sessions.get(id).context("no such session")?;
-            if s.events.first().is_some_and(|first| first.seq <= after + 1) {
+            if s.events.first().is_some_and(|first| first.seq <= after.saturating_add(1)) {
                 return Ok(s.events.iter().filter(|e| e.seq > after).cloned().collect());
             }
         }
@@ -342,9 +346,9 @@ impl Manager {
     /// transcripts), then the rest of the folders Claude Code knows.
     pub fn recent_projects(&self) -> Vec<String> {
         const MAX: usize = 20;
-        let claude_json = self.claude_json.lock().unwrap().clone();
+        let claude_json = self.claude_json.locked().clone();
         let mut dated: Vec<(u64, String)> = {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.locked();
             inner.sessions.values().map(|s| (s.meta.updated_ms, s.meta.cwd.clone())).collect()
         };
         dated.extend(recent::claude_folders(&recent::transcripts_dir(&claude_json)));
@@ -355,7 +359,9 @@ impl Manager {
 
     /// Whether `cwd` is trusted, and what it would run.
     pub fn trust(&self, cwd: &Path) -> trust::TrustInfo {
-        trust::inspect(&self.home, &self.claude_json.lock().unwrap(), cwd)
+        // The lock is not held while files a folder controls are read.
+        let claude_json = self.claude_json.locked().clone();
+        trust::inspect(&self.home, &claude_json, cwd)
     }
 
     // ------------------------------------------------------------ commands
@@ -379,6 +385,15 @@ impl Manager {
         // A new folder is made only now, when the session starts, so a
         // dialog that was closed leaves nothing behind. It is empty, so
         // there is nothing in it to distrust.
+        // A relative path, or one with `..` in it, would mean a different
+        // folder depending on where hangar was started, and trust is
+        // remembered by path.
+        if !cwd.is_absolute() || cwd.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            bail!("{} is not a full folder path", cwd.display());
+        }
+        if crate::folders::is_device_name(&cwd) {
+            bail!("{} is a device name, not a folder", cwd.display());
+        }
         let made = req.create_folder && !cwd.exists();
         if made {
             cwd = PathBuf::from(crate::folders::create(req.cwd.trim(), &crate::util::user_home())?);
@@ -388,14 +403,17 @@ impl Manager {
         }
         let info = self.trust(&cwd);
         if !info.trusted {
-            if !req.trust {
+            // Trust covers what the notice showed: if the folder's settings
+            // changed after the user read it, they are asked again.
+            let stale = req.trust_seen.as_ref().is_some_and(|seen| *seen != info.fingerprint);
+            if !req.trust || stale {
                 bail!(NeedsTrust(info));
             }
             trust::remember(&self.home, &cwd);
         }
         let id = new_id();
         let now = now_ms();
-        let title = req.title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| title_from(&prompt));
+        let title = req.title.filter(|t| !t.trim().is_empty()).map(|t| truncate(t.trim(), MAX_TITLE)).unwrap_or_else(|| title_from(&prompt));
         let meta = SessionMeta {
             id: id.clone(),
             title,
@@ -420,7 +438,7 @@ impl Manager {
             return Err(e.into());
         }
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.locked();
             inner.sessions.insert(id.clone(), Session::new(meta, 1));
             self.push_event(&mut inner, &id, EventBody::User { text: prompt });
             inner.queue.push(id.clone());
@@ -436,7 +454,7 @@ impl Manager {
         if text.is_empty() {
             bail!("empty message");
         }
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         let s = inner.sessions.get_mut(id).context("no such session")?;
         let deliverable = s.stopping.is_none() && s.meta.status.is_live();
         match s.run.as_mut().filter(|_| deliverable) {
@@ -474,7 +492,7 @@ impl Manager {
     }
 
     pub fn decide(&self, id: &str, request_id: &str, allow: bool, always: bool, message: Option<String>) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         let s = inner.sessions.get_mut(id).context("no such session")?;
         let run = s.run.as_ref().context("session is not running")?;
         let p = s.pending.remove(request_id).context("that request is no longer pending")?;
@@ -496,7 +514,7 @@ impl Manager {
     }
 
     pub fn interrupt(&self, id: &str) -> Result<()> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.locked();
         let s = inner.sessions.get(id).context("no such session")?;
         s.run.as_ref().context("session is not running")?.driver.interrupt();
         Ok(())
@@ -504,7 +522,7 @@ impl Manager {
 
     /// Stops the process and drops undelivered messages. The conversation can be resumed later.
     pub fn stop(self: &Arc<Self>, id: &str) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         inner.queue.retain(|q| q != id);
         let s = inner.sessions.get_mut(id).context("no such session")?;
         s.meta.outbox.clear();
@@ -523,7 +541,7 @@ impl Manager {
 
     /// Starts a queued session now, ignoring the budget.
     pub fn start_now(self: &Arc<Self>, id: &str) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         if !inner.queue.iter().any(|q| q == id) {
             bail!("session is not queued");
         }
@@ -539,7 +557,7 @@ impl Manager {
     /// session switches at once (from its next turn); a stopped or paused
     /// one resumes with the new settings.
     pub fn update(&self, id: &str, change: Update) -> Result<SessionView> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         let s = inner.sessions.get_mut(id).context("no such session")?;
         if let Some(m) = &change.permission_mode
             && !PERMISSION_MODES.contains(&m.as_str())
@@ -554,7 +572,7 @@ impl Manager {
             bail!("{m:?} is not a model name");
         }
         if let Some(t) = change.title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
-            s.meta.title = t;
+            s.meta.title = truncate(&t, MAX_TITLE);
         }
         if let Some(m) = change.permission_mode {
             if let Some(run) = &s.run {
@@ -575,7 +593,7 @@ impl Manager {
     }
 
     pub fn remove(self: &Arc<Self>, id: &str) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         let s = inner.sessions.remove(id).context("no such session")?;
         inner.queue.retain(|q| q != id);
         if let Some(run) = &s.run {
@@ -591,7 +609,7 @@ impl Manager {
     /// Stops every running session (daemon shutdown); they come back paused.
     pub fn shutdown(&self) {
         self.closing.store(true, std::sync::atomic::Ordering::SeqCst);
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         for s in inner.sessions.values_mut() {
             if let Some(run) = &s.run {
                 s.stopping = Some(if s.meta.claude_session_id.is_some() { Status::Hibernated } else { Status::Stopped });
@@ -603,7 +621,7 @@ impl Manager {
     // ------------------------------------------------------------ budget
 
     fn view_of(&self, id: &str) -> Option<SessionView> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.locked();
         inner.sessions.get(id).map(|s| view(s, &inner.queue))
     }
 
@@ -612,7 +630,7 @@ impl Manager {
         if self.closing.load(std::sync::atomic::Ordering::SeqCst) {
             return; // the daemon is going away; queued sessions start next time
         }
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         // The next queued session whose previous process (if any) is gone.
         while let Some(pos) = inner.queue.iter().position(|q| inner.sessions.get(q).is_some_and(|s| s.run.is_none())) {
             let id = inner.queue[pos].clone();
@@ -684,7 +702,7 @@ impl Manager {
     }
 
     fn launch(&self, inner: &mut Inner, id: &str) {
-        let claude = self.claude_bin.lock().unwrap().clone().or_else(crate::agent::find_claude);
+        let claude = self.claude_bin.locked().clone().or_else(crate::agent::find_claude);
         let Some(s) = inner.sessions.get_mut(id) else { return };
         let Some(claude) = claude else {
             s.meta.status = Status::Error;
@@ -729,7 +747,7 @@ impl Manager {
                 E::Permission { session_id, pid, request } => self.on_permission(&session_id, pid, request),
                 E::PermissionCancelled { session_id, pid, request_id } => self.on_cancelled(&session_id, pid, &request_id),
                 E::McpStatus { session_id, pid, servers } => {
-                    let mut inner = self.inner.lock().unwrap();
+                    let mut inner = self.inner.locked();
                     if let Some(s) = inner.sessions.get_mut(&session_id).filter(|s| s.pid() == Some(pid)) {
                         s.mcp = servers;
                         self.broadcast_session(&inner, &session_id);
@@ -749,7 +767,7 @@ impl Manager {
     }
 
     fn on_claude(&self, id: &str, pid: u32, mut msg: Value) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         let Some(s) = Self::current(&mut inner, id, pid) else { return };
         let run = s.run.as_mut().expect("current session has a run");
         let kind = msg["type"].as_str().unwrap_or_default().to_string();
@@ -759,11 +777,13 @@ impl Manager {
             ("system", "init") => {
                 run.initialized = true;
                 run.unconfirmed.clear();
-                if let Some(sid) = msg["session_id"].as_str() {
+                // Both become command-line arguments on the next start, so
+                // they are held to the same rules as what the user types.
+                if let Some(sid) = msg["session_id"].as_str().filter(|s| valid_conversation(s)) {
                     s.meta.claude_session_id = Some(sid.to_string());
                 }
                 if s.meta.model.is_none() {
-                    s.meta.model = msg["model"].as_str().map(String::from);
+                    s.meta.model = msg["model"].as_str().filter(|m| valid_model(m)).map(String::from);
                 }
                 // Modes can change inside Claude (plan mode exits, for one).
                 if let Some(mode) = msg["permissionMode"].as_str().filter(|m| PERMISSION_MODES.contains(m)) {
@@ -793,7 +813,7 @@ impl Manager {
                 s.meta.cost_usd += turn_cost;
                 msg["turn_cost_usd"] = json!(turn_cost);
                 s.meta.turns += msg["num_turns"].as_u64().unwrap_or(0);
-                if let Some(sid) = msg["session_id"].as_str() {
+                if let Some(sid) = msg["session_id"].as_str().filter(|s| valid_conversation(s)) {
                     s.meta.claude_session_id = Some(sid.to_string());
                 }
                 if msg["is_error"].as_bool().unwrap_or(false) {
@@ -821,7 +841,7 @@ impl Manager {
     }
 
     fn on_permission(&self, id: &str, pid: u32, req: claude::PermissionRequest) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         let Some(s) = Self::current(&mut inner, id, pid) else { return };
         let can_remember = req.suggestions.as_ref().and_then(claude::session_only).is_some();
         s.pending.insert(
@@ -851,7 +871,7 @@ impl Manager {
     }
 
     fn on_cancelled(&self, id: &str, pid: u32, request_id: &str) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         let Some(s) = Self::current(&mut inner, id, pid) else { return };
         if s.pending.remove(request_id).is_none() {
             return;
@@ -867,10 +887,12 @@ impl Manager {
     }
 
     fn on_exit(&self, id: &str, pid: u32, code: Option<i32>, stderr: Vec<String>) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         let Some(s) = Self::current(&mut inner, id, pid) else { return };
         let run = s.run.take().expect("current session has a run");
-        s.pending.clear();
+        // Requests the process was waiting on are over: say so in the
+        // history, so none of them can look answerable later.
+        let withdrawn: Vec<String> = std::mem::take(&mut s.pending).into_keys().collect();
         s.memory = None;
         let peak = s.meta.peak_bytes;
         if !run.initialized && !run.unconfirmed.is_empty() {
@@ -897,6 +919,9 @@ impl Manager {
                 (Status::Error, Some(detail))
             }
         };
+        for request_id in withdrawn {
+            self.push_event(&mut inner, id, EventBody::Decision { request_id, behavior: "cancelled".into() });
+        }
         // Only full turns say anything about what a session costs.
         if run.completed_turns > 0 {
             inner.budget.record_peak(peak);
@@ -928,7 +953,7 @@ impl Manager {
             tick.tick().await;
             let snap = tokio::task::spawn_blocking(procs::snapshot).await.unwrap_or_default();
             {
-                let mut inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.locked();
                 let ids: Vec<String> = inner.sessions.keys().cloned().collect();
                 for id in ids {
                     let s = inner.sessions.get_mut(&id).unwrap();
@@ -1045,6 +1070,15 @@ pub fn title_from(prompt: &str) -> String {
 
 fn new_id() -> String {
     format!("s{}", crate::util::random_hex(6))
+}
+
+/// The longest title kept; longer ones are cut.
+const MAX_TITLE: usize = 200;
+
+/// Claude's conversation ids become a `--resume=` argument: letters, digits,
+/// `-` and `_` only.
+fn valid_conversation(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && !id.starts_with('-') && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Model names become a `claude --model` argument: letters, digits and

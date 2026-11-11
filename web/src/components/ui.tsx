@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { Component, forwardRef, useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import type { Status } from "../api";
 import { STATUS } from "../format";
 
@@ -226,4 +226,21 @@ export function useDismiss(open: boolean, ref: React.RefObject<HTMLElement | nul
       window.removeEventListener("keydown", onKey, true);
     };
   }, [open, ref]);
+}
+
+/**
+ * Keeps one entry that cannot be drawn (a tool call in a shape nobody
+ * expected) from taking the rest of the app down with it.
+ */
+export class Guard extends Component<{ children: ReactNode; fallback: ReactNode; resetKey?: unknown }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidUpdate(prev: { resetKey?: unknown }) {
+    if (this.state.failed && prev.resetKey !== this.props.resetKey) this.setState({ failed: false });
+  }
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
 }
