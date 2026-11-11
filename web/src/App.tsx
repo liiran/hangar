@@ -197,7 +197,7 @@ function Placeholder({ empty }: { empty: boolean }) {
   const items = [
     { icon: Layers, title: "Every session in one window", text: "See which sessions are working, which are done, and which need you, without switching terminals." },
     { icon: ShieldCheck, title: "Approve from here", text: "Permission requests show up inline with the exact command or diff. Allow once, allow for the session, or deny." },
-    { icon: Gauge, title: "Shared MCP servers and a memory budget", text: "One copy of each MCP server for all sessions. New sessions wait for memory instead of slowing everything down." },
+    { icon: Gauge, title: "Shared MCP servers and a memory budget", text: "One copy of each local MCP server for all sessions. New sessions wait for memory instead of slowing everything down." },
   ];
   return (
     <div className="grid flex-1 place-items-center overflow-y-auto p-10">

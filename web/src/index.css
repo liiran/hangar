@@ -20,26 +20,28 @@
 }
 
 /* Surfaces step up from the window (bg) to the main panel, rows, and
-   selected rows. Lines are translucent so they work on every surface. */
+   selected rows. Lines are translucent so they work on every surface.
+   Dark follows Linear's own tokens: neutral near-black levels, cool gray
+   text, a muted indigo. */
 :root {
-  --bg: #0a0a0c;
-  --panel: #101013;
-  --panel-2: #17171b;
-  --raised: #1e1e23;
-  --line: rgba(255, 255, 255, 0.065);
-  --line-strong: rgba(255, 255, 255, 0.11);
-  --fg: #ececee;
-  --muted: #9a9ba2;
-  --faint: #63646b;
-  --accent: #7073f0;
+  --bg: #08090a;
+  --panel: #0f1011;
+  --panel-2: #161718;
+  --raised: #1c1d1f;
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.1);
+  --fg: #f7f8f8;
+  --muted: #8a8f98;
+  --faint: #62666d;
+  --accent: #5e6ad2;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(112, 115, 240, 0.15);
-  --code: #0c0c0f;
-  --shadow: 0 16px 48px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
-  --s-needs: #f2994a;
-  --s-working: #f2c94c;
-  --s-done: #7073f0;
-  --s-idle: #8b8c93;
+  --accent-soft: rgba(94, 106, 210, 0.18);
+  --code: #0b0c0d;
+  --shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --s-needs: #fc7840;
+  --s-working: #f0bf00;
+  --s-done: #5e6ad2;
+  --s-idle: #8a8f98;
   --s-error: #eb5757;
   color-scheme: dark;
 }
@@ -55,14 +57,14 @@
     --fg: #18181b;
     --muted: #5d5e66;
     --faint: #8f9097;
-    --accent: #5e62d8;
+    --accent: #5e6ad2;
     --accent-fg: #ffffff;
-    --accent-soft: rgba(94, 98, 216, 0.1);
+    --accent-soft: rgba(94, 106, 210, 0.1);
     --code: #f5f5f7;
     --shadow: 0 16px 48px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.06);
     --s-needs: #e07b1f;
     --s-working: #c99a06;
-    --s-done: #5e62d8;
+    --s-done: #5e6ad2;
     --s-idle: #8f9097;
     --s-error: #d93f3f;
     color-scheme: light;

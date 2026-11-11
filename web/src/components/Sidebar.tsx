@@ -140,21 +140,24 @@ function MachineFooter() {
   const queued = list.filter((s) => s.status === "queued").length;
   const m = system.machine;
   const used = m.total_bytes - m.available_bytes;
+  // How many more sessions can start before new ones wait in the queue.
+  const room = Math.max(0, Math.floor((m.available_bytes - m.reserve_bytes) / Math.max(1, m.estimate_bytes)));
+  const budget = `A session uses about ${bytes(m.estimate_bytes)}. hangar keeps ${bytes(m.reserve_bytes)} free for the rest of your PC, so a new session waits in the queue (or an idle one is paused) once less than ${bytes(m.estimate_bytes + m.reserve_bytes)} is free.`;
   return (
     <div className="space-y-2.5 border-t border-line px-4 py-3">
       <div>
-        <div className="mb-1.5 flex items-baseline justify-between text-[11.5px]">
+        <div className="mb-1.5 flex items-baseline justify-between text-[11.5px]" title="Memory in use on this PC, by every program">
           <span className="text-muted">Memory</span>
           <span className="tabular-nums text-faint">
             {bytes(used)} / {bytes(m.total_bytes)}
           </span>
         </div>
         <Meter used={used} total={m.total_bytes} reserve={m.reserve_bytes} />
-        <div className="mt-1.5 flex justify-between text-[11px] text-faint">
-          <span>
-            {running} running{queued > 0 && ` · ${queued} queued`}
+        <div className="mt-1.5 flex justify-between gap-2 text-[11px] text-faint" title={budget}>
+          <span className="truncate">
+            {running} running{queued > 0 && ` · ${queued} waiting`}
           </span>
-          <span title="What the next session is expected to use">next ~{bytes(m.estimate_bytes)}</span>
+          <span className="shrink-0">{queued > 0 || room === 0 ? "next one waits" : `room for ${room} more`}</span>
         </div>
       </div>
       <div className="flex items-center justify-between text-[11px] text-faint">
