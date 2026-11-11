@@ -137,7 +137,7 @@ export const IconButton = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTM
 
 export function Kbd({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <kbd className={cx("inline-grid h-[18px] min-w-[18px] place-items-center rounded border border-line-strong bg-panel-2 px-1 font-sans text-[10.5px] font-medium text-muted", className)}>
+    <kbd className={cx("inline-grid h-[18px] min-w-[18px] place-items-center rounded border whitespace-nowrap border-line-strong bg-panel-2 px-1 font-sans text-[10.5px] font-medium text-muted", className)}>
       {children}
     </kbd>
   );

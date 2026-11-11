@@ -91,7 +91,7 @@ export function NewSession({ onClose }: { onClose: () => void }) {
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
               spellCheck={false}
-              className="min-w-0 flex-1 bg-transparent font-mono text-[12px] outline-none placeholder:text-faint"
+              className="min-w-0 flex-1 bg-transparent text-[12.5px] text-muted outline-none placeholder:text-faint focus:text-fg"
               placeholder="C:\code\my-app"
             />
             <datalist id="hangar-projects">

@@ -41,7 +41,14 @@ export function Sidebar() {
         <NavItem icon={<Layers className="size-4" />} active={view.kind === "all" && !project} onClick={() => setView({ kind: "all", project: null })} count={list.length}>
           Sessions
         </NavItem>
-        <NavItem icon={<Server className="size-4" />} active={view.kind === "pool"} onClick={() => setView({ kind: "pool" })} count={system?.servers.length ?? 0}>
+        <NavItem
+          icon={<Server className="size-4" />}
+          active={view.kind === "pool"}
+          onClick={() => setView({ kind: "pool" })}
+          count={system?.servers.length ?? 0}
+          badge={system && system.saved_bytes > 0 ? `−${bytes(system.saved_bytes)}` : undefined}
+          badgeTitle="Memory the pool saves right now"
+        >
           MCP pool
         </NavItem>
       </nav>
@@ -85,6 +92,8 @@ function NavItem({
   count,
   highlight,
   title,
+  badge,
+  badgeTitle,
 }: {
   icon: ReactNode;
   children: ReactNode;
@@ -93,6 +102,8 @@ function NavItem({
   count?: number;
   highlight?: boolean;
   title?: string;
+  badge?: string;
+  badgeTitle?: string;
 }) {
   return (
     <button
@@ -106,7 +117,12 @@ function NavItem({
     >
       <span className={active ? "text-fg" : "text-faint"}>{icon}</span>
       <span className="min-w-0 flex-1 truncate">{children}</span>
-      {count != null && count > 0 && (
+      {badge && (
+        <span className="rounded bg-emerald-500/12 px-1.5 text-[11px] font-medium whitespace-nowrap text-emerald-500" title={badgeTitle}>
+          {badge}
+        </span>
+      )}
+      {!badge && count != null && count > 0 && (
         <span className={cx("text-[11.5px] tabular-nums", highlight ? "rounded bg-s-needs/15 px-1.5 font-medium text-s-needs" : "text-faint")}>{count}</span>
       )}
     </button>
@@ -142,12 +158,11 @@ function MachineFooter() {
         </div>
       </div>
       <div className="flex items-center justify-between text-[11px] text-faint">
-        <span className="flex items-center gap-1.5">
-          <span className={cx("size-1.5 rounded-full", conn === "live" ? "bg-emerald-500" : "animate-soft-pulse bg-s-needs")} />
-          {conn === "live" ? `hangar ${system.version}` : "reconnecting…"}
-          {system.saved_bytes > 0 && <span className="text-emerald-500"> · {bytes(system.saved_bytes)} saved</span>}
+        <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
+          <span className={cx("size-1.5 shrink-0 rounded-full", conn === "live" ? "bg-emerald-500" : "animate-soft-pulse bg-s-needs")} />
+          <span className="truncate">{conn === "live" ? `hangar ${system.version}` : "reconnecting…"}</span>
         </span>
-        <button onClick={() => open("palette")} className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-panel-2 hover:text-muted" title="Commands and shortcuts">
+        <button onClick={() => open("palette")} className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 hover:bg-panel-2 hover:text-muted" title="Commands and shortcuts">
           <CircleHelp className="size-3.5" />
           <Kbd className="h-4 min-w-4 text-[10px]">Ctrl K</Kbd>
         </button>

@@ -57,13 +57,24 @@ And switching between a dozen terminal tabs to find the one that is waiting for 
 
 ## What it does
 
-**One window for every session.** Start Claude Code sessions in any folder. The sidebar groups them by what they need from you: *Needs you*, *Working*, *Queued*, *Ready for you*, *Paused*. Permission requests show up inline with the exact command or file contents, and you get a desktop notification when a session needs you or finishes.
+**One window for every session.** Start Claude Code sessions in any folder. The list groups them by what they need from you: *Needs you*, *Working*, *Queued*, *Ready*, *Paused*, and the sidebar filters to what needs you or to one project. Each session reads as an activity feed, with permission requests inline showing the exact command, file contents or diff, and a properties panel for its status, permissions, model, memory, cost and MCP servers. You get a desktop notification when a session needs you, finishes or fails. The layout adapts down to a phone-sized window, and it follows your system's light or dark theme.
+
+Everything is a keystroke away:
+
+| Key | |
+|---|---|
+| `Ctrl K` | command palette: jump to any session or action |
+| `C` | new session |
+| `J` / `K` | next / previous session |
+| `R` | reply to the open session |
+| `Esc` | stop the running turn |
+| `Ctrl \` | show or hide the sidebar |
 
 **Shared MCP servers.** `hangar-shim` stands in for each stdio server. All sessions talk to one daemon that runs a single copy of each shareable server. It starts servers on first use, stops idle ones, restarts crashed ones, and keeps every process in a Windows job object so nothing outlives it.
 
 **A memory budget.** A session starts only if, after its expected cost (learned from your real sessions), a reserve of free memory remains. Otherwise it waits in a queue. Before making anyone wait, hangar pauses the longest-idle session (an idle Claude Code process holds 400–470 MB on this machine) and resumes it on its next message with `--resume`, so the conversation continues where it left off.
 
-![The MCP pool panel: two servers shared by six sessions](docs/img/pool-dark.png)
+![The MCP pool: two servers shared by six sessions, about 500 MB saved](docs/img/pool-dark.png)
 
 ## Quick start
 
