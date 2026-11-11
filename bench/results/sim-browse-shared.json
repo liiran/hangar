@@ -1,0 +1,62 @@
+[
+  {
+    "mode": "pooled",
+    "agent": "sim",
+    "sessions": 3,
+    "servers": [
+      "playwright",
+      "context7",
+      "memory",
+      "sequential-thinking",
+      "filesystem"
+    ],
+    "session_ready_ms": [
+      1396,
+      1395,
+      1396
+    ],
+    "failures": [],
+    "mcp": {
+      "processes": 46,
+      "private_bytes": 1068138496,
+      "working_set": 1479598080,
+      "cpu_ms": 6563
+    },
+    "agents": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "breakdown": {
+      "daemon": {
+        "processes": 1,
+        "private_bytes": 9158656,
+        "working_set": 15626240,
+        "cpu_ms": 249
+      },
+      "server": {
+        "processes": 30,
+        "private_bytes": 1040510976,
+        "working_set": 1379831808,
+        "cpu_ms": 6149
+      },
+      "shim": {
+        "processes": 15,
+        "private_bytes": 18468864,
+        "working_set": 84140032,
+        "cpu_ms": 165
+      }
+    },
+    "cpu_ms": 6766,
+    "leftovers": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "leftover_names": [],
+    "warm_ready_ms": [],
+    "wall_ms": 9513
+  }
+]

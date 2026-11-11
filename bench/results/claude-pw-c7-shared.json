@@ -1,0 +1,191 @@
+[
+  {
+    "mode": "pooled",
+    "agent": "claude",
+    "sessions": 1,
+    "servers": [
+      "playwright",
+      "context7"
+    ],
+    "session_ready_ms": [
+      1452
+    ],
+    "failures": [],
+    "mcp": {
+      "processes": 8,
+      "private_bytes": 160542720,
+      "working_set": 222068736,
+      "cpu_ms": 1151
+    },
+    "agents": {
+      "processes": 1,
+      "private_bytes": 455266304,
+      "working_set": 237510656,
+      "cpu_ms": 827
+    },
+    "breakdown": {
+      "agent": {
+        "processes": 1,
+        "private_bytes": 455266304,
+        "working_set": 237510656,
+        "cpu_ms": 827
+      },
+      "daemon": {
+        "processes": 1,
+        "private_bytes": 4624384,
+        "working_set": 11882496,
+        "cpu_ms": 77
+      },
+      "server": {
+        "processes": 5,
+        "private_bytes": 153432064,
+        "working_set": 198942720,
+        "cpu_ms": 1044
+      },
+      "shim": {
+        "processes": 2,
+        "private_bytes": 2486272,
+        "working_set": 11243520,
+        "cpu_ms": 30
+      }
+    },
+    "cpu_ms": 2094,
+    "leftovers": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "leftover_names": [],
+    "warm_ready_ms": [],
+    "wall_ms": 10144
+  },
+  {
+    "mode": "pooled",
+    "agent": "claude",
+    "sessions": 3,
+    "servers": [
+      "playwright",
+      "context7"
+    ],
+    "session_ready_ms": [
+      1528,
+      1573,
+      1574
+    ],
+    "failures": [],
+    "mcp": {
+      "processes": 14,
+      "private_bytes": 169443328,
+      "working_set": 263311360,
+      "cpu_ms": 1367
+    },
+    "agents": {
+      "processes": 3,
+      "private_bytes": 1361891328,
+      "working_set": 709861376,
+      "cpu_ms": 2496
+    },
+    "breakdown": {
+      "agent": {
+        "processes": 3,
+        "private_bytes": 1361891328,
+        "working_set": 709861376,
+        "cpu_ms": 2496
+      },
+      "daemon": {
+        "processes": 1,
+        "private_bytes": 5885952,
+        "working_set": 12730368,
+        "cpu_ms": 62
+      },
+      "server": {
+        "processes": 7,
+        "private_bytes": 156221440,
+        "working_set": 216920064,
+        "cpu_ms": 1199
+      },
+      "shim": {
+        "processes": 6,
+        "private_bytes": 7335936,
+        "working_set": 33660928,
+        "cpu_ms": 106
+      }
+    },
+    "cpu_ms": 4359,
+    "leftovers": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "leftover_names": [],
+    "warm_ready_ms": [],
+    "wall_ms": 11186
+  },
+  {
+    "mode": "pooled",
+    "agent": "claude",
+    "sessions": 5,
+    "servers": [
+      "playwright",
+      "context7"
+    ],
+    "session_ready_ms": [
+      1466,
+      1465,
+      1447,
+      1464,
+      1445
+    ],
+    "failures": [],
+    "mcp": {
+      "processes": 20,
+      "private_bytes": 178339840,
+      "working_set": 307761152,
+      "cpu_ms": 1223
+    },
+    "agents": {
+      "processes": 5,
+      "private_bytes": 2228146176,
+      "working_set": 1176887296,
+      "cpu_ms": 4199
+    },
+    "breakdown": {
+      "agent": {
+        "processes": 5,
+        "private_bytes": 2228146176,
+        "working_set": 1176887296,
+        "cpu_ms": 4199
+      },
+      "daemon": {
+        "processes": 1,
+        "private_bytes": 6234112,
+        "working_set": 13074432,
+        "cpu_ms": 62
+      },
+      "server": {
+        "processes": 9,
+        "private_bytes": 159834112,
+        "working_set": 238542848,
+        "cpu_ms": 949
+      },
+      "shim": {
+        "processes": 10,
+        "private_bytes": 12271616,
+        "working_set": 56143872,
+        "cpu_ms": 212
+      }
+    },
+    "cpu_ms": 6313,
+    "leftovers": {
+      "processes": 0,
+      "private_bytes": 0,
+      "working_set": 0,
+      "cpu_ms": 0
+    },
+    "leftover_names": [],
+    "warm_ready_ms": [],
+    "wall_ms": 12471
+  }
+]

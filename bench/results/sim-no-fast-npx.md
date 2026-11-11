@@ -4,6 +4,6 @@ Servers: playwright, context7, memory, sequential-thinking, filesystem. Machine:
 
 | Sessions | Mode | MCP processes | MCP memory (private) | Agent memory | CPU to start | Ready p50 | Ready p95 | Ready max | Failed | Leftovers after close |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 5 | pooled | 91 | 2.06 GB | - | 19.6 s | 3.7 s | 3.7 s | 3.7 s | 0 | 0 (0 MB) |
+| 5 | pooled | 111 | 2.72 GB | - | 25.0 s | 6.6 s | 6.6 s | 6.6 s | 0 | 0 (0 MB) |
 
 Each configuration ran once, direct before pooled. Memory is private (committed) bytes summed over every process, so shared DLL pages are not double counted. CPU comes from job-object accounting and includes processes that exited during startup. Ready is the slowest server of each session; p95 uses the nearest-rank method. Leftovers are processes still alive 5 s after every session closed, excluding servers the pool keeps warm on purpose.

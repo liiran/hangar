@@ -18,78 +18,98 @@
 - **Memory guard.** A run is skipped if, judging by the previous run of the same mode (or a conservative 170 MB per server per session before any run), it would leave less than 2 GB free. A pooled run is never skipped after the direct run with the same session count fit.
 - **Windows only.** Counting every process a run starts, including ones that already exited, needs job-object accounting, so `hangar bench` refuses to run elsewhere rather than report partial numbers.
 
-Machine: Windows 11, AMD Ryzen 5 9600X (6 cores / 12 threads), 31 GB RAM (about 6.5 GB free during this run), Node 22.19, Claude Code 2.1.321.
+Machine: Windows 11, AMD Ryzen 5 9600X (6 cores / 12 threads), 31 GB RAM (about 9 GB free during this run), Node 22.19, Claude Code 2.1.321. Measured 2026-11-11.
+
+**Playwright runs once per session by default.** One shared Playwright browser is opt-in (`share = "native"`), because it needs a local port without a password ([SECURITY.md](../SECURITY.md)). The tables below use the defaults unless they say "shared browser", which is `--shared-browser`.
 
 ## Playwright and Context7 ([claude-pw-c7.md](results/claude-pw-c7.md))
 
-The two local servers people add most, alone: `--preset bench/presets/playwright-context7.json`. Measured 2026-11-11 with about 12 GB free.
+The two local servers people add most, alone: `--preset bench/presets/playwright-context7.json`.
 
 | Real Claude Code sessions | Mode | MCP processes | MCP memory | Claude memory | CPU to start | Ready p95 |
 |---:|---|---:|---:|---:|---:|---:|
-| 1 | direct | 11 | 336 MB | 432 MB | 3.7 s | 2.7 s |
-| 1 | pooled | 8 | 151 MB | 430 MB | 2.1 s | 1.5 s |
-| 3 | direct | 33 | 1012 MB | 1.27 GB | 13.4 s | 4.8 s |
-| 3 | pooled | 14 | 158 MB | 1.25 GB | 4.9 s | 2.2 s |
-| 5 | direct | 55 | 1.64 GB | 1.96 GB | 21.9 s | 7.0 s |
-| 5 | pooled | 20 | 169 MB | 2.05 GB | 6.4 s | 1.9 s |
+| 1 | direct | 11 | 340 MB | 440 MB | 3.3 s | 2.6 s |
+| 1 | pooled | 8 | 149 MB | 431 MB | 2.2 s | 1.3 s |
+| 3 | direct | 33 | 1016 MB | 1.25 GB | 11.8 s | 3.4 s |
+| 3 | pooled | 18 | 294 MB | 1.28 GB | 5.2 s | 1.5 s |
+| 3 | pooled, shared browser | 14 | 162 MB | 1.27 GB | 4.4 s | 1.6 s |
+| 5 | direct | 55 | 1.65 GB | 2.13 GB | 21.7 s | 5.2 s |
+| 5 | pooled | 28 | 441 MB | 2.07 GB | 8.2 s | 2.2 s |
+| 5 | pooled, shared browser | 20 | 170 MB | 2.08 GB | 6.3 s | 1.5 s |
 
-Pooled, the servers cost about the same for 5 sessions as for 1: one Context7 and one Playwright, plus a 1.2 MB shim per session per server. At 1 session the saving is the npx fast path alone (no `cmd` and `npx` launcher processes).
+- **By default,** Context7 is one process for everyone, and each session's Playwright is a single `node` process instead of a five-process tree. 5 sessions: **1.65 GB → 441 MB (−74%)**.
+- **At 1 session** the saving is the npx fast path alone (no `cmd` and `npx` launcher processes).
+- **With the shared browser on** ([claude-pw-c7-shared.md](results/claude-pw-c7-shared.md)), the servers cost about the same for 5 sessions as for 1: 170 MB (−90%).
 
-When every session also opens a page in its browser ([sim-browse-pw-c7.md](results/sim-browse-pw-c7.md)), direct mode starts a browser per session and the pool one browser with a context per session: 1 session 610 → 400 MB, 3 sessions 1.78 GB → 555 MB, 5 sessions **2.86 GB → 718 MB (−75%)**. Simulated sessions without browsing ([sim-pw-c7.md](results/sim-pw-c7.md)) reach 10: **3.12 GB → 190 MB (−94%)**, 100 processes → 25, tools ready in 1.7 s instead of 13.3 s.
+When every session also opens a page in its browser ([sim-browse-pw-c7.md](results/sim-browse-pw-c7.md)):
+
+| Sessions | Direct | Pooled | Pooled, shared browser ([results](results/sim-browse-pw-c7-shared.md)) |
+|---:|---:|---:|---:|
+| 1 | 609 MB | 415 MB | 400 MB |
+| 3 | 1.78 GB | 1.08 GB (−39%) | 567 MB (−68%) |
+| 5 | 2.95 GB | 1.74 GB (−41%) | 713 MB (−76%) |
+
+A browser per session is most of what remains by default. The shared browser replaces them with one browser and a private context per session.
+
+Simulated sessions without browsing ([sim-pw-c7.md](results/sim-pw-c7.md)) reach 10: **3.28 GB → 794 MB (−76%)**, 100 processes → 43, tools ready in 1.3 s instead of 7.2 s.
 
 ## Five popular servers, real Claude Code ([claude.md](results/claude.md))
 
 | Sessions | Mode | MCP processes | MCP memory | Claude memory | CPU to start | Ready p95 |
 |---:|---|---:|---:|---:|---:|---:|
-| 1 | direct | 26 | 820 MB | 438 MB | 6.9 s | 3.9 s |
-| 1 | pooled | 17 | 346 MB | 430 MB | 2.8 s | 1.4 s |
-| 3 | direct | 78 | 2.39 GB | 1.24 GB | 24.3 s | 6.1 s |
-| 3 | pooled | 37 | 599 MB | 1.27 GB | 6.9 s | 1.8 s |
-| 5 | pooled | 57 | 857 MB | 1.95 GB | 11.8 s | 2.9 s |
+| 1 | direct | 26 | 837 MB | 426 MB | 8.4 s | 4.2 s |
+| 1 | pooled | 17 | 355 MB | 450 MB | 3.5 s | 1.5 s |
+| 3 | direct | 78 | 2.42 GB | 1.27 GB | 25.6 s | 6.5 s |
+| 3 | pooled | 41 | 755 MB | 1.30 GB | 8.2 s | 2.0 s |
+| 5 | direct | 130 | 3.84 GB | 2.04 GB | 42.3 s | 10.3 s |
+| 5 | pooled | 65 | 1.12 GB | 2.04 GB | 13.5 s | 3.0 s |
 
-The 5-session direct run was skipped by the memory guard: it needed about 6.1 GB plus the 2 GB reserve, and 6.8 GB was free (other programs were using the rest of the machine's 31 GB during this run).
+Three sessions: MCP memory −70%, startup CPU −68%, and the whole footprint with Claude Code included goes from 3.70 GB to 2.04 GB (−45%). Five sessions: 5.88 GB → 3.16 GB (−46%).
 
 ## Simulated agents ([sim.md](results/sim.md))
 
 | Sessions | Mode | MCP processes | MCP memory | CPU to start | Ready p95 |
 |---:|---|---:|---:|---:|---:|
-| 1 | direct | 25 | 819 MB | 6.0 s | 2.1 s |
-| 1 | pooled | 16 | 345 MB | 2.0 s | 742 ms |
-| 5 | direct | 125 | 3.96 GB | 36.7 s | 7.4 s |
-| 5 | pooled | 52 | 845 MB | 5.8 s | 1.4 s |
-| 10 | pooled | 97 | 1.45 GB | 10.0 s | 2.2 s |
+| 1 | direct | 25 | 831 MB | 6.5 s | 2.5 s |
+| 1 | pooled | 16 | 352 MB | 2.4 s | 806 ms |
+| 5 | direct | 125 | 3.95 GB | 38.5 s | 10.6 s |
+| 5 | pooled | 60 | 1.11 GB | 7.4 s | 1.9 s |
+| 10 | direct | 250 | 7.38 GB | 79.3 s | 21.5 s |
+| 10 | pooled | 115 | 2.08 GB | 14.6 s | 2.9 s |
 
-The 10-session direct run was skipped by the memory guard (about 8.0 GB needed plus the reserve, 6.5 GB free). A second wave of sessions joining already-warm servers was ready in 395 ms (1 session), 760 ms p95 (5) and 1.8 s p95 (10). The per-session servers still start cold, so this is not instant.
+Ten sessions: 7.38 GB → 2.08 GB (−72%), and tools are ready in 2.9 s instead of 21.5 s.
 
 ## Every session uses its browser ([sim-browse.md](results/sim-browse.md))
 
-Each session opens a page titled with its own number and then checks, through `browser_tabs`, that it sees exactly its own page. Every run passed.
+Each session opens a page and checks that it sees only its own.
 
 | Sessions | Mode | MCP processes | MCP memory | CPU to start | Ready p95 |
 |---:|---|---:|---:|---:|---:|
-| 1 | direct | 33 | 1.08 GB | 8.0 s | 2.2 s |
-| 1 | pooled | 24 | 629 MB | 4.0 s | 929 ms |
-| 3 | direct | 99 | 3.20 GB | 28.8 s | 5.6 s |
-| 3 | pooled | 46 | 1.01 GB | 7.7 s | 1.7 s |
-| 5 | pooled | 68 | 1.43 GB | 10.6 s | 2.0 s |
+| 1 | direct | 33 | 1.06 GB | 8.9 s | 2.9 s |
+| 1 | pooled | 24 | 622 MB | 4.0 s | 891 ms |
+| 3 | direct | 99 | 3.20 GB | 29.1 s | 7.1 s |
+| 3 | pooled | 62 | 1.51 GB | 12.1 s | 2.4 s |
+| 3 | pooled, shared browser ([results](results/sim-browse-shared.md)) | 46 | 1019 MB | 6.8 s | 1.4 s |
+| 5 | direct | 165 | 5.19 GB | 49.4 s | 11.6 s |
+| 5 | pooled | 100 | 2.41 GB | 20.4 s | 3.5 s |
 
 ## Where the savings come from ([sim-no-fast-npx.md](results/sim-no-fast-npx.md))
 
-Five simulated sessions, with the npx fast path turned off so only sharing is measured:
+Five simulated sessions, five servers:
 
 | | MCP processes | MCP memory | CPU to start | Ready p95 |
 |---|---:|---:|---:|---:|
-| direct | 125 | 3.96 GB | 36.7 s | 7.4 s |
-| pooled, sharing only | 91 | 2.06 GB | 19.6 s | 3.7 s |
-| pooled, sharing + fast path | 52 | 845 MB | 5.8 s | 1.4 s |
+| direct | 125 | 3.95 GB | 38.5 s | 10.6 s |
+| pooled, sharing only | 111 | 2.72 GB | 25.0 s | 6.6 s |
+| pooled, sharing + fast path | 60 | 1.11 GB | 7.4 s | 1.9 s |
 
-Context7 and Memory are shared by every session, and Playwright is one process with a context per session. Sequential Thinking and Filesystem keep per-session state, so they still run once per session. The fast path makes those per-session copies cheaper too, which is why it matters even with sharing.
+Context7 and Memory are shared by every session. Playwright, Sequential Thinking and Filesystem keep per-session state, so they run once per session. The fast path makes those per-session copies much cheaper, which is why it matters even with sharing.
 
 The fast path starts a tagged package (`@latest`, or no version) from npx's cache only if real npx resolved it within the last day. The warmup's direct starts are such runs, and the benchmark records them for its pooled runs, as a machine that used these servers today would have. On a day's first start, expect the "sharing only" row.
 
 ## Quality ([verify.md](results/verify.md))
 
-`hangar verify` runs scripted tool calls against each server both ways and compares the answers: 21 of 21 identical, with the pool's request counters proving it served every pooled call. Through the pool a call takes 0.1 ms longer (about 0.9 ms for Playwright over HTTP). Real Claude Code (Haiku) did three MCP-only tasks three times each way: 9 of 9 succeeded both ways, with the same number of turns and the same cost.
+`hangar verify` runs scripted tool calls against each server both ways and compares the answers: 21 of 21 identical, with the pool's request counters proving it served every pooled call. Through the pool a call takes 0.1 ms longer (about 0.9 ms for Playwright over HTTP). Real Claude Code (Haiku) did three MCP-only tasks three times each way: 9 of 9 succeeded both ways, with the same number of turns and the same cost. `verify` turns the shared Playwright browser on, so that path is checked too.
 
 ## Caveats
 
@@ -97,4 +117,4 @@ The fast path starts a tagged package (`@latest`, or no version) from npx's cach
 - **The fast path skips npm's registry check** between real npx runs (at most a day apart). `fast_npx = false` checks on every start.
 - **One machine.** Numbers depend on the machine, the antivirus, the npm cache and which servers you run. Run `hangar bench` with `--preset <your .mcp.json>` to measure your own setup.
 - **The baseline** ([baseline-sim.md](results/baseline-sim.md)) was recorded before any pooling code existed.
-- **Run-to-run variation.** Earlier full runs of the same matrix (in git history) gave the same picture within a few percent; for example, 5 simulated sessions measured 846 MB pooled there and 845 MB here.
+- **Run-to-run variation.** Memory repeats within a few percent between full runs. Startup times vary more with what else the machine is doing.
