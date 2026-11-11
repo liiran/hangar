@@ -9,6 +9,7 @@
 //! a running process has confirmed it started.
 
 pub mod claude;
+pub mod recent;
 mod store;
 pub mod trust;
 
@@ -172,6 +173,8 @@ pub struct NewSession {
     pub permission_mode: Option<String>,
     /// The user confirmed they trust the folder.
     pub trust: bool,
+    /// `cwd` is a new folder to make first (its parent must exist).
+    pub create_folder: bool,
 }
 
 /// `create` refused because the folder is not trusted yet.
@@ -325,28 +328,20 @@ impl Manager {
         Ok(self.store.events(id, after))
     }
 
-    /// Folders to offer for a new session: hangar's most recent first, then
-    /// the folders Claude Code has been used in that still exist.
+    /// Folders to offer for a new session, most recently used first: where
+    /// hangar sessions ran and where Claude Code was used (from its
+    /// transcripts), then the rest of the folders Claude Code knows.
     pub fn recent_projects(&self) -> Vec<String> {
         const MAX: usize = 20;
-        let key = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
-        let mut seen: Vec<(u64, String)> = {
+        let claude_json = self.claude_json.lock().unwrap().clone();
+        let mut dated: Vec<(u64, String)> = {
             let inner = self.inner.lock().unwrap();
             inner.sessions.values().map(|s| (s.meta.updated_ms, s.meta.cwd.clone())).collect()
         };
-        seen.sort_by_key(|s| std::cmp::Reverse(s.0));
-        let mut out: Vec<String> = Vec::new();
-        let claude = trust::claude_projects(&self.claude_json.lock().unwrap().clone());
-        let from_claude = claude.into_iter().rev().filter(|p| Path::new(p).is_dir());
-        for cwd in seen.into_iter().map(|(_, c)| c).chain(from_claude) {
-            if out.len() >= MAX {
-                break;
-            }
-            if !out.iter().any(|c| key(c) == key(&cwd)) {
-                out.push(cwd);
-            }
-        }
-        out
+        dated.extend(recent::claude_folders(&recent::transcripts_dir(&claude_json)));
+        dated.sort_by_key(|d| std::cmp::Reverse(d.0));
+        let known = trust::claude_projects(&claude_json).into_iter().rev();
+        recent::pick(dated.into_iter().map(|(_, c)| c).chain(known), MAX, &std::env::temp_dir())
     }
 
     /// Whether `cwd` is trusted, and what it would run.
@@ -357,10 +352,7 @@ impl Manager {
     // ------------------------------------------------------------ commands
 
     pub fn create(self: &Arc<Self>, req: NewSession) -> Result<SessionView> {
-        let cwd = PathBuf::from(req.cwd.trim());
-        if !cwd.is_dir() {
-            bail!("{} is not a folder", cwd.display());
-        }
+        let mut cwd = PathBuf::from(req.cwd.trim());
         let prompt = req.prompt.trim().to_string();
         if prompt.is_empty() {
             bail!("the first message is empty");
@@ -374,6 +366,16 @@ impl Manager {
             && !valid_model(m)
         {
             bail!("{m:?} is not a model name");
+        }
+        // A new folder is made only now, when the session starts, so a
+        // dialog that was closed leaves nothing behind. It is empty, so
+        // there is nothing in it to distrust.
+        let made = req.create_folder && !cwd.exists();
+        if made {
+            cwd = PathBuf::from(crate::folders::create(req.cwd.trim(), &crate::util::user_home())?);
+            trust::remember(&self.home, &cwd);
+        } else if !cwd.is_dir() {
+            bail!("{} is not a folder", cwd.display());
         }
         let info = self.trust(&cwd);
         if !info.trusted {
@@ -402,7 +404,12 @@ impl Manager {
             peak_bytes: 0,
             outbox: vec![prompt.clone()],
         };
-        self.store.create(&id)?;
+        if let Err(e) = self.store.create(&id) {
+            if made {
+                let _ = std::fs::remove_dir(&cwd);
+            }
+            return Err(e.into());
+        }
         {
             let mut inner = self.inner.lock().unwrap();
             inner.sessions.insert(id.clone(), Session::new(meta, 1));

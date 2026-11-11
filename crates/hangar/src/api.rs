@@ -58,7 +58,8 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState, mut shutd
     let api = Router::new()
         .route("/state", get(get_state))
         .route("/trust", get(get_trust))
-        .route("/folders", get(list_folders).post(create_folder))
+        .route("/folders", get(list_folders))
+        .route("/folders/search", get(search_folders))
         .route("/sessions", post(create_session))
         .route("/sessions/{id}", axum::routing::patch(update_session).delete(delete_session))
         .route("/sessions/{id}/events", get(get_events))
@@ -220,9 +221,15 @@ pub async fn system_snapshot(st: &AppState) -> Value {
 async fn get_state(State(st): State<AppState>) -> Response {
     let mut sys = system_snapshot(&st).await;
     sys["sessions"] = serde_json::to_value(st.manager.list()).unwrap_or(Value::Null);
-    sys["projects"] = json!(st.manager.recent_projects());
+    sys["projects"] = json!(recent_projects(&st).await);
     sys["home"] = json!(crate::util::user_home().display().to_string());
     Json(sys).into_response()
+}
+
+/// Reads Claude Code's transcripts, so off the async threads.
+async fn recent_projects(st: &AppState) -> Vec<String> {
+    let manager = st.manager.clone();
+    tokio::task::spawn_blocking(move || manager.recent_projects()).await.unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -231,23 +238,45 @@ struct FoldersQuery {
     path: String,
 }
 
-/// Folder names for the app's folder picker (never files or contents).
-async fn list_folders(Query(q): Query<FoldersQuery>) -> Response {
-    match tokio::task::spawn_blocking(move || crate::folders::list(&q.path, &crate::util::user_home())).await {
-        Ok(listing) => Json(listing).into_response(),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+/// Folder names for the app's folder picker (never files or contents). The
+/// top level also carries the recent folders, fresh each time it opens.
+async fn list_folders(State(st): State<AppState>, Query(q): Query<FoldersQuery>) -> Response {
+    let top = q.path.trim().is_empty();
+    let listing = match tokio::task::spawn_blocking(move || crate::folders::list(&q.path, &crate::util::user_home())).await {
+        Ok(listing) => listing,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let mut v = serde_json::to_value(listing).unwrap_or(Value::Null);
+    if top {
+        v["recent"] = json!(recent_projects(&st).await);
     }
+    Json(v).into_response()
 }
 
 #[derive(Deserialize)]
-struct CreateFolderBody {
-    path: String,
+struct SearchQuery {
+    #[serde(default)]
+    q: String,
 }
 
-async fn create_folder(Json(b): Json<CreateFolderBody>) -> Response {
-    match crate::folders::create(&b.path, &crate::util::user_home()) {
-        Ok(path) => Json(json!({ "path": path })).into_response(),
-        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")),
+/// Folders found by name near the recent folders and in home.
+async fn search_folders(State(st): State<AppState>, Query(q): Query<SearchQuery>) -> Response {
+    let manager = st.manager.clone();
+    let found = tokio::task::spawn_blocking(move || {
+        use std::path::{Path, PathBuf};
+        let home = crate::util::user_home();
+        let recent: Vec<PathBuf> = manager.recent_projects().into_iter().map(PathBuf::from).collect();
+        let mut roots = recent.clone();
+        // Their siblings are likely too, but not a whole drive or every
+        // user's home.
+        roots.extend(recent.iter().filter_map(|r| r.parent()).filter(|p| p.parent().is_some() && Some(*p) != home.parent()).map(Path::to_path_buf));
+        roots.push(home);
+        crate::folders::search(&q.q, &roots)
+    })
+    .await;
+    match found {
+        Ok(entries) => Json(json!({ "entries": entries })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 
@@ -273,10 +302,20 @@ struct CreateBody {
     permission_mode: Option<String>,
     #[serde(default)]
     trust: bool,
+    #[serde(default)]
+    create_folder: bool,
 }
 
 async fn create_session(State(st): State<AppState>, Json(b): Json<CreateBody>) -> Response {
-    let req = NewSession { cwd: b.cwd, prompt: b.prompt, title: b.title, model: b.model, permission_mode: b.permission_mode, trust: b.trust };
+    let req = NewSession {
+        cwd: b.cwd,
+        prompt: b.prompt,
+        title: b.title,
+        model: b.model,
+        permission_mode: b.permission_mode,
+        trust: b.trust,
+        create_folder: b.create_folder,
+    };
     match st.manager.create(req) {
         Ok(v) => Json(v).into_response(),
         Err(e) => match e.downcast_ref::<NeedsTrust>() {

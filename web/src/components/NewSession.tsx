@@ -1,9 +1,11 @@
 import { ChevronRight, Cpu, Shield, ShieldAlert, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type Trust } from "../api";
 import { basename, bytes, MODELS, PERMISSION_MODES } from "../format";
+import { mergeRecent } from "../folders";
 import { askNotificationPermission, report, saved, upsertSession, useStore } from "../store";
 import { useUI } from "../ui";
+import { projects as sessionFolders } from "../views";
 import { FolderPicker } from "./FolderPicker";
 import { Select } from "./Select";
 import { Button, cx, Kbd, Logo, useDialog } from "./ui";
@@ -11,19 +13,25 @@ import { Button, cx, Kbd, Logo, useDialog } from "./ui";
 const LAST_CWD = "hangar.lastCwd";
 
 export function NewSession({ onClose }: { onClose: () => void }) {
-  const projects = useStore((s) => s.projects);
+  const known = useStore((s) => s.projects);
+  const sessions = useStore((s) => s.sessions);
   const home = useStore((s) => s.home);
+  // Folders of the sessions on screen come first, so a folder used a moment
+  // ago is already there; the daemon's list adds the rest.
+  const recent = useMemo(() => mergeRecent(sessionFolders(Object.values(sessions)).map((p) => p.path), known), [sessions, known]);
   const system = useStore((s) => s.system);
   const select = useStore((s) => s.select);
   const view = useUI((s) => s.view);
   // Start in the folder being viewed, else the last one used.
-  const [cwd, setCwd] = useState(() => (view.kind === "all" && view.project) || saved.get(LAST_CWD) || projects[0] || home);
+  const [cwd, setCwd] = useState(() => (view.kind === "all" && view.project) || saved.get(LAST_CWD) || recent[0] || home);
+  // A new folder is made when the session starts, not when it is picked.
+  const [isNew, setIsNew] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("");
   const [mode, setMode] = useState("default");
   const [busy, setBusy] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
-  const folder = useFolder(cwd);
+  const folder = useFolder(cwd, isNew);
   const [trusted, setTrusted] = useState(false);
   useDialog(onClose);
 
@@ -40,7 +48,7 @@ export function NewSession({ onClose }: { onClose: () => void }) {
     setBusy(true);
     askNotificationPermission();
     try {
-      const s = await api.create({ cwd: cwd.trim(), prompt, model: model || undefined, permission_mode: mode, trust: trusted });
+      const s = await api.create({ cwd: cwd.trim(), prompt, model: model || undefined, permission_mode: mode, trust: trusted, create_folder: isNew || undefined });
       saved.set(LAST_CWD, cwd.trim());
       upsertSession(s);
       select(s.id);
@@ -73,7 +81,7 @@ export function NewSession({ onClose }: { onClose: () => void }) {
       >
         <div className="flex items-center gap-1.5 px-4 pt-3.5 text-[12px] text-muted">
           <span className="inline-flex h-6 items-center gap-1.5 rounded-md px-2 ring-1 ring-inset ring-line-strong">
-            <Logo className="size-3.5" /> hangar
+            <Logo size={16} /> hangar
           </span>
           <ChevronRight className="size-3.5 text-faint" />
           <h2 id="new-session-title" className="text-fg">
@@ -87,15 +95,18 @@ export function NewSession({ onClose }: { onClose: () => void }) {
         <div className="px-4 pt-3">
           <FolderPicker
             value={cwd}
-            onChange={(p) => {
+            isNew={isNew}
+            onChange={(p, made) => {
               setCwd(p);
+              setIsNew(made);
               promptRef.current?.focus();
             }}
-            recent={projects}
+            recent={recent}
             home={home}
             error={folder.error}
           />
           {folder.error && <p className="mt-1 px-1 text-[12px] text-s-error">{folder.error}</p>}
+          {isNew && <p className="mt-1 px-1 text-[12px] text-faint">A new, empty folder. hangar makes it when the session starts.</p>}
           <textarea
             ref={promptRef}
             aria-label="What should Claude do?"
@@ -109,8 +120,8 @@ export function NewSession({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5 px-4 pt-1 pb-3">
-          <Select icon={<Cpu className="size-3.5" />} label="Model" value={model} onChange={setModel} options={MODELS} />
-          <Select icon={<Shield className="size-3.5" />} label="Permissions" value={mode} onChange={setMode} options={PERMISSION_MODES} />
+          <Select icon={<Cpu className="size-3" />} label="Model" value={model} onChange={setModel} options={MODELS} />
+          <Select icon={<Shield className="size-3" />} label="Permissions" value={mode} onChange={setMode} options={PERMISSION_MODES} />
           <span className={cx("ml-1 text-[11.5px]", mode === "bypassPermissions" ? "text-s-needs" : "text-faint")}>{PERMISSION_MODES.find((o) => o.value === mode)?.hint}</span>
         </div>
 
@@ -128,15 +139,15 @@ export function NewSession({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** Looks up what a folder would run, as the user types its path. */
-function useFolder(cwd: string) {
+/** Looks up what a folder would run (nothing to look up for a new one). */
+function useFolder(cwd: string, isNew: boolean) {
   const [trust, setTrust] = useState<Trust | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     const dir = cwd.trim();
     setTrust(null);
     setError(null);
-    if (!dir) return;
+    if (!dir || isNew) return;
     let current = true;
     const t = setTimeout(() => {
       api
@@ -148,7 +159,7 @@ function useFolder(cwd: string) {
       current = false;
       clearTimeout(t);
     };
-  }, [cwd]);
+  }, [cwd, isNew]);
   return { trust, setTrust, error };
 }
 
@@ -161,7 +172,7 @@ function TrustNotice({ trust, trusted, onChange, folder }: { trust: Trust; trust
   return (
     <div className="mb-3 rounded-lg bg-s-needs/[0.06] p-3.5 text-[12.5px] ring-1 ring-inset ring-s-needs/30">
       <div className="flex items-center gap-2 font-medium">
-        <ShieldAlert className="size-4 text-s-needs" /> New folder
+        <ShieldAlert className="size-4 text-s-needs" /> Trust this folder?
       </div>
       <p className="mt-1 text-muted">Claude Code follows {folder}'s own settings. Start here only if you trust what is in it.</p>
       {lists.length === 0 ? (

@@ -108,8 +108,15 @@ export interface Folders {
   dir: string | null;
   exists: boolean;
   parent: string | null;
-  entries: { name: string; path: string }[];
+  entries: FolderEntry[];
   truncated: boolean;
+  /** The recent folders, fresh, on the top-level listing only. */
+  recent?: string[];
+}
+
+export interface FolderEntry {
+  name: string;
+  path: string;
 }
 
 export class ApiError extends Error {
@@ -148,8 +155,9 @@ export const api = {
   events: (id: string, after = 0) => call<SessionEvent[]>("GET", `/sessions/${id}/events?after=${after}`),
   trust: (cwd: string) => call<Trust>("GET", `/trust?cwd=${q(cwd)}`),
   folders: (path: string) => call<Folders>("GET", `/folders?path=${q(path)}`),
-  createFolder: (path: string) => call<{ path: string }>("POST", "/folders", { path }),
-  create: (b: { cwd: string; prompt: string; model?: string; permission_mode?: string; trust?: boolean }) => call<Session>("POST", "/sessions", b),
+  searchFolders: (words: string) => call<{ entries: FolderEntry[] }>("GET", `/folders/search?q=${q(words)}`),
+  create: (b: { cwd: string; prompt: string; model?: string; permission_mode?: string; trust?: boolean; create_folder?: boolean }) =>
+    call<Session>("POST", "/sessions", b),
   send: (id: string, text: string) => call("POST", `/sessions/${id}/messages`, { text }),
   decide: (id: string, requestId: string, behavior: "allow" | "allow_always" | "deny") => call("POST", `/sessions/${id}/permissions/${q(requestId)}`, { behavior }),
   interrupt: (id: string) => call("POST", `/sessions/${id}/interrupt`),

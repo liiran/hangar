@@ -1,25 +1,27 @@
 import { ArrowUp, Check, ChevronDown, ChevronRight, Clock, Folder, FolderOpen, FolderPlus, HardDrive, House, Search } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { api, type Folders } from "../api";
+import { api, type FolderEntry, type Folders } from "../api";
 import { basename } from "../format";
-import { into, isPathLike, sections, type FolderItem } from "../folders";
-import { report } from "../store";
+import { into, isPathLike, mergeRecent, sections, type FolderItem } from "../folders";
 import { cx, Kbd, useDismiss } from "./ui";
 
 /**
- * Picks a project folder the way VS Code does in the browser: type or paste
- * a path and its folders appear, or search the folders you used recently.
+ * Picks a project folder the way VS Code does in the browser: search your
+ * folders by name, or type or paste a path and its folders appear.
  * (A web page cannot open the system's folder dialog and learn the path.)
+ * A new folder is only chosen here; it is made when the session starts.
  */
 export function FolderPicker({
   value,
+  isNew,
   onChange,
   recent,
   home,
   error,
 }: {
   value: string;
-  onChange: (path: string) => void;
+  isNew: boolean;
+  onChange: (path: string, isNew: boolean) => void;
   recent: string[];
   home: string;
   error?: string | null;
@@ -53,10 +55,11 @@ export function FolderPicker({
           open && "bg-panel-2",
         )}
       >
-        <FolderOpen className="size-4 shrink-0 text-muted" />
+        {isNew ? <FolderPlus className="size-4 shrink-0 text-accent" /> : <FolderOpen className="size-4 shrink-0 text-muted" />}
         {value ? (
           <>
             <span className="shrink-0 text-[13px] font-medium">{basename(value)}</span>
+            {isNew && <span className="shrink-0 rounded bg-accent-soft px-1.5 py-px text-[10.5px] font-medium text-accent">New</span>}
             <span className="min-w-0 flex-1 truncate text-[12px] text-faint">{value}</span>
           </>
         ) : (
@@ -68,10 +71,10 @@ export function FolderPicker({
         <Panel
           recent={recent}
           home={home}
-          onPick={(path) => {
+          onPick={(path, made) => {
             // The parent moves focus on (to the prompt), so do not take it back.
             setOpen(false);
-            onChange(path);
+            onChange(path, made);
           }}
         />
       )}
@@ -79,65 +82,76 @@ export function FolderPicker({
   );
 }
 
-function Panel({ recent, home, onPick }: { recent: string[]; home: string; onPick: (path: string) => void }) {
+const EMPTY: Folders = { dir: null, exists: false, parent: null, entries: [], truncated: false };
+
+function Panel({ recent, home, onPick }: { recent: string[]; home: string; onPick: (path: string, isNew: boolean) => void }) {
   const sep = home.includes("\\") ? "\\" : "/";
   const [query, setQuery] = useState("");
   const [listing, setListing] = useState<{ for: string; data: Folders } | null>(null);
+  const [found, setFound] = useState<{ for: string; entries: FolderEntry[] } | null>(null);
+  // The daemon's recent folders, read fresh when the picker opens.
+  const [fresh, setFresh] = useState<string[] | null>(null);
   const [active, setActive] = useState(0);
-  const [busy, setBusy] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const id = useId();
+  const q = query.trim();
+  const pathy = isPathLike(q);
 
-  // List folders for paths (and the top level), never for search words.
+  // Paths (and the top level) list folders; words search for them by name.
   useEffect(() => {
-    const q = query.trim();
-    if (q !== "" && !isPathLike(q)) return;
     let current = true;
-    const t = setTimeout(() => {
-      api
-        .folders(q)
-        .then((data) => current && setListing({ for: q, data }))
-        .catch(() => current && setListing({ for: q, data: { dir: null, exists: false, parent: null, entries: [], truncated: false } }));
-    }, 90);
+    const t = setTimeout(
+      () => {
+        if (q === "" || pathy) {
+          api
+            .folders(q)
+            .then((data) => {
+              if (!current) return;
+              setListing({ for: q, data });
+              if (data.recent) setFresh(data.recent);
+            })
+            .catch(() => current && setListing({ for: q, data: EMPTY }));
+        } else {
+          api
+            .searchFolders(q)
+            .then((r) => current && setFound({ for: q, entries: r.entries }))
+            .catch(() => current && setFound({ for: q, entries: [] }));
+        }
+      },
+      q === "" || pathy ? 90 : 160,
+    );
     return () => {
       current = false;
       clearTimeout(t);
     };
-  }, [query]);
-  useEffect(() => setActive(0), [query, listing]);
+  }, [q, pathy]);
+
+  // Only trust answers made for what is typed now.
+  const shown = listing && listing.for === q ? listing.data : null;
+  const foundNow = found && found.for === q ? found.entries : null;
+  const searching = q !== "" && !pathy && !foundNow;
+  const waiting = (q === "" || pathy) && !shown;
+  const recents = useMemo(() => (fresh ? mergeRecent(fresh, recent) : recent), [fresh, recent]);
+  const s = useMemo(() => sections(query, shown, recents, foundNow), [query, shown, recents, foundNow]);
+  const items: FolderItem[] = [...s.top, ...s.recent, ...s.found, ...s.folders];
+
+  useEffect(() => setActive(0), [q, shown, foundNow]);
   useEffect(() => {
     list.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
   }, [active]);
-
-  // Only trust a listing made for what is typed now.
-  const fresh = listing && listing.for === query.trim() ? listing.data : null;
-  const waiting = (query.trim() === "" || isPathLike(query)) && !fresh;
-  const s = useMemo(() => sections(query, fresh, recent), [query, fresh, recent]);
-  const items: FolderItem[] = [...s.top, ...s.recent, ...s.folders];
 
   const go = (path: string) => {
     setQuery(into(path, sep));
     input.current?.focus();
   };
-  const act = async (item: FolderItem | undefined, use = false) => {
+  const act = (item: FolderItem | undefined, use = false) => {
     if (!item) return;
-    if (item.kind === "use" || item.kind === "recent") return onPick(item.path);
-    if (item.kind === "create") {
-      setBusy(true);
-      try {
-        const made = await api.createFolder(item.path);
-        onPick(made.path);
-      } catch (e) {
-        report(e);
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-    if (use && item.kind === "folder") return onPick(item.path);
+    if (item.kind === "create") return onPick(item.path, true);
+    if (item.kind === "use" || item.kind === "recent" || item.kind === "found" || (use && item.kind === "folder")) return onPick(item.path, false);
     go(item.path);
   };
+  const browsable = (item: FolderItem | undefined) => item && (item.kind === "folder" || item.kind === "up" || item.kind === "found" || item.kind === "recent");
 
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -147,7 +161,7 @@ function Panel({ recent, home, onPick }: { recent: string[]; home: string; onPic
       e.preventDefault();
       e.stopPropagation();
       act(items[active]);
-    } else if (e.key === "Tab" && !e.shiftKey && items[active] && (items[active].kind === "folder" || items[active].kind === "up")) {
+    } else if (e.key === "Tab" && !e.shiftKey && browsable(items[active])) {
       e.preventDefault();
       go(items[active].path);
     }
@@ -172,14 +186,13 @@ function Panel({ recent, home, onPick }: { recent: string[]; home: string; onPic
       >
         <span className={cx("shrink-0", isActive ? "text-fg" : "text-faint")}>{icon}</span>
         <span className="min-w-0 truncate">{label}</span>
-        {detail && <span className="min-w-0 flex-1 truncate text-[11.5px] text-faint">{detail}</span>}
-        {!detail && <span className="flex-1" />}
+        {detail ? <span className="min-w-0 flex-1 truncate text-[11.5px] text-faint">{detail}</span> : <span className="flex-1" />}
         {item.kind === "folder" && (
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              onPick(item.path);
+              onPick(item.path, false);
             }}
             className={cx("rounded px-1.5 py-0.5 text-[11.5px] text-accent hover:bg-accent-soft", isActive ? "visible" : "invisible group-hover:visible")}
           >
@@ -192,6 +205,7 @@ function Panel({ recent, home, onPick }: { recent: string[]; home: string; onPic
   };
 
   const placeIcon = (name: string) => (name === "Home" ? <House className="size-4" /> : <HardDrive className="size-4" />);
+  const parentOf = (p: string) => p.replace(/[\\/][^\\/]*$/, "") || p;
 
   return (
     <div className="animate-pop absolute inset-x-0 top-full z-50 mt-1 overflow-hidden rounded-lg bg-panel shadow-pop">
@@ -207,35 +221,37 @@ function Panel({ recent, home, onPick }: { recent: string[]; home: string; onPic
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKey}
           spellCheck={false}
-          placeholder={`Search recent folders, or type a path like ${sep === "\\" ? "C:\\code\\app" : "~/code/app"}`}
+          placeholder={`Search folders by name, or type a path like ${sep === "\\" ? "C:\\code\\app" : "~/code/app"}`}
           className="h-10 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-faint"
         />
-        {busy && <span className="size-3 animate-spin rounded-full border-2 border-faint border-t-transparent" />}
+        {searching && <span className="size-3 animate-spin rounded-full border-2 border-faint border-t-transparent" aria-label="Searching" />}
       </div>
       <div ref={list} id={`${id}-list`} role="listbox" aria-label="Folders" className="max-h-[320px] overflow-y-auto p-1">
         {s.top.map((item) =>
           item.kind === "use"
             ? row(item, <Check className="size-4 text-accent" />, <span className="font-medium text-fg">Use this folder</span>, item.path)
             : item.kind === "create"
-              ? row(item, <FolderPlus className="size-4 text-accent" />, <span className="text-fg">Create folder “{item.name}”</span>, item.path)
+              ? row(item, <FolderPlus className="size-4 text-accent" />, <span className="text-fg">New folder “{item.name}”</span>, "made when the session starts")
               : null,
         )}
         {s.recent.length > 0 && <Heading>Recent</Heading>}
         {s.recent.map((item) => row(item, <Clock className="size-4" />, basename(item.path), item.path))}
+        {s.found.length > 0 && <Heading>Folders</Heading>}
+        {s.found.map((item) => item.kind === "found" && row(item, <Folder className="size-4" />, item.name, parentOf(item.path)))}
         {s.heading && s.folders.length > 0 && <Heading>{s.heading}</Heading>}
         {s.folders.map((item) =>
           item.kind === "up"
             ? row(item, <ArrowUp className="size-4" />, "Parent folder", item.path)
             : item.kind === "folder"
-              ? row(item, fresh?.dir == null ? placeIcon(item.name) : <Folder className="size-4" />, item.name, fresh?.dir == null ? item.path : undefined)
+              ? row(item, shown?.dir == null ? placeIcon(item.name) : <Folder className="size-4" />, item.name, shown?.dir == null ? item.path : undefined)
               : null,
         )}
         {items.length === 0 && (
           <p className="px-3 py-6 text-center text-[12.5px] text-faint">
-            {waiting ? "Looking…" : isPathLike(query) ? "No folders here." : "No recent folder matches. Type a full path to browse."}
+            {waiting || searching ? "Looking…" : pathy ? "No folders here." : "No folder with that name nearby. Type a full path to browse."}
           </p>
         )}
-        {fresh?.truncated && <p className="px-3 py-1.5 text-[11.5px] text-faint">Showing the first 300; type more of the name to narrow it down.</p>}
+        {shown?.truncated && <p className="px-3 py-1.5 text-[11.5px] text-faint">Showing the first 300; type more of the name to narrow it down.</p>}
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line px-3 py-2 text-[11px] text-faint">
         <span className="flex items-center gap-1">
@@ -243,10 +259,10 @@ function Panel({ recent, home, onPick }: { recent: string[]; home: string; onPic
           <Kbd>↓</Kbd> move
         </span>
         <span className="flex items-center gap-1">
-          <Kbd>⏎</Kbd> open or use
+          <Kbd>⏎</Kbd> use or open
         </span>
         <span className="flex items-center gap-1">
-          <Kbd>Tab</Kbd> into folder
+          <Kbd>Tab</Kbd> look inside
         </span>
         <span className="ml-auto flex items-center gap-1">
           <Kbd>Esc</Kbd> close

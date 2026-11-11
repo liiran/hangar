@@ -33,7 +33,8 @@ const shots = process.env.E2E_SHOTS;
 if (shots) fs.mkdirSync(shots, { recursive: true });
 const shot = (page, name) => (shots ? page.screenshot({ path: path.join(shots, `${name}.png`) }) : Promise.resolve());
 
-const env = { ...process.env, HANGAR_HOME: home, HANGAR_CLAUDE: fakeClaude };
+// The temp folder is the user's home too, so nothing reads the real one.
+const env = { ...process.env, HANGAR_HOME: home, HANGAR_CLAUDE: fakeClaude, USERPROFILE: tmp, HOME: tmp };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const up = () => execFileSync(hangar, ["up", "--no-open"], { env, encoding: "utf8" }).trim().split(/\r?\n/).pop();
 const errors = [];
@@ -102,14 +103,19 @@ try {
   await page.locator(folderPath).press("Tab");
   await option("Use this folder").waitFor();
   check("Tab goes into a folder", (await page.inputValue(folderPath)).endsWith(path.sep) && (await page.inputValue(folderPath)).includes(path.sep + "home"), await page.inputValue(folderPath));
+  await page.fill(folderPath, "proj");
+  await option("proj").waitFor();
+  check("a name finds the folder", (await page.locator('[role="listbox"][aria-label="Folders"]').innerText()).includes("Folders"));
   await page.fill(folderPath, path.join(tmp, "made-by-picker"));
-  await option("Create folder").waitFor();
+  await option("New folder").waitFor();
+  await shot(page, "0-picker");
   await page.keyboard.press("Enter");
   await page.locator(folderPath).waitFor({ state: "detached" });
-  check("the picker creates a new folder and selects it", fs.existsSync(path.join(tmp, "made-by-picker")) && (await page.locator(folderButton).innerText()).includes("made-by-picker"));
-  await shot(page, "0-picker");
+  const trigger = await page.locator(folderButton).innerText();
+  check("a new folder is chosen, not made yet", !fs.existsSync(path.join(tmp, "made-by-picker")) && trigger.includes("made-by-picker") && trigger.includes("New"), trigger);
   await pickFolder(proj);
   check("choosing a folder shows it", (await page.locator(folderButton).innerText()).includes("proj"));
+  check("…and a new folder left unused is never made", !fs.existsSync(path.join(tmp, "made-by-picker")));
 
   // ---- custom dropdowns
   await page.click('button[aria-label="Model: Default model"]');
@@ -118,7 +124,7 @@ try {
 
   // ---- a new session in an untrusted folder
   await page.fill('[role="dialog"] textarea', "Refactor the auth module into smaller functions and add tests");
-  await page.waitForSelector("text=New folder");
+  await page.waitForSelector("text=Trust this folder?");
   const startBtn = dialog.locator('button:has-text("Start session"), button:has-text("Queue session")');
   check("an untrusted folder must be confirmed first", await startBtn.isDisabled());
   const notice = await dialog.innerText();
@@ -136,7 +142,7 @@ try {
     if (!(await page.locator(folderButton).innerText()).includes("proj")) await pickFolder(proj);
     await page.fill('[role="dialog"] textarea', prompt);
     await sleep(500); // the trust lookup
-    check(`a trusted folder asks nothing again (${prompt.slice(0, 16)}…)`, (await page.locator("text=New folder").count()) === 0);
+    check(`a trusted folder asks nothing again (${prompt.slice(0, 16)}…)`, (await page.locator("text=Trust this folder?").count()) === 0);
     await page.keyboard.press("Control+Enter");
     await dialog.waitFor({ state: "detached" });
   }
@@ -285,6 +291,32 @@ try {
   check("a used pairing link signs nobody else in", (await p2.innerText("body")).includes("expired or was already used"));
   check("the API refuses requests without the token", (await p2.evaluate(async () => (await fetch("/api/state")).status)) === 401);
   await other.close();
+
+  // ---- a new folder is made when its session starts, and is recent at once
+  const newDir = path.join(tmp, "made-on-start");
+  await page.keyboard.press("Control+n");
+  await dialog.waitFor();
+  await page.click(folderButton);
+  await page.fill(folderPath, newDir);
+  await option("New folder").waitFor();
+  await page.keyboard.press("Enter");
+  await page.locator(folderPath).waitFor({ state: "detached" });
+  await page.fill('[role="dialog"] textarea', "Scaffold a tiny static site");
+  await sleep(500);
+  check("a new folder needs no trust prompt", (await page.locator("text=Trust this folder?").count()) === 0);
+  await page.keyboard.press("Control+Enter");
+  await dialog.waitFor({ state: "detached" });
+  await page.waitForSelector("text=echo: Scaffold a tiny static site");
+  check("the new folder is made when its session starts", fs.existsSync(newDir) && fs.statSync(newDir).isDirectory());
+  await page.keyboard.press("Control+n");
+  await dialog.waitFor();
+  await page.click(folderButton);
+  await page.fill(folderPath, "made-on");
+  await option("made-on-start").waitFor();
+  check("…and is a recent folder right away", (await page.locator('[role="listbox"][aria-label="Folders"]').innerText()).includes("Recent"));
+  await page.keyboard.press("Escape"); // the picker
+  await page.keyboard.press("Escape"); // the dialog
+  await dialog.waitFor({ state: "detached" });
 
   // ---- a restarted daemon has a new token: the window asks to sign in again
   restarting = true;

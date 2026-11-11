@@ -22,7 +22,7 @@ fn manager(home: &std::path::Path, config: Config) -> Arc<Manager> {
 }
 
 fn new(cwd: &std::path::Path, prompt: &str) -> NewSession {
-    NewSession { cwd: cwd.display().to_string(), prompt: prompt.into(), title: None, model: None, permission_mode: None, trust: true }
+    NewSession { cwd: cwd.display().to_string(), prompt: prompt.into(), title: None, model: None, permission_mode: None, trust: true, create_folder: false }
 }
 
 fn get(m: &Manager, id: &str) -> SessionView {
@@ -371,7 +371,7 @@ async fn pairing_codes_unlock_the_api_once() {
 }
 
 #[tokio::test]
-async fn the_folder_picker_lists_and_creates_folders_for_the_signed_in_app() {
+async fn the_folder_picker_lists_folders_and_a_new_folder_is_made_when_its_session_starts() {
     let ui = ui_daemon("api-folders").await;
     let root = temp_home("api-folders-tree");
     std::fs::create_dir_all(root.join("web-app")).unwrap();
@@ -390,13 +390,26 @@ async fn the_folder_picker_lists_and_creates_folders_for_the_signed_in_app() {
     assert_eq!(listing["exists"], true);
     let names: Vec<&str> = listing["entries"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["web-app"], "folders only, never files");
+    let top: Value = list(Some(token.clone()), String::new()).await.unwrap().json().await.unwrap();
+    assert!(top["recent"].is_array(), "the top level brings fresh recent folders");
+    let search = ui.http.get(format!("{url}/search")).query(&[("q", "web-app")]);
+    assert_eq!(search.try_clone().unwrap().send().await.unwrap().status(), 401);
+    let found: Value = search.header("x-hangar-token", &token).send().await.unwrap().json().await.unwrap();
+    assert!(found["entries"].is_array());
 
-    let create = |path: String| ui.http.post(&url).header("x-hangar-token", &token).json(&json!({ "path": path })).send();
-    let made = create(root.join("todo-app").display().to_string()).await.unwrap();
-    assert_eq!(made.status(), 200);
-    assert!(root.join("todo-app").is_dir());
-    assert_eq!(create(root.join("todo-app").display().to_string()).await.unwrap().status(), 400, "never over an existing folder");
-    assert_eq!(create(root.join("no").join("such").display().to_string()).await.unwrap().status(), 400, "one level at a time");
+    let start = |body: Value| ui.http.post(format!("{}/api/sessions", ui.base)).header("x-hangar-token", &token).json(&body).send();
+    let new_dir = root.join("todo-app");
+    let cwd = new_dir.display().to_string();
+    let empty = start(json!({"cwd": cwd, "prompt": " ", "create_folder": true})).await.unwrap();
+    assert_eq!(empty.status(), 400);
+    assert!(!new_dir.exists(), "nothing is made for a session that does not start");
+    let deep = start(json!({"cwd": root.join("no").join("such").display().to_string(), "prompt": "hi", "create_folder": true})).await.unwrap();
+    assert_eq!(deep.status(), 400, "one level at a time");
+    let made = start(json!({"cwd": cwd, "prompt": "hi", "create_folder": true})).await.unwrap();
+    assert_eq!(made.status(), 200, "a folder hangar just made needs no trust prompt");
+    assert!(new_dir.is_dir());
+    let again = start(json!({"cwd": cwd, "prompt": "hi again", "create_folder": true})).await.unwrap();
+    assert_eq!(again.status(), 200, "an existing folder is used as it is");
     ui.d.shutdown().await;
 }
 

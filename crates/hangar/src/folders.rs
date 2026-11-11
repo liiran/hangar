@@ -6,10 +6,38 @@
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// The most entries one listing returns.
 pub const MAX_ENTRIES: usize = 300;
+/// The most folders a search returns.
+pub const MAX_FOUND: usize = 30;
+/// How far below each starting folder a search looks.
+const SEARCH_DEPTH: usize = 3;
+/// A search stops after this many folders or this long, whichever is first.
+const SEARCH_VISITS: usize = 3000;
+const SEARCH_TIME: Duration = Duration::from_millis(400);
+/// Folders a search never enters or offers: build output, dependencies and
+/// the system's own.
+const SKIPPED: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    "bin",
+    "obj",
+    "vendor",
+    "__pycache__",
+    "venv",
+    "site-packages",
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Entry {
@@ -51,6 +79,59 @@ pub fn list(path: &str, home: &Path) -> Listing {
     };
     let (entries, truncated) = children(parent, &name.to_string_lossy());
     Listing { dir: Some(show(parent)), exists: false, parent: parent.parent().map(show), entries, truncated }
+}
+
+/// Folders whose names contain every word of `query`, from up to three
+/// levels below `roots` (the recent folders, their parents and home),
+/// nearest and closest-named first. Hidden folders, build output and
+/// dependencies are skipped, and the search stops after a short budget.
+pub fn search(query: &str, roots: &[PathBuf]) -> Vec<Entry> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let key = |p: &Path| if cfg!(windows) { show(p).to_lowercase() } else { show(p) };
+    let deadline = Instant::now() + SEARCH_TIME;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut level: Vec<PathBuf> = roots.iter().filter(|r| seen.insert(key(r))).cloned().collect();
+    let mut found: Vec<(u8, usize, Entry)> = Vec::new();
+    let mut visits = 0;
+    'search: for depth in 1..=SEARCH_DEPTH {
+        let mut next = Vec::new();
+        for dir in &level {
+            visits += 1;
+            if visits > SEARCH_VISITS || Instant::now() > deadline {
+                break 'search;
+            }
+            let Ok(read) = std::fs::read_dir(dir) else { continue };
+            for e in read.flatten() {
+                // Links and junctions are not followed, so there are no loops.
+                if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                let name = e.file_name().to_string_lossy().into_owned();
+                let lower = name.to_lowercase();
+                if is_hidden(&e, &name) || SKIPPED.contains(&lower.as_str()) || !seen.insert(key(&e.path())) {
+                    continue;
+                }
+                if words.iter().all(|w| lower.contains(w)) {
+                    let rank = if lower == words.join(" ") {
+                        0
+                    } else if lower.starts_with(&words[0]) {
+                        1
+                    } else {
+                        2
+                    };
+                    found.push((rank, depth, Entry { path: show(&e.path()), name }));
+                }
+                next.push(e.path());
+            }
+        }
+        level = next;
+    }
+    found.sort_by_key(|f| (f.0, f.1, f.2.path.len()));
+    found.truncate(MAX_FOUND);
+    found.into_iter().map(|(_, _, e)| e).collect()
 }
 
 /// Creates one new folder whose parent exists. Returns its path.
@@ -201,6 +282,28 @@ mod tests {
         let l = list("~", &d);
         assert!(l.exists);
         assert_eq!(names(&l), ["Alpha", "apps", "beta"]);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn search_finds_folders_by_name_below_the_starting_folders() {
+        let d = tree();
+        for sub in ["code/hangar", "code/personal/hangar-demo", "code/web/node_modules/hangar", "code/a/b/c/hangar-too-deep", ".cache/hangar"] {
+            std::fs::create_dir_all(d.join(sub)).unwrap();
+        }
+        let found = search("HANGAR", std::slice::from_ref(&d));
+        let paths: Vec<String> = found.iter().map(|e| e.path.clone()).collect();
+        let code = d.join("code");
+        assert_eq!(
+            paths,
+            [code.join("hangar").display().to_string(), code.join("personal").join("hangar-demo").display().to_string()],
+            "exact names first; no dependencies, hidden folders or anything too deep"
+        );
+        assert_eq!(search("demo hang", std::slice::from_ref(&d))[0].name, "hangar-demo", "every word, in any order");
+        assert!(search("  ", std::slice::from_ref(&d)).is_empty());
+        assert!(search("zzz-nothing", std::slice::from_ref(&d)).is_empty());
+        let twice = search("hangar", &[d.clone(), d.join("code")]);
+        assert_eq!(twice.len(), 2, "overlapping starting folders do not repeat results");
         let _ = std::fs::remove_dir_all(d);
     }
 
