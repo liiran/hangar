@@ -206,6 +206,10 @@ const notes = project("react-notes", { "README.md": "# React notes\n\nShort note
 fs.mkdirSync(state, { recursive: true });
 fs.writeFileSync(path.join(state, "trusted.json"), JSON.stringify([recipe, budget, notes].map((d) => d.replaceAll("\\", "/").toLowerCase())));
 
+// The demo turns on the one shared Playwright browser, which is off by
+// default (it needs a local port without a password; see SECURITY.md).
+fs.writeFileSync(path.join(state, "config.toml"), '[servers."@playwright/mcp"]' + "\n" + 'share = "native"' + "\n");
+
 // Every session gets the same two local MCP servers, through hangar's pool.
 const npx = (...args) => ["cmd", "/c", "npx", "-y", ...args];
 const servers = { playwright: npx("@playwright/mcp@latest", "--headless", "--isolated"), context7: npx("@upstash/context7-mcp@latest") };

@@ -1,6 +1,6 @@
 # hangar
 
-**One window for all your Claude Code agents.** Give each agent its own folder and task. See at a glance which agents are working, which are done and which are waiting for you. Approve their commands without hunting through terminal tabs, and move between them with the keyboard. hangar also runs one shared copy of each local MCP server for all of them, and a memory budget keeps a crowd of agents from slowing your PC down.
+**One window for all your Claude Code agents.** Give each agent its own folder and task. See at a glance which agents are working, which are done and which are waiting for you. Approve their commands without hunting through terminal tabs, and move between them with the keyboard. hangar also shares local MCP servers between them where that is safe, and a memory budget keeps a crowd of agents from slowing your PC down.
 
 <p align="center">
   <img src="docs/media/demo.gif" alt="Three Claude Code sessions started from hangar: a recipe site on Sonnet, a failing test on Haiku and React notes through Context7. J and K move between them, a test run and a Context7 lookup are approved inline, the recipe session switches to Haiku for a follow-up, Ctrl K jumps to the notes, the finished recipe page is shown, and the MCP pool page shows one Playwright and one Context7 serving all three sessions." width="100%">
@@ -16,6 +16,8 @@
   - The window title counts the sessions waiting for you.
   - A desktop notification tells you when a session needs you, finishes or fails.
 - **Approvals inline.** When Claude wants to run a command or edit a file, you see the exact command, file contents or diff, with *Allow*, *Allow for session* and *Deny*. Whatever you type in the reply box steers Claude instead.
+  - Nothing in a request can hide: long ones must be opened in full before Allow works, and invisible characters are written out.
+  - *Allow for session* shows the rule it adds.
 - **Settings per session.** Each session gets a folder, a model (Opus, Sonnet or Haiku) and a permission level: ask first, accept edits, plan only or full access. Both the model and the permission level can be changed mid-session.
 - **A feed per session.** It shows messages, tool calls you can expand, and each turn's time and cost. A properties panel shows the session's status, model, memory, cost and MCP servers.
 - **History that lasts.** Sessions outlive restarts. A stopped or paused session carries on in the same conversation when you send your next message.
@@ -46,20 +48,20 @@ MCP servers come in two kinds:
   - A database server reaches a local database.
   - Some, like Context7 (current library documentation), run locally and call a web service.
 
-Claude Code starts its own copy of every local server for every session. On Windows an `npx` server is a tree of five processes taking about 150 MB. hangar runs one copy and shares it between sessions.
+Claude Code starts its own copy of every local server for every session. On Windows an `npx` server is a tree of five processes taking about 150 MB. hangar runs one copy of every server that can safely be shared, and starts the others as a single process each.
 
 Real Claude Code sessions with Playwright and Context7, measured by `hangar bench`:
 
 | Without → with hangar | 1 session | 3 sessions | 5 sessions |
 |---|---:|---:|---:|
-| MCP memory | 336 → 151 MB | 1012 → 158 MB | **1.64 GB → 169 MB (−90%)** |
-| MCP processes | 11 → 8 | 33 → 14 | 55 → 20 |
-| CPU spent starting servers | 3.7 → 2.1 s | 13.4 → 4.9 s | 21.9 → 6.4 s |
-| Time until tools are ready (p95) | 2.7 → 1.5 s | 4.8 → 2.2 s | 7.0 → 1.9 s |
+| MCP memory | 340 → 149 MB | 1016 → 294 MB | **1.65 GB → 441 MB (−74%)** |
+| MCP processes | 11 → 8 | 33 → 18 | 55 → 28 |
+| CPU spent starting servers | 3.3 → 2.2 s | 11.8 → 5.2 s | 21.7 → 8.2 s |
+| Time until tools are ready (p95) | 2.6 → 1.3 s | 3.4 → 1.5 s | 5.2 → 2.2 s |
 
-- **Flat cost.** With hangar, the servers cost about the same for five sessions as for one.
-- **Browsers too.** When every session also uses its browser, 5 sessions drop from 2.86 GB to 718 MB (−75%): one browser with a private context per session, instead of five browsers.
-- **Five servers.** With Playwright, Context7, Memory, Sequential Thinking and Filesystem, 3 real sessions drop from 2.39 GB to 599 MB.
+- **What is shared.** Context7 runs once for every session. Playwright still runs once per session by default, but as one process instead of a five-process tree.
+- **One shared browser is opt-in** (see [The pool](#the-pool)). With it on, 5 sessions take 170 MB (−90%), about the same as one session. When every session also drives its browser, 5 sessions take 2.95 GB without hangar, 1.74 GB with it, and 713 MB with the shared browser.
+- **Five servers.** With Playwright, Context7, Memory, Sequential Thinking and Filesystem, 3 real sessions drop from 2.42 GB to 755 MB (−70%), and 10 simulated ones from 7.38 GB to 2.08 GB.
 - The method and every table are in [bench/README.md](bench/README.md).
 
 **Nothing is traded away.** `hangar verify` sent the same tool calls to each server both directly and through the pool. **21 of 21 answers were identical**, and the pool added about 0.1 ms per call. Real Claude Code (Haiku) tasks that need MCP succeeded 9 of 9 times both ways ([verify.md](bench/results/verify.md)).
@@ -67,6 +69,8 @@ Real Claude Code sessions with Playwright and Context7, measured by `hangar benc
 **What it does not save is tokens.** Every session still receives each server's tool list, exactly as without hangar.
 
 ![The MCP pool: Playwright and Context7, each one process serving three sessions](docs/img/pool.png)
+
+*The pool page, here with the shared Playwright browser turned on.*
 
 ## Quick start
 
@@ -109,7 +113,7 @@ cargo build --release
 
 Claude Code then starts the shim instead of the server. The shim is a 900 KB program that uses about 1.2 MB of memory. It passes messages between Claude Code and hangar's single copy of the server. It also starts hangar if it isn't running, and falls back to running the server itself if hangar can't be reached, so wrapping never breaks a server.
 
-**`hangar status`**, with the three sessions from the video running:
+**`hangar status`**, with the three sessions from the video running (the video turns the shared Playwright browser on):
 
 ```
 hangar daemon 0.1.0 (pid 18188), up 1m, 9 MB
@@ -139,7 +143,10 @@ Each session is a headless `claude` process. It speaks the stream-json control p
 - Model and permission changes go to the running process (`set_model`, `set_permission_mode`). A permission change applies at once; a model change applies from the next turn.
 - Events are kept in `~/.hangar/sessions/<id>/events.jsonl`.
 
-A folder's own Claude settings can run commands (hooks), pre-approve tools and start MCP servers. Interactive Claude Code asks before trusting a new folder, but headless mode doesn't, so hangar asks instead. The first session in a folder shows exactly what it would run, and starts only after you confirm. A new folder you create from the app is empty, so it needs no confirmation.
+A folder's own Claude settings can run commands (hooks), pre-approve tools and start MCP servers. Interactive Claude Code asks before trusting a new folder, but headless mode doesn't, so hangar asks instead.
+- The first session in a folder shows what its settings would do: hooks, pre-approved tools, MCP servers with their full command lines, and every other setting. It starts only after you confirm.
+- Your confirmation covers what was shown. If the settings changed since, hangar asks again.
+- A new folder you create from the app is empty, so it needs no confirmation.
 
 "Allow for session" remembers a rule inside that Claude process only, never in the project's settings files.
 
@@ -158,9 +165,8 @@ The budget decides when a session may start. It never slows down a session that 
 ```
  Claude Code session A ──stdio──> hangar-shim ─┐
  Claude Code session B ──stdio──> hangar-shim ─┼─loopback──> hangar daemon ──stdio──> context7   (one process)
- Claude Code session C ──stdio──> hangar-shim ─┘   (token)        │
-                                                                  └─HTTP, one MCP session each──> playwright (one browser,
-                                                                                                    a context per session)
+ Claude Code session C ──stdio──> hangar-shim ─┘   (secret)       └──stdio──> playwright (one per session,
+                                                                               unless you turn sharing on)
 ```
 
 Every request carries an id that its session chose, so two sessions can both send request 1. The daemon gives each request a fresh id on its way to the server, and puts the original back on the answer:
@@ -178,10 +184,18 @@ Each server gets a **share level**. hangar never changes what a server returns.
 |---|---|---|
 | `global` | every session | stateless API clients and docs (Context7, GitHub, search, fetch, Memory) |
 | `project` | sessions in the same folder | servers you mark `project` in the config |
-| `native` | every session, each with its own state inside the server | Playwright with `--isolated`: one browser, an isolated context per session |
-| `session` | one session, as today, but supervised | stateful servers (filesystem roots, sequential thinking, browsers without `--isolated`) and every server hangar doesn't know (the safe default) |
+| `session` | one session, as today, but supervised | stateful servers (Playwright, filesystem roots, sequential thinking) and every server hangar doesn't know (the safe default) |
+| `native` | every session, each with its own state inside the server | **opt-in:** Playwright with `--isolated` as one browser with an isolated context per session |
 
-Sessions whose environments carry different credentials never share a process, whatever the level. Credentials here means anything that looks like a key, token or secret.
+**One shared Playwright browser is opt-in.** To share it, Playwright has to listen on a local port, and Playwright offers no password for that port. Any program on the computer could then drive that browser. On a computer only you use, that is no more than those programs can already do, and it saves a browser per session:
+
+```toml
+# ~/.hangar/config.toml
+[servers."@playwright/mcp"]
+share = "native"
+```
+
+Sessions never share a process when their environments differ in a variable that looks like a credential or names an account, server or data location (`GITHUB_TOKEN`, `AWS_PROFILE`, `DATABASE_URL`), whatever the level. This goes by variable names, so mark a server `share = "session"` if you need to be certain.
 
 The daemon also:
 - reference-counts resource subscriptions;
@@ -189,7 +203,7 @@ The daemon also:
 - initializes each shared server once, without per-client capabilities (roots, sampling, elicitation), so a shared server can never ask one session something meant for another;
 - restarts a crashed server with backoff, then tells every session its tool list changed;
 - stops idle servers;
-- keeps every process in a Windows job object, so nothing outlives hangar.
+- keeps every process in a Windows job object, so nothing outlives hangar there, even if it crashes.
 
 **npx fast path.** npx names its cache folder `sha512(package spec)[..16]`. So for a cached package, hangar starts the package's entry script with `node` directly. That skips two launcher processes (about 70 MB) and npm's registry round-trip.
 - Exact versions always qualify.
@@ -217,23 +231,22 @@ hibernate_after_mins = 0    # pause idle sessions on a timer; 0 = only when room
 
 ## Security
 
-Everything listens on `127.0.0.1` only, and nothing runs without a secret that only your user can read.
+hangar can start agents that run commands, so only your own hangar window may use it. The full account, including what it does not protect against, is in [SECURITY.md](SECURITY.md). In short:
 
-- **Daemon and shims.**
-  - The daemon writes a random token to `~/.hangar/daemon.json` (owner-only on Unix).
-  - A shim first makes the daemon prove it knows the token, with a SHA-256 challenge. Only then does it send its token, command and environment.
-  - So a process that doesn't know the token can't start anything through the daemon, and a fake daemon can't collect a shim's environment.
-- **The app.**
-  - `hangar up` opens the app with a one-time pairing code (128 random bits, single use, valid for 2 minutes), never the token.
-  - The page trades the code for a separate UI token. The token is kept in the page's storage and sent as a header, so other sites can't ride on it the way they could with a cookie.
-  - The API also checks `Host` (against DNS rebinding) and `Origin`, and serves a strict Content-Security-Policy.
-  - Images in Claude's replies render as links, so a reply can't make the app fetch a URL.
-- **Processes.**
-  - Every server and every Claude process runs in a kill-on-close job object, so nothing outlives hangar, even if hangar crashes.
-  - Arguments passed to `claude` are either whitelisted (permission modes) or validated (model names can't start with `-`).
-  - Session ids are validated before they touch the disk.
-  - Config edits are atomic and backed up, and never pass through a world-readable file.
-- **One gap to know about.** Playwright's multi-session mode is an HTTP server on a random loopback port, without authentication of its own. On a machine shared with other users, another local user could reach it. Set `share = "session"` for Playwright there.
+- **Local only.** Every port is bound to `127.0.0.1`. hangar makes no network requests of its own.
+- **Only your window.**
+  - `hangar up` opens the app with a one-time code, which the page trades for a token sent as a header (never a URL or a cookie).
+  - Requests must be addressed to `127.0.0.1:<port>` exactly, and anything a browser marks as coming from another site is refused.
+  - The page runs under a strict Content-Security-Policy and cannot be framed.
+- **Replies cannot act.** Claude's output is rendered as text and Markdown, never HTML. Images are not loaded, and only web links are links.
+- **You approve what really runs.** Requests show everything, cannot hide content below a fold or behind invisible characters, and "Allow for session" shows its rule.
+- **Folders ask first.** A folder's hooks, pre-approved tools, MCP servers and other settings are listed in full before its first session.
+- **No shell.** Programs are started with separate arguments, and values passed to `claude` are checked.
+- **A shared secret between shim and daemon.** Each proves it knows the secret in `~/.hangar/daemon.json` before the shim sends its command and environment.
+
+Two things to know:
+- hangar is built for a computer that is yours. On one shared with people you don't trust, see the limits in [SECURITY.md](SECURITY.md).
+- One shared Playwright browser is off by default, because it needs a local port without a password (see [The pool](#the-pool)).
 
 ## Development
 
@@ -252,8 +265,10 @@ On Windows with the GNU toolchain, put a MinGW `bin` folder (for `dlltool` and `
 The integration tests run real shim processes against an in-process daemon. They use a scriptable fake MCP server (stdio and HTTP) and a fake `claude` that speaks the stream-json protocol. They cover:
 - **Routing:** concurrent overlapping ids, progress isolation, caching, subscriptions and roots safety.
 - **Failure handling:** crash restart, idle shutdown, fallback, reconnecting after a daemon restart, and impostor daemons.
-- **Sessions:** approvals and withdrawn approvals, the budget queue, idle reclaim, resume, model switching and workspace trust.
-- **The API:** pairing, and its token, Host, Origin and CSP checks.
+- **Sessions:** approvals and withdrawn approvals, the budget queue, idle reclaim, resume, model switching, workspace trust and hostile paths.
+- **The API:** pairing, and its token, Host, Origin, cross-site and CSP checks.
+
+`npm run e2e` drives the app in a real browser: hostile replies and links, long and disguised permission requests, the trust notice, sign-in and sign-out.
 
 | Path | |
 |---|---|
