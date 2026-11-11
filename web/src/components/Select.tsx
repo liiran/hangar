@@ -99,7 +99,7 @@ export function Select({
         className={cx(
           "group flex items-center text-left transition-colors",
           variant === "pill"
-            ? "h-7 gap-1.5 rounded-md px-2 text-[12px] ring-1 ring-inset hover:bg-panel-2"
+            ? "h-6 gap-1 rounded-md px-1.5 text-[11.5px] ring-1 ring-inset hover:bg-panel-2"
             : "h-8 w-full gap-2.5 rounded-md px-2 text-[13px] hover:bg-panel-2",
           variant === "pill" && (current.warn ? "ring-s-needs/40" : "ring-line-strong"),
           open && "bg-panel-2",
@@ -117,7 +117,7 @@ export function Select({
           tabIndex={-1}
           aria-activedescendant={`${id}-${active}`}
           onKeyDown={onListKey}
-          className={cx("animate-pop absolute z-50 mt-1 rounded-lg bg-panel p-1 shadow-pop outline-none", variant === "row" ? "inset-x-0" : "left-0 w-[290px]")}
+          className={cx("animate-pop absolute z-50 mt-1 rounded-lg bg-panel p-1 shadow-pop outline-none", variant === "row" ? "inset-x-0" : "left-0 w-[232px]")}
         >
           {options.map((o, i) => (
             <div
@@ -127,13 +127,13 @@ export function Select({
               aria-selected={o.value === value}
               onMouseMove={() => setActive(i)}
               onClick={() => pick(o)}
-              className={cx("flex cursor-pointer items-start gap-2.5 rounded-md px-2.5 py-1.5", i === active && "bg-panel-2")}
+              className={cx("flex cursor-pointer items-start gap-2 rounded-md px-2 py-1", i === active && "bg-panel-2")}
             >
               <span className="min-w-0 flex-1">
-                <span className={cx("block text-[13px]", o.warn ? "text-s-needs" : "text-fg")}>{o.label}</span>
-                {o.hint && <span className="block text-[11.5px] leading-snug text-faint">{o.hint}</span>}
+                <span className={cx("block text-[12.5px] leading-5", o.warn ? "text-s-needs" : "text-fg")}>{o.label}</span>
+                {o.hint && <span className="block text-[11px] leading-snug text-faint">{o.hint}</span>}
               </span>
-              {o.value === value && <Check className="mt-0.5 size-3.5 shrink-0 text-accent" />}
+              {o.value === value && <Check className="mt-1 size-3 shrink-0 text-accent" />}
             </div>
           ))}
         </div>
