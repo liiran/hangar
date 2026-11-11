@@ -177,6 +177,15 @@ pub struct NewSession {
     pub create_folder: bool,
 }
 
+/// Changes to a session; `None` leaves a field as it is.
+#[derive(Default)]
+pub struct Update {
+    pub title: Option<String>,
+    pub permission_mode: Option<String>,
+    /// An empty name means Claude Code's default model.
+    pub model: Option<String>,
+}
+
 /// `create` refused because the folder is not trusted yet.
 #[derive(Debug)]
 pub struct NeedsTrust(pub trust::TrustInfo);
@@ -526,20 +535,38 @@ impl Manager {
         Ok(())
     }
 
-    pub fn update(&self, id: &str, title: Option<String>, permission_mode: Option<String>) -> Result<SessionView> {
+    /// Renames a session or changes its permission mode or model. A running
+    /// session switches at once (from its next turn); a stopped or paused
+    /// one resumes with the new settings.
+    pub fn update(&self, id: &str, change: Update) -> Result<SessionView> {
         let mut inner = self.inner.lock().unwrap();
         let s = inner.sessions.get_mut(id).context("no such session")?;
-        if let Some(t) = title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+        if let Some(m) = &change.permission_mode
+            && !PERMISSION_MODES.contains(&m.as_str())
+        {
+            bail!("unknown permission mode {m}");
+        }
+        // `Some("")` asks for Claude Code's default model.
+        let model = change.model.map(|m| Some(m.trim().to_string()).filter(|m| !m.is_empty()));
+        if let Some(Some(m)) = &model
+            && !valid_model(m)
+        {
+            bail!("{m:?} is not a model name");
+        }
+        if let Some(t) = change.title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
             s.meta.title = t;
         }
-        if let Some(m) = permission_mode {
-            if !PERMISSION_MODES.contains(&m.as_str()) {
-                bail!("unknown permission mode {m}");
-            }
+        if let Some(m) = change.permission_mode {
             if let Some(run) = &s.run {
                 run.driver.set_permission_mode(&m);
             }
             s.meta.permission_mode = m;
+        }
+        if let Some(m) = model {
+            if let Some(run) = &s.run {
+                run.driver.set_model(m.as_deref());
+            }
+            s.meta.model = m;
         }
         s.meta.updated_ms = now_ms();
         self.save(&inner, id);

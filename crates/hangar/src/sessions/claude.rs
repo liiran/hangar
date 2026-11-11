@@ -225,6 +225,15 @@ impl Driver {
         self.control(&format!("mode-{}", crate::util::now_ms()), json!({"subtype": "set_permission_mode", "mode": mode}));
     }
 
+    /// Switches the model from the next turn on; `None` is Claude Code's default.
+    pub fn set_model(&self, model: Option<&str>) {
+        let mut request = json!({"subtype": "set_model"});
+        if let Some(m) = model {
+            request["model"] = json!(m);
+        }
+        self.control(&format!("model-{}", crate::util::now_ms()), request);
+    }
+
     /// Kills the process and everything it started.
     pub fn kill(&self) {
         if let Some(k) = self.kill.lock().unwrap().take() {

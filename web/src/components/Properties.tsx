@@ -1,7 +1,7 @@
 import { Check, CircleDollarSign, Clock, Copy, Cpu, Folder, MemoryStick, Shield } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api, type Session } from "../api";
-import { ago, basename, bytes, PERMISSION_MODES, STATUS, usd } from "../format";
+import { ago, basename, bytes, MODELS, modelChoice, PERMISSION_MODES, STATUS, usd } from "../format";
 import { report } from "../store";
 import { useNow } from "../ui";
 import { Select } from "./Select";
@@ -15,6 +15,10 @@ export function Properties({ session: s }: { session: Session }) {
     if (mode === "bypassPermissions" && !confirm("Full access lets Claude run any command and edit any file without asking. Only use it in a sandbox you trust. Continue?")) return;
     api.update(s.id, { permission_mode: mode }).catch(report);
   };
+  // Takes effect from the next turn; a paused session resumes with it.
+  const setModel = (model: string) => {
+    if (model !== modelChoice(s.model)) api.update(s.id, { model }).catch(report);
+  };
   return (
     <div className="h-full overflow-y-auto pb-6">
       <div className="flex h-12 items-center px-5 text-[12px] font-medium text-muted">Properties</div>
@@ -23,7 +27,7 @@ export function Properties({ session: s }: { session: Session }) {
           {STATUS[s.status].label}
         </Row>
         <Select variant="row" icon={<Shield className="size-3.5" />} label="Permissions" value={s.permission_mode} onChange={setMode} options={PERMISSION_MODES} />
-        <Row icon={<Cpu className="size-3.5" />}>{s.model ?? "Default model"}</Row>
+        <Select variant="row" icon={<Cpu className="size-3.5" />} label="Model" value={modelChoice(s.model)} onChange={setModel} options={MODELS} />
         <Row icon={<Folder className="size-3.5" />} title={s.cwd}>
           {basename(s.cwd)}
         </Row>

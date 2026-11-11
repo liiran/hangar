@@ -60,3 +60,9 @@ export const MODELS: { value: string; label: string; hint: string }[] = [
   { value: "sonnet", label: "Sonnet", hint: "Fast and strong for code" },
   { value: "haiku", label: "Haiku", hint: "Fastest; for small tasks" },
 ];
+
+/** The picker choice for a model name: a full id such as claude-sonnet-5-5 maps to its family. */
+export function modelChoice(model: string | null | undefined): string {
+  const m = (model ?? "").toLowerCase();
+  return MODELS.find((o) => o.value && m.includes(o.value))?.value ?? "";
+}

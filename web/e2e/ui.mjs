@@ -159,9 +159,17 @@ try {
   check("permissions change from the properties panel", true);
   await page.click('nav[aria-label="Sessions"] >> text=Refactor the auth');
   await sleep(200);
-  check("the model chosen in the dialog is the session's", (await page.locator('aside[aria-label="Properties"]').innerText()).includes("haiku"));
+  check("the model chosen in the dialog is the session's", (await page.locator('aside[aria-label="Properties"] button[aria-label="Model: Haiku"]').count()) === 1);
   await page.click('nav[aria-label="Sessions"] >> text=Write release notes');
   await sleep(200);
+
+  // ---- the model switches mid-session, from the properties panel
+  await page.click('aside[aria-label="Properties"] button[aria-label="Model: Default model"]');
+  await page.locator('[role="listbox"][aria-label="Model"] [role="option"]', { hasText: "Sonnet" }).click();
+  await page.locator('aside[aria-label="Properties"] button[aria-label="Model: Sonnet"]').waitFor();
+  await page.fill("main textarea[data-composer]", "which model are you now?");
+  await page.keyboard.press("Enter");
+  check("the model switches mid-session from the properties panel", await page.waitForSelector("text=model: sonnet").then(() => true, () => false));
 
   // ---- drafts survive switching sessions
   const composer = "main textarea[data-composer]";

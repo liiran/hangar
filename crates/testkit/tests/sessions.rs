@@ -288,6 +288,29 @@ async fn stopped_sessions_resume_the_same_conversation() {
 }
 
 #[tokio::test]
+async fn the_model_switches_mid_session_and_survives_a_resume() {
+    use hangar::sessions::Update;
+    let home = temp_home("sess-model");
+    let m = manager(&home, Config::default());
+    let id = m.create(new(&home, "which model")).unwrap().meta.id;
+    wait_status(&m, &id, Status::Idle).await;
+    let model = |name: &str| Update { model: Some(name.into()), ..Default::default() };
+    assert!(m.update(&id, model("-x")).is_err(), "model names cannot be flags");
+    assert_eq!(m.update(&id, model("haiku")).unwrap().meta.model.as_deref(), Some("haiku"));
+    m.send(&id, "which model").unwrap();
+    assert_eq!(wait_texts(&m, &id, 2).await, vec!["model: fake-model", "model: haiku"], "the running process switched");
+    wait_status(&m, &id, Status::Idle).await;
+    m.stop(&id).unwrap();
+    wait_status(&m, &id, Status::Stopped).await;
+    m.send(&id, "which model").unwrap();
+    assert_eq!(wait_texts(&m, &id, 3).await[2], "model: haiku", "a resumed session starts with the new model");
+    wait_status(&m, &id, Status::Idle).await;
+    assert_eq!(m.update(&id, model("")).unwrap().meta.model, None, "an empty name is Claude Code's default");
+    m.send(&id, "which model").unwrap();
+    assert_eq!(wait_texts(&m, &id, 4).await[3], "model: fake-model");
+}
+
+#[tokio::test]
 async fn a_crash_is_reported_with_its_exit_code() {
     let home = temp_home("sess-crash");
     let m = manager(&home, Config::default());

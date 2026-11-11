@@ -329,10 +329,11 @@ async fn create_session(State(st): State<AppState>, Json(b): Json<CreateBody>) -
 struct UpdateBody {
     title: Option<String>,
     permission_mode: Option<String>,
+    model: Option<String>,
 }
 
 async fn update_session(State(st): State<AppState>, Path(id): Path<String>, Json(b): Json<UpdateBody>) -> Response {
-    match st.manager.update(&id, b.title, b.permission_mode) {
+    match st.manager.update(&id, crate::sessions::Update { title: b.title, permission_mode: b.permission_mode, model: b.model }) {
         Ok(v) => Json(v).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")),
     }

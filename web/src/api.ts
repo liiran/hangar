@@ -163,7 +163,7 @@ export const api = {
   interrupt: (id: string) => call("POST", `/sessions/${id}/interrupt`),
   stop: (id: string) => call("POST", `/sessions/${id}/stop`),
   startNow: (id: string) => call("POST", `/sessions/${id}/start`),
-  update: (id: string, b: { title?: string; permission_mode?: string }) => call<Session>("PATCH", `/sessions/${id}`, b),
+  update: (id: string, b: { title?: string; permission_mode?: string; model?: string }) => call<Session>("PATCH", `/sessions/${id}`, b),
   remove: (id: string) => call("DELETE", `/sessions/${id}`),
   stopServer: (id: number) => call("POST", `/servers/${id}/stop`),
 };

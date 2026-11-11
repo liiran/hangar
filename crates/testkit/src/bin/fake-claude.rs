@@ -9,6 +9,7 @@
 //! * `use tool`: asks permission for `Bash {command: "ls"}` first; an
 //!   interrupt while waiting withdraws the request (`control_cancel_request`);
 //! * `slow`: waits 1.5 s before answering;
+//! * `which model`: answers `model: <name>` (from `--model` or `set_model`);
 //! * `crash`: exits with code 5.
 //!
 //! `FAKE_CLAUDE_LOG=<file>` appends the argv of every start to that file.
@@ -39,6 +40,8 @@ fn main() {
     }
     let session_id = resume.unwrap_or_else(|| format!("fake-{}", std::process::id()));
     let mode = args.iter().position(|a| a == "--permission-mode").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "default".into());
+    let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let mut model = flag("--model").unwrap_or_else(|| "fake-model".into());
 
     let stdin = std::io::stdin();
     let mut lines = stdin.lock().lines();
@@ -55,6 +58,10 @@ fn main() {
             "control_request" => {
                 let body = match msg["request"]["subtype"].as_str().unwrap_or_default() {
                     "mcp_status" => json!({"mcpServers": [{"name": "fake-server", "status": "connected"}]}),
+                    "set_model" => {
+                        model = msg["request"]["model"].as_str().unwrap_or("fake-model").to_string();
+                        json!({"model": model})
+                    }
                     _ => json!({}),
                 };
                 out(json!({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": body}}));
@@ -63,10 +70,14 @@ fn main() {
                 turn += 1;
                 let text = msg["message"]["content"].as_str().unwrap_or_default().to_string();
                 out(
-                    json!({"type": "system", "subtype": "init", "session_id": session_id, "model": "fake-model", "permissionMode": mode, "mcp_servers": [], "tools": []}),
+                    json!({"type": "system", "subtype": "init", "session_id": session_id, "model": model, "permissionMode": mode, "mcp_servers": [], "tools": []}),
                 );
                 if text.contains("crash") {
                     std::process::exit(5);
+                }
+                if text.contains("which model") {
+                    result(turn, &format!("model: {model}"));
+                    continue;
                 }
                 if text.contains("slow") {
                     std::thread::sleep(std::time::Duration::from_millis(1500));

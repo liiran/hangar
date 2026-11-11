@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { basename, bytes, duration, GROUP_ORDER, STATUS } from "./format";
+import { basename, bytes, duration, GROUP_ORDER, modelChoice, STATUS } from "./format";
 
 describe("format", () => {
   it("formats bytes", () => {
@@ -20,6 +20,14 @@ describe("format", () => {
   it("takes the last path segment on both separators", () => {
     expect(basename("C:\\code\\my-app\\")).toBe("my-app");
     expect(basename("/home/me/proj")).toBe("proj");
+  });
+
+  it("maps model names to the model picker's choices", () => {
+    expect(modelChoice(null)).toBe("");
+    expect(modelChoice("haiku")).toBe("haiku");
+    expect(modelChoice("claude-sonnet-5-5")).toBe("sonnet");
+    expect(modelChoice("claude-opus-5-5[1m]")).toBe("opus");
+    expect(modelChoice("some-other-model")).toBe("");
   });
 
   it("puts every status in a known group", () => {
