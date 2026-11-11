@@ -178,19 +178,26 @@ fn spawn_detached_daemon(home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Opens `url` as a chromeless app window when Edge or Chrome is around,
-/// otherwise in the default browser.
+/// Opens `url` in the default browser: as a chromeless app window when that
+/// is Chrome, Edge or another Chromium browser, else in a tab.
 fn open_app(url: &str) {
     #[cfg(windows)]
     {
-        let candidates = [
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        ];
-        for c in candidates {
-            if Path::new(c).is_file() && std::process::Command::new(c).arg(format!("--app={url}")).spawn().is_ok() {
-                return;
+        let app = |exe: &Path| is_chromium(exe) && std::process::Command::new(exe).arg(format!("--app={url}")).spawn().is_ok();
+        match default_browser() {
+            Some(exe) if app(&exe) => return,
+            Some(_) => {}
+            // Not known: an app window in Chrome or Edge if either is there.
+            None => {
+                let candidates = [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                ];
+                if candidates.iter().map(Path::new).any(|c| c.is_file() && app(c)) {
+                    return;
+                }
             }
         }
         let _ = std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn();
@@ -203,6 +210,54 @@ fn open_app(url: &str) {
     {
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
+}
+
+/// The program that opens web links, as chosen in Windows settings.
+#[cfg(windows)]
+fn default_browser() -> Option<PathBuf> {
+    use windows_sys::Win32::System::Registry::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
+    let choice = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice";
+    let prog_id = registry_string(HKEY_CURRENT_USER, choice, Some("ProgId"))?;
+    let command = registry_string(HKEY_CLASSES_ROOT, &format!(r"{prog_id}\shell\open\command"), None)?;
+    let exe = command_program(&command);
+    exe.is_file().then_some(exe)
+}
+
+/// A text value from the registry (`None` for a key's default value).
+#[cfg(windows)]
+fn registry_string(root: windows_sys::Win32::System::Registry::HKEY, key: &str, value: Option<&str>) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{RRF_RT_REG_SZ, RegGetValueW};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (key, value) = (wide(key), value.map(wide));
+    let mut buf = vec![0u16; 2048];
+    let mut bytes = (buf.len() * 2) as u32;
+    let value_ptr = value.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+    // SAFETY: the strings are NUL-terminated and `bytes` is the buffer's size.
+    let rc = unsafe { RegGetValueW(root, key.as_ptr(), value_ptr, RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut bytes) };
+    if rc != 0 {
+        return None;
+    }
+    buf.truncate(bytes as usize / 2);
+    Some(String::from_utf16_lossy(&buf).trim_end_matches('\0').to_string())
+}
+
+/// The program a registry open command runs, as in
+/// `"C:\…\chrome.exe" --single-argument %1`.
+#[cfg(any(windows, test))]
+fn command_program(command: &str) -> PathBuf {
+    let c = command.trim();
+    let exe = match c.strip_prefix('"') {
+        Some(rest) => rest.split('"').next(),
+        None => c.split(' ').next(),
+    };
+    exe.unwrap_or_default().into()
+}
+
+/// Browsers that can open a page as an app window (`--app=`).
+#[cfg(any(windows, test))]
+fn is_chromium(exe: &Path) -> bool {
+    let name = exe.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    ["chrome.exe", "msedge.exe", "brave.exe", "vivaldi.exe", "chromium.exe"].contains(&name.as_str())
 }
 
 pub fn wrap(home: &Path, dry_run: bool, wrap: bool) -> Result<()> {
@@ -237,5 +292,20 @@ fn fmt_duration(secs: u64) -> String {
         s if s < 60 => format!("{s}s"),
         s if s < 3600 => format!("{}m", s / 60),
         s => format!("{}h{}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_browser_command_names_its_program() {
+        let chrome = command_program(r#""C:\Program Files\Google\Chrome\Application\chrome.exe" --single-argument %1"#);
+        assert_eq!(chrome, PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"));
+        assert!(is_chromium(&chrome));
+        assert_eq!(command_program(r"C:\Firefox\firefox.exe -osint -url %1"), PathBuf::from(r"C:\Firefox\firefox.exe"));
+        assert!(!is_chromium(Path::new(r"C:\Firefox\firefox.exe")), "other browsers get a tab");
+        assert!(is_chromium(Path::new("MSEDGE.EXE")));
     }
 }
