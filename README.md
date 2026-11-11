@@ -2,6 +2,11 @@
 
 **One window for all your Claude Code agents.** Give each agent its own folder and task. See at a glance which agents are working, which are done and which are waiting for you. Approve their commands without hunting through terminal tabs, and move between them with the keyboard. hangar also runs one shared copy of each local MCP server for all of them, and a memory budget keeps a crowd of agents from slowing your PC down.
 
+<p align="center">
+  <img src="docs/media/demo.gif" alt="Three Claude Code sessions started from hangar: a recipe site on Sonnet, a failing test on Haiku and React notes through Context7. J and K move between them, a test run and a Context7 lookup are approved inline, the recipe session switches to Haiku for a follow-up, Ctrl K jumps to the notes, the finished recipe page is shown, and the MCP pool page shows one Playwright and one Context7 serving all three sessions." width="100%">
+</p>
+<p align="center"><em>A real recording: three Claude Code sessions work at once. Waiting for Claude is sped up. <a href="docs/media/demo.mp4">Full-resolution video (MP4)</a>.</em></p>
+
 ## Run many agents without losing track
 
 ![A session asking to run the tests, with the exact command and Allow, Allow for session and Deny inline, next to the other sessions grouped by status](docs/img/session.png)
