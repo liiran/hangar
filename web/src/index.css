@@ -1,37 +1,70 @@
 @import "tailwindcss";
 
+/* Inter, self-hosted (the app's CSP allows fonts from itself only). Latin
+   ranges only: the rest of the family would ship unused in the binary. */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* Surfaces step up from the window (bg) to the main panel, rows, and
+   selected rows. Lines are translucent so they work on every surface. */
 :root {
-  --bg: #0c0c10;
-  --panel: #121217;
-  --panel-2: #18181f;
-  --raised: #1f1f27;
-  --line: #26262f;
-  --line-strong: #34343f;
-  --fg: #ececf1;
-  --muted: #9a9aa6;
-  --faint: #6b6b78;
-  --accent: #8b7cff;
+  --bg: #0a0a0c;
+  --panel: #101013;
+  --panel-2: #17171b;
+  --raised: #1e1e23;
+  --line: rgba(255, 255, 255, 0.065);
+  --line-strong: rgba(255, 255, 255, 0.11);
+  --fg: #ececee;
+  --muted: #9a9ba2;
+  --faint: #63646b;
+  --accent: #7073f0;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(139, 124, 255, 0.14);
-  --code: #16161c;
+  --accent-soft: rgba(112, 115, 240, 0.15);
+  --code: #0c0c0f;
+  --shadow: 0 16px 48px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --s-needs: #f2994a;
+  --s-working: #f2c94c;
+  --s-done: #7073f0;
+  --s-idle: #8b8c93;
+  --s-error: #eb5757;
   color-scheme: dark;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f6f6f8;
-    --panel: #ffffff;
-    --panel-2: #f3f3f6;
-    --raised: #ebebf0;
-    --line: #e4e4ea;
-    --line-strong: #d3d3dc;
-    --fg: #17171c;
-    --muted: #5d5d6a;
-    --faint: #8a8a96;
-    --accent: #6a55f5;
+    --bg: #f3f3f4;
+    --panel: #fcfcfd;
+    --panel-2: #f3f3f5;
+    --raised: #eaeaed;
+    --line: rgba(0, 0, 0, 0.07);
+    --line-strong: rgba(0, 0, 0, 0.12);
+    --fg: #18181b;
+    --muted: #5d5e66;
+    --faint: #8f9097;
+    --accent: #5e62d8;
     --accent-fg: #ffffff;
-    --accent-soft: rgba(106, 85, 245, 0.1);
-    --code: #f4f4f7;
+    --accent-soft: rgba(94, 98, 216, 0.1);
+    --code: #f5f5f7;
+    --shadow: 0 16px 48px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.06);
+    --s-needs: #e07b1f;
+    --s-working: #c99a06;
+    --s-done: #5e62d8;
+    --s-idle: #8f9097;
+    --s-error: #d93f3f;
     color-scheme: light;
   }
 }
@@ -50,7 +83,13 @@
   --color-accent-fg: var(--accent-fg);
   --color-accent-soft: var(--accent-soft);
   --color-code: var(--code);
-  --font-sans: ui-sans-serif, system-ui, "Segoe UI Variable Text", "Segoe UI", Inter, -apple-system, sans-serif;
+  --color-s-needs: var(--s-needs);
+  --color-s-working: var(--s-working);
+  --color-s-done: var(--s-done);
+  --color-s-idle: var(--s-idle);
+  --color-s-error: var(--s-error);
+  --shadow-pop: var(--shadow);
+  --font-sans: "Inter Variable", Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-mono: "Cascadia Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -65,8 +104,10 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 13px;
+  font-feature-settings: "cv01", "cv08", "ss03";
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 * {
@@ -87,7 +128,7 @@ body {
 }
 
 .prose-hangar {
-  line-height: 1.65;
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
 .prose-hangar > :first-child {
@@ -147,8 +188,8 @@ body {
 .prose-hangar pre {
   background: var(--code);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 0.8em 1em;
+  border-radius: 8px;
+  padding: 0.75em 1em;
   overflow-x: auto;
 }
 .prose-hangar pre code {
@@ -190,9 +231,51 @@ body {
 .animate-soft-pulse {
   animation: hangar-pulse 1.6s ease-in-out infinite;
 }
+.animate-spin-slow {
+  animation: spin 3s linear infinite;
+}
+
+@keyframes hangar-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+}
+@keyframes hangar-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes hangar-slide-left {
+  from {
+    transform: translateX(-100%);
+  }
+}
+@keyframes hangar-slide-right {
+  from {
+    transform: translateX(100%);
+  }
+}
+.animate-pop {
+  animation: hangar-pop 0.14s ease-out;
+}
+.animate-fade {
+  animation: hangar-fade 0.14s ease-out;
+}
+.animate-slide-left {
+  animation: hangar-slide-left 0.18s ease-out;
+}
+.animate-slide-right {
+  animation: hangar-slide-right 0.18s ease-out;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-soft-pulse {
+  .animate-soft-pulse,
+  .animate-spin-slow,
+  .animate-pop,
+  .animate-fade,
+  .animate-slide-left,
+  .animate-slide-right {
     animation: none;
   }
 }

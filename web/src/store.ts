@@ -194,7 +194,10 @@ async function refresh() {
   const { sessions: _, projects, home, ...system } = st;
   useStore.setState((s) => {
     let selected = s.selected && sessions[s.selected] ? s.selected : null;
-    if (!selected) {
+    // Open the last session, except on a phone-sized screen, where a
+    // session covers the list: start on the list there.
+    const roomy = typeof window.matchMedia !== "function" || window.matchMedia("(min-width: 768px)").matches;
+    if (!selected && roomy) {
       const last = saved.get(SELECTED_KEY);
       selected = last && sessions[last] ? last : (st.sessions[0]?.id ?? null);
     }

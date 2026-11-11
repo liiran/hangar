@@ -116,15 +116,15 @@ try {
   // ---- drafts survive switching sessions
   const composer = "main textarea[data-composer]";
   await page.fill(composer, "half-written thought");
-  await page.click("aside nav >> text=Audit dependencies");
+  await page.click('nav[aria-label="Sessions"] >> text=Audit dependencies');
   await page.waitForSelector("text=Claude wants to use Bash");
-  await page.click("aside nav >> text=Write release notes");
+  await page.click('nav[aria-label="Sessions"] >> text=Write release notes');
   await sleep(200);
   check("a draft survives switching sessions", (await page.inputValue(composer)) === "half-written thought");
   await page.fill(composer, "");
 
   // ---- the menu closes on Escape without side effects
-  await page.click("aside nav >> text=Audit dependencies");
+  await page.click('nav[aria-label="Sessions"] >> text=Audit dependencies');
   await page.waitForSelector("text=Claude wants to use Bash");
   await sleep(2500); // the 2 s system tick delivers pool and memory numbers
   await shot(page, "2-needs-you");
@@ -164,21 +164,70 @@ try {
   check("the window title counts sessions that need you", (await page.title()).startsWith("("), await page.title());
   await shot(page, "5-error");
 
-  // ---- the pool panel
-  await page.click("text=MCP pool");
+  // ---- the pool view
+  await page.click('nav[aria-label="Main"] >> text=MCP pool');
   const pool = page.locator('[aria-label="MCP pool"]');
   await pool.waitFor();
   await sleep(2200);
   const poolText = await pool.innerText();
-  check("one shared server serves all three clients", /fake[\s\S]*Shared[\s\S]*Sessions\s*3/.test(poolText), poolText.replace(/\n+/g, " | ").slice(0, 120));
+  check("one shared server serves all three clients", /fake[\s\S]*Shared[\s\S]*3 sessions/.test(poolText), poolText.replace(/\n+/g, " | ").slice(0, 160));
   await shot(page, "4-pool");
   await page.keyboard.press("Escape");
   await sleep(200);
-  check("Escape closes the pool panel", (await pool.count()) === 0);
+  check("Escape leaves the pool view", (await pool.count()) === 0 && (await page.locator('nav[aria-label="Sessions"]').count()) === 1);
+
+  // ---- keyboard: command palette, J/K, C
+  const current = async () => (await page.locator('nav[aria-label="Sessions"] [aria-current="true"]').innerText().catch(() => "")).split("\n")[0];
+  await page.locator("body").click({ position: { x: 5, y: 5 } }); // focus out of the composer
+  await page.keyboard.press("Control+k");
+  await page.waitForSelector('[aria-label="Command palette"]');
+  await page.keyboard.type("release notes");
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  check("the command palette finds and opens a session", (await current()).startsWith("Write release notes"), await current());
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  const before = await current();
+  await page.keyboard.press("j");
+  await sleep(150);
+  const after = await current();
+  await page.keyboard.press("k");
+  await sleep(150);
+  check("J and K move between sessions", after !== before && (await current()) === before, `${before} → ${after}`);
+  await page.keyboard.press("c");
+  await dialog.waitFor();
+  check("C opens a new session", true);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+
+  // ---- views: Needs you, and a project
+  await page.click('nav[aria-label="Main"] >> text=Needs you');
+  await sleep(200);
+  const inbox = await page.locator('nav[aria-label="Sessions"]').innerText();
+  check("Needs you lists only sessions that need you", inbox.includes("Audit dependencies") && !inbox.includes("Write release notes"), inbox.replace(/\n+/g, " | ").slice(0, 120));
+  await page.click('section[aria-label="Projects"] >> text="proj"');
+  await sleep(200);
+  check("a project lists its sessions", (await page.locator('nav[aria-label="Sessions"] li').count()) === 3);
+  await page.click('nav[aria-label="Main"] >> text=Sessions');
+
+  // ---- a phone-sized window shows the list, then one session at a time
+  const phone = await browser.newContext({ viewport: { width: 400, height: 800 } });
+  const mp = await phone.newPage();
+  mp.on("pageerror", (e) => errors.push("pageerror: " + e.message));
+  await mp.goto(up());
+  await mp.waitForSelector('nav[aria-label="Sessions"]');
+  check("on a phone, the list comes first", (await mp.locator('main[aria-label="Session"]').count()) === 0);
+  await mp.click('nav[aria-label="Sessions"] >> text=Write release notes');
+  await mp.waitForSelector('main[aria-label="Session"]');
+  check("…a session then fills the screen", !(await mp.locator('nav[aria-label="Sessions"]').isVisible()));
+  await mp.click('button[aria-label="Back to the list"]');
+  await mp.waitForSelector('nav[aria-label="Sessions"]');
+  check("…and Back returns to the list", true);
+  await shot(mp, "6-phone");
+  await phone.close();
 
   // ---- reload keeps the sign-in; the used link signs in nobody else
   await page.reload();
-  await page.waitForSelector("aside nav >> text=Audit dependencies");
+  await page.waitForSelector('nav[aria-label="Sessions"] >> text=Audit dependencies');
   check("reloading stays signed in", true);
   const other = await browser.newContext();
   const p2 = await other.newPage();
@@ -197,7 +246,7 @@ try {
   await page.waitForSelector("text=Open hangar from your terminal", { timeout: 20000 });
   check("a restarted daemon asks this window to sign in again", true);
   await page.goto(fresh); // same page, new hash
-  await page.waitForSelector("aside nav >> text=Audit dependencies");
+  await page.waitForSelector('nav[aria-label="Sessions"] >> text=Audit dependencies');
   check("the new link signs it back in, sessions intact", true);
 } finally {
   for (const c of clients) c.kill();

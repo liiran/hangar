@@ -1,9 +1,10 @@
-import { FolderOpen, ShieldAlert, Sparkles, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Cpu, FolderOpen, Shield, ShieldAlert, X } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, ApiError, type Trust } from "../api";
-import { bytes, MODELS, PERMISSION_MODES } from "../format";
+import { basename, bytes, MODELS, PERMISSION_MODES } from "../format";
 import { askNotificationPermission, report, saved, upsertSession, useStore } from "../store";
-import { Button, cx, Kbd, useDialog } from "./ui";
+import { useUI } from "../ui";
+import { Button, cx, Kbd, Logo, useDialog } from "./ui";
 
 const LAST_CWD = "hangar.lastCwd";
 
@@ -12,7 +13,9 @@ export function NewSession({ onClose }: { onClose: () => void }) {
   const home = useStore((s) => s.home);
   const system = useStore((s) => s.system);
   const select = useStore((s) => s.select);
-  const [cwd, setCwd] = useState(() => saved.get(LAST_CWD) ?? projects[0] ?? home);
+  const view = useUI((s) => s.view);
+  // Start in the folder being viewed, else the last one used.
+  const [cwd, setCwd] = useState(() => (view.kind === "all" && view.project) || saved.get(LAST_CWD) || projects[0] || home);
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("");
   const [mode, setMode] = useState("default");
@@ -49,12 +52,15 @@ export function NewSession({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center overflow-y-auto bg-black/50 p-6 backdrop-blur-[2px]" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div
+      className="animate-fade fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/50 px-4 pt-[12vh] pb-8"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-session-title"
-        className="w-full max-w-xl rounded-2xl bg-panel shadow-2xl ring-1 ring-line"
+        className="animate-pop w-full max-w-[680px] rounded-xl bg-panel shadow-pop"
         onKeyDown={(e) => {
           // Anywhere in the dialog, not just the prompt box.
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) {
@@ -63,85 +69,106 @@ export function NewSession({ onClose }: { onClose: () => void }) {
           }
         }}
       >
-        <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
-          <h2 id="new-session-title" className="flex items-center gap-2 text-[15px] font-semibold">
-            <Sparkles className="size-4 text-accent" /> New session
+        <div className="flex items-center gap-1.5 px-4 pt-3.5 text-[12px] text-muted">
+          <span className="inline-flex h-6 items-center gap-1.5 rounded-md px-2 ring-1 ring-inset ring-line-strong">
+            <Logo className="size-3.5" /> hangar
+          </span>
+          <ChevronRight className="size-3.5 text-faint" />
+          <h2 id="new-session-title" className="text-fg">
+            New session
           </h2>
-          <button onClick={onClose} className="rounded-md p-1 text-faint hover:bg-panel-2 hover:text-fg" aria-label="Close">
+          <button onClick={onClose} className="ml-auto grid size-7 place-items-center rounded-md text-faint hover:bg-panel-2 hover:text-fg" aria-label="Close">
             <X className="size-4" />
           </button>
         </div>
-        <div className="space-y-4 px-5 py-4">
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-medium text-muted">Project folder</span>
-            <div className={cx("flex items-center gap-2 rounded-lg bg-panel-2 px-3 ring-1 ring-inset focus-within:ring-accent/60", folder.error ? "ring-rose-500/50" : "ring-line")}>
-              <FolderOpen className="size-4 shrink-0 text-faint" />
-              <input list="hangar-projects" value={cwd} onChange={(e) => setCwd(e.target.value)} spellCheck={false} className="h-9 flex-1 bg-transparent font-mono text-[12.5px] outline-none" placeholder="C:\code\my-app" />
-              <datalist id="hangar-projects">
-                {projects.map((p) => (
-                  <option key={p} value={p} />
-                ))}
-              </datalist>
-            </div>
-            {folder.error && <span className="mt-1 block text-[12px] text-rose-400">{folder.error}</span>}
-          </label>
-          {needsTrust && folder.trust && <TrustNotice trust={folder.trust} trusted={trusted} onChange={setTrusted} />}
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-medium text-muted">What should Claude do?</span>
-            <textarea
-              ref={promptRef}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={5}
-              className="w-full resize-none rounded-lg bg-panel-2 px-3 py-2.5 text-[14px] outline-none ring-1 ring-inset ring-line placeholder:text-faint focus:ring-accent/60"
-              placeholder="Fix the flaky login test and explain the cause"
+
+        <div className="px-4 pt-3">
+          <label className={cx("flex h-8 items-center gap-2 rounded-md px-2 ring-1 ring-inset focus-within:ring-faint/60", folder.error ? "ring-s-error/50" : "ring-line-strong")}>
+            <FolderOpen className="size-3.5 shrink-0 text-muted" />
+            <span className="sr-only">Project folder</span>
+            <input
+              list="hangar-projects"
+              value={cwd}
+              onChange={(e) => setCwd(e.target.value)}
+              spellCheck={false}
+              className="min-w-0 flex-1 bg-transparent font-mono text-[12px] outline-none placeholder:text-faint"
+              placeholder="C:\code\my-app"
             />
+            <datalist id="hangar-projects">
+              {projects.map((p) => (
+                <option key={p} value={p} />
+              ))}
+            </datalist>
           </label>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-medium text-muted">Model</span>
-              <select value={model} onChange={(e) => setModel(e.target.value)} className="h-9 w-full rounded-lg bg-panel-2 px-2.5 text-[13px] outline-none ring-1 ring-inset ring-line">
-                {MODELS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-medium text-muted">Permissions</span>
-              <select value={mode} onChange={(e) => setMode(e.target.value)} className="h-9 w-full rounded-lg bg-panel-2 px-2.5 text-[13px] outline-none ring-1 ring-inset ring-line">
-                {PERMISSION_MODES.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <p className={cx("text-[12px]", mode === "bypassPermissions" ? "text-amber-400" : "text-faint")}>{PERMISSION_MODES.find((o) => o.value === mode)?.hint}.</p>
+          {folder.error && <p className="mt-1 px-1 text-[12px] text-s-error">{folder.error}</p>}
+          <textarea
+            ref={promptRef}
+            aria-label="What should Claude do?"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={5}
+            className="mt-3 w-full resize-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-faint"
+            placeholder="What should Claude do?"
+          />
+          {needsTrust && folder.trust && <TrustNotice trust={folder.trust} trusted={trusted} onChange={setTrusted} folder={basename(cwd)} />}
         </div>
-        <div className="flex items-center justify-between gap-3 border-t border-line px-5 py-3.5">
+
+        <div className="flex flex-wrap items-center gap-1.5 px-4 pt-1 pb-3">
+          <PillSelect icon={<Cpu className="size-3.5" />} label="Model" value={model} onChange={setModel} options={MODELS} />
+          <PillSelect
+            icon={<Shield className="size-3.5" />}
+            label="Permissions"
+            value={mode}
+            onChange={setMode}
+            options={PERMISSION_MODES}
+            warn={mode === "bypassPermissions"}
+          />
+          <span className={cx("ml-1 text-[11.5px]", mode === "bypassPermissions" ? "text-s-needs" : "text-faint")}>{PERMISSION_MODES.find((o) => o.value === mode)?.hint}</span>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-3">
           <span className="text-[12px] text-faint">
-            {willQueue && m ? (
-              <span className="text-muted">Needs ~{bytes(m.estimate_bytes)}; it waits in the queue until that is free.</span>
-            ) : (
-              <>
-                <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd> to start
-              </>
-            )}
+            {willQueue && m ? <span className="text-muted">Needs ~{bytes(m.estimate_bytes)}; it waits in the queue until that is free.</span> : "Claude starts right away."}
           </span>
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={start} disabled={!ready}>
-              {willQueue ? "Queue session" : "Start session"}
-            </Button>
-          </div>
+          <Button variant="primary" size="sm" onClick={start} disabled={!ready}>
+            {willQueue ? "Queue session" : "Start session"}
+            <Kbd className="ml-1 border-white/25 bg-white/10 text-white/85">Ctrl ⏎</Kbd>
+          </Button>
         </div>
       </div>
     </div>
+  );
+}
+
+/** A native select dressed as a property pill. */
+function PillSelect({
+  icon,
+  label,
+  value,
+  onChange,
+  options,
+  warn,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  warn?: boolean;
+}) {
+  return (
+    <label className={cx("relative inline-flex h-7 items-center gap-1.5 rounded-md pr-2 pl-2 text-[12px] ring-1 ring-inset hover:bg-panel-2", warn ? "text-s-needs ring-s-needs/40" : "text-muted ring-line-strong")}>
+      {icon}
+      <span className="sr-only">{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="cursor-pointer appearance-none bg-transparent pr-4 text-fg outline-none">
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-1.5 size-3 text-faint" />
+    </label>
   );
 }
 
@@ -169,25 +196,25 @@ function useFolder(cwd: string) {
   return { trust, setTrust, error };
 }
 
-function TrustNotice({ trust, trusted, onChange }: { trust: Trust; trusted: boolean; onChange: (v: boolean) => void }) {
+function TrustNotice({ trust, trusted, onChange, folder }: { trust: Trust; trusted: boolean; onChange: (v: boolean) => void; folder: string }) {
   const lists = [
     { title: "Hooks that run commands", items: trust.hooks },
     { title: "Tools it allows without asking", items: trust.allow_rules },
     { title: "MCP servers it starts", items: trust.mcp_servers },
   ].filter((l) => l.items.length > 0);
   return (
-    <div className="rounded-xl bg-amber-400/[0.07] p-3.5 text-[12.5px] ring-1 ring-inset ring-amber-400/30">
-      <div className="flex items-center gap-2 font-medium text-amber-300 [@media(prefers-color-scheme:light)]:text-amber-700">
-        <ShieldAlert className="size-4" /> New folder
+    <div className="mb-3 rounded-lg bg-s-needs/[0.06] p-3.5 text-[12.5px] ring-1 ring-inset ring-s-needs/30">
+      <div className="flex items-center gap-2 font-medium">
+        <ShieldAlert className="size-4 text-s-needs" /> New folder
       </div>
-      <p className="mt-1 text-muted">Claude Code follows a folder's own settings. Start here only if you trust what is in it.</p>
+      <p className="mt-1 text-muted">Claude Code follows {folder}'s own settings. Start here only if you trust what is in it.</p>
       {lists.length === 0 ? (
         <p className="mt-2 text-faint">It has no hooks, pre-approved tools or MCP servers of its own.</p>
       ) : (
         lists.map((l) => (
-          <div key={l.title} className="mt-2">
-            <div className="text-faint">{l.title}</div>
-            <ul className="mt-0.5 max-h-28 overflow-y-auto rounded-lg bg-code px-2.5 py-1.5 font-mono text-[11.5px]">
+          <div key={l.title} className="mt-2.5">
+            <div className="text-[11.5px] text-faint">{l.title}</div>
+            <ul className="mt-1 max-h-28 overflow-y-auto rounded-md bg-code px-2.5 py-1.5 font-mono text-[11.5px] ring-1 ring-inset ring-line">
               {l.items.map((i) => (
                 <li key={i} className="truncate" title={i}>
                   {i}
@@ -198,7 +225,7 @@ function TrustNotice({ trust, trusted, onChange }: { trust: Trust; trusted: bool
         ))
       )}
       <label className="mt-3 flex cursor-pointer items-center gap-2 font-medium">
-        <input type="checkbox" checked={trusted} onChange={(e) => onChange(e.target.checked)} className="size-4 accent-[var(--color-accent)]" />I trust this folder
+        <input type="checkbox" checked={trusted} onChange={(e) => onChange(e.target.checked)} className="size-3.5 accent-[var(--accent)]" />I trust this folder
       </label>
     </div>
   );

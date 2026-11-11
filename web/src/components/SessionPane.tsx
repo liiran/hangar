@@ -1,116 +1,62 @@
-import { ArrowUp, Circle, FolderOpen, MoreHorizontal, Pause, Play, Square, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowUp, ChevronRight, Copy, Ellipsis, Folder, PanelRight, Pause, Pencil, Play, Square, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type Session } from "../api";
-import { bytes, PERMISSION_MODES } from "../format";
+import { basename, bytes, PERMISSION_MODES, usd } from "../format";
 import { report, useStore } from "../store";
+import { intent, useUI } from "../ui";
+import { Properties } from "./Properties";
 import { Transcript } from "./Transcript";
-import { Button, cx, Kbd, StatusChip } from "./ui";
+import { Button, cx, IconButton, Kbd, StatusIcon, StatusLabel, useDismiss } from "./ui";
 
 export function SessionPane({ session }: { session: Session }) {
   const events = useStore((s) => s.events[session.id]);
+  const props = useUI((s) => s.props);
+  const [editing, setEditing] = useState(false);
   return (
-    <main className="flex min-w-0 flex-1 flex-col">
-      <Header session={session} />
-      <Transcript session={session} events={events} />
-      <Composer session={session} />
-    </main>
+    <div className="flex min-w-0 flex-1">
+      <main className="flex min-w-0 flex-1 flex-col" aria-label="Session">
+        <Toolbar session={session} onRename={() => setEditing(true)} />
+        <Transcript session={session} events={events} header={<Title session={session} editing={editing} setEditing={setEditing} />} />
+        <Composer session={session} />
+      </main>
+      {props && (
+        <aside className="hidden w-[264px] shrink-0 border-l border-line xl:block" aria-label="Properties">
+          <Properties session={session} />
+        </aside>
+      )}
+    </div>
   );
 }
 
-function Header({ session }: { session: Session }) {
-  const [editing, setEditing] = useState(false);
-  const [title, setTitle] = useState(session.title);
-  const [menu, setMenu] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => setTitle(session.title), [session.title]);
-  // The menu closes on Escape or a click anywhere else.
-  useEffect(() => {
-    if (!menu) return;
-    const onDown = (e: MouseEvent) => menuRef.current?.contains(e.target as Node) || setMenu(false);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setMenu(false);
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey, true);
-    };
-  }, [menu]);
-  const live = session.pid != null;
-
-  const saveTitle = async () => {
-    setEditing(false);
-    if (title.trim() && title !== session.title) await api.update(session.id, { title }).catch(report);
-  };
-  const act = (f: () => Promise<unknown>) => () => {
-    setMenu(false);
-    f().catch(report);
-  };
-
+function Toolbar({ session, onRename }: { session: Session; onRename: () => void }) {
+  const select = useStore((s) => s.select);
+  const setView = useUI((s) => s.setView);
+  const props = useUI((s) => s.props);
+  const toggleProps = useUI((s) => s.toggleProps);
+  const act = (f: () => Promise<unknown>) => () => f().catch(report);
   return (
-    <header className="flex items-center gap-3 border-b border-line px-5 py-3">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2.5">
-          {editing ? (
-            <input
-              autoFocus
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={saveTitle}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveTitle();
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setTitle(session.title);
-                  setEditing(false);
-                }
-              }}
-              className="min-w-0 flex-1 rounded-md bg-panel-2 px-2 py-0.5 text-[15px] font-semibold outline-none ring-1 ring-accent"
-            />
-          ) : (
-            <h1 onDoubleClick={() => setEditing(true)} className="truncate text-[15px] font-semibold" title="Double-click to rename">
-              {session.title}
-            </h1>
-          )}
-          <StatusChip status={session.status} />
-        </div>
-        <div className="mt-0.5 flex items-center gap-3 text-[12px] text-faint">
-          <span className="flex min-w-0 items-center gap-1 truncate" title={session.cwd}>
-            <FolderOpen className="size-3.5 shrink-0" />
-            <span className="truncate">{session.cwd}</span>
-          </span>
-          {session.model && <span className="shrink-0">{session.model}</span>}
-          {session.memory_bytes != null && <span className="shrink-0 tabular-nums">{bytes(session.memory_bytes)}</span>}
-          {session.cost_usd > 0 && <span className="shrink-0 tabular-nums">${session.cost_usd.toFixed(2)}</span>}
-          {session.mcp.length > 0 && (
-            <span className="flex shrink-0 items-center gap-1" title={session.mcp.map((m) => `${m.name}: ${m.status}`).join("\n")}>
-              <Circle className={cx("size-2", session.mcp.every((m) => m.status === "connected") ? "fill-emerald-400 text-emerald-400" : "fill-amber-400 text-amber-400")} />
-              {session.mcp.length} MCP
-            </span>
-          )}
-        </div>
-      </div>
-
-      <select
-        value={session.permission_mode}
-        onChange={(e) => api.update(session.id, { permission_mode: e.target.value }).catch(report)}
-        className="h-8 rounded-lg bg-panel-2 px-2 text-[12.5px] ring-1 ring-inset ring-line outline-none hover:bg-raised"
-        title={PERMISSION_MODES.find((m) => m.value === session.permission_mode)?.hint}
-      >
-        {PERMISSION_MODES.map((m) => (
-          <option key={m.value} value={m.value}>
-            {m.label}
-          </option>
-        ))}
-      </select>
-
+    <header className="flex h-12 shrink-0 items-center gap-1 border-b border-line px-3">
+      <IconButton label="Back to the list" onClick={() => select(null)} className="md:hidden">
+        <ArrowLeft className="size-4" />
+      </IconButton>
+      <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1 px-1 text-[13px]">
+        <button
+          onClick={() => setView({ kind: "all", project: session.cwd })}
+          className="flex max-w-[45%] min-w-[3rem] shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-muted hover:bg-panel-2 hover:text-fg"
+          title={session.cwd}
+        >
+          <Folder className="size-3.5 shrink-0" />
+          <span className="truncate">{basename(session.cwd)}</span>
+        </button>
+        <ChevronRight className="size-3.5 shrink-0 text-faint" />
+        <span className="flex min-w-0 items-center gap-1.5 px-1">
+          <StatusIcon status={session.status} size={13} />
+          <span className="truncate font-medium">{session.title}</span>
+        </span>
+      </nav>
       {session.status === "working" && (
-        <Button size="sm" onClick={act(() => api.interrupt(session.id))} title="Interrupt (Esc)">
-          <Square className="size-3 fill-current" /> Stop turn
+        <Button size="sm" onClick={act(() => api.interrupt(session.id))} title="Stop this turn (Esc)">
+          <Square className="size-3 fill-current" /> Stop <Kbd className="ml-0.5 hidden sm:inline-grid">Esc</Kbd>
         </Button>
       )}
       {session.status === "queued" && (
@@ -118,52 +64,122 @@ function Header({ session }: { session: Session }) {
           <Play className="size-3.5" /> Start now
         </Button>
       )}
-
-      <div className="relative" ref={menuRef}>
-        <Button variant="ghost" size="sm" onClick={() => setMenu(!menu)} aria-label="More" aria-haspopup="menu" aria-expanded={menu}>
-          <MoreHorizontal className="size-4" />
-        </Button>
-        {menu && (
-          <div role="menu" className="absolute right-0 z-20 mt-1 w-56 overflow-hidden rounded-xl bg-panel p-1 shadow-xl ring-1 ring-line">
-            {live && (
-              <MenuItem icon={<Pause className="size-4" />} onClick={act(() => api.stop(session.id))}>
-                Stop process <span className="ml-auto text-[11px] text-faint">resumable</span>
-              </MenuItem>
-            )}
-            <MenuItem icon={<Pencil />} onClick={() => (setMenu(false), setEditing(true))}>
-              Rename
-            </MenuItem>
-            <MenuItem
-              icon={<Trash2 className="size-4" />}
-              danger
-              onClick={act(async () => {
-                if (confirm(`Delete "${session.title}"? This removes it from hangar; Claude's own transcript stays.`)) await api.remove(session.id);
-              })}
-            >
-              Delete
-            </MenuItem>
-          </div>
-        )}
-      </div>
+      <MoreMenu session={session} onRename={onRename} />
+      <IconButton label={props ? "Hide properties" : "Show properties"} active={props} onClick={toggleProps} className="hidden xl:grid">
+        <PanelRight className="size-4" />
+      </IconButton>
     </header>
   );
 }
 
-function Pencil() {
+function MoreMenu({ session, onRename }: { session: Session; onRename: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useDismiss(open, ref, () => setOpen(false));
+  const live = session.pid != null;
+  const act = (f: () => unknown) => () => {
+    setOpen(false);
+    Promise.resolve(f()).catch(report);
+  };
   return (
-    <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M12 20h9M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4Z" />
-    </svg>
+    <div className="relative" ref={ref}>
+      <IconButton label="More" aria-haspopup="menu" aria-expanded={open} active={open} onClick={() => setOpen(!open)}>
+        <Ellipsis className="size-4" />
+      </IconButton>
+      {open && (
+        <div role="menu" className="animate-pop absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-lg bg-panel p-1 shadow-pop">
+          <MenuItem icon={<Pencil className="size-3.5" />} onClick={act(onRename)}>
+            Rename
+          </MenuItem>
+          <MenuItem icon={<Copy className="size-3.5" />} onClick={act(() => navigator.clipboard?.writeText(session.cwd))}>
+            Copy folder path
+          </MenuItem>
+          {live && (
+            <MenuItem icon={<Pause className="size-3.5" />} onClick={act(() => api.stop(session.id))} hint="resumable">
+              Stop process
+            </MenuItem>
+          )}
+          <div className="my-1 border-t border-line" />
+          <MenuItem
+            icon={<Trash2 className="size-3.5" />}
+            danger
+            onClick={act(async () => {
+              if (confirm(`Delete "${session.title}"? This removes it from hangar; Claude's own transcript stays.`)) await api.remove(session.id);
+            })}
+          >
+            Delete
+          </MenuItem>
+        </div>
+      )}
+    </div>
   );
 }
 
-function MenuItem({ icon, children, onClick, danger }: { icon: React.ReactNode; children: React.ReactNode; onClick: () => void; danger?: boolean }) {
+function MenuItem({ icon, children, onClick, danger, hint }: { icon: React.ReactNode; children: React.ReactNode; onClick: () => void; danger?: boolean; hint?: string }) {
   return (
-    <button role="menuitem" onClick={onClick} className={cx("flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px]", danger ? "text-rose-400 hover:bg-rose-500/10" : "hover:bg-panel-2")}>
-      {icon}
-      {children}
+    <button
+      role="menuitem"
+      onClick={onClick}
+      className={cx("flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13px]", danger ? "text-s-error hover:bg-s-error/10" : "text-fg hover:bg-panel-2")}
+    >
+      <span className={danger ? "" : "text-muted"}>{icon}</span>
+      <span className="flex-1">{children}</span>
+      {hint && <span className="text-[11px] text-faint">{hint}</span>}
     </button>
   );
+}
+
+/** The session's title (click to rename) and, without the properties panel, its key facts. */
+function Title({ session, editing, setEditing }: { session: Session; editing: boolean; setEditing: (v: boolean) => void }) {
+  const props = useUI((s) => s.props);
+  const [title, setTitle] = useState(session.title);
+  useEffect(() => setTitle(session.title), [session.title]);
+  const save = async () => {
+    setEditing(false);
+    const t = title.trim();
+    if (t && t !== session.title) await api.update(session.id, { title: t }).catch(report);
+    else setTitle(session.title);
+  };
+  const mode = PERMISSION_MODES.find((m) => m.value === session.permission_mode)?.label ?? session.permission_mode;
+  return (
+    <div className="mb-6">
+      {editing ? (
+        <input
+          autoFocus
+          aria-label="Session title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setTitle(session.title);
+              setEditing(false);
+            }
+          }}
+          className="-mx-1.5 w-[calc(100%+12px)] rounded-md bg-panel-2 px-1.5 py-0.5 text-[20px] font-semibold tracking-tight outline-none ring-1 ring-line-strong"
+        />
+      ) : (
+        <h2 onClick={() => setEditing(true)} className="-mx-1.5 cursor-text rounded-md px-1.5 py-0.5 text-[20px] leading-snug font-semibold tracking-tight hover:bg-panel-2/60" title="Click to rename">
+          {session.title}
+        </h2>
+      )}
+      <div className={cx("mt-2 flex flex-wrap items-center gap-1.5 text-[12px] text-muted", props && "xl:hidden")}>
+        <Pill>
+          <StatusLabel status={session.status} />
+        </Pill>
+        <Pill>{session.model ?? "Default model"}</Pill>
+        <Pill>{mode}</Pill>
+        {session.cost_usd > 0 && <Pill>{usd(session.cost_usd)}</Pill>}
+        {session.memory_bytes != null && <Pill>{bytes(session.memory_bytes)}</Pill>}
+      </div>
+    </div>
+  );
+}
+
+function Pill({ children }: { children: React.ReactNode }) {
+  return <span className="inline-flex h-6 items-center rounded-md px-2 ring-1 ring-inset ring-line-strong">{children}</span>;
 }
 
 /** Unsent text per session. Outside React: the pane remounts on every switch. */
@@ -175,7 +191,10 @@ function Composer({ session }: { session: Session }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    ref.current?.focus();
+    if (intent.focusComposer) {
+      intent.focusComposer = false;
+      ref.current?.focus();
+    }
   }, [session.id]);
   useEffect(() => {
     if (text) drafts.set(session.id, text);
@@ -213,9 +232,9 @@ function Composer({ session }: { session: Session }) {
             : "Reply to Claude…";
 
   return (
-    <div className="border-t border-line px-6 py-4">
-      <div className="mx-auto max-w-3xl">
-        <div className="flex items-end gap-2 rounded-2xl bg-panel p-2 ring-1 ring-inset ring-line focus-within:ring-accent/50">
+    <div className="shrink-0 px-4 pb-4 sm:px-8">
+      <div className="mx-auto max-w-[760px]">
+        <div className="flex items-end gap-2 rounded-lg bg-panel-2 p-1.5 pl-3 ring-1 ring-inset ring-line-strong transition-shadow focus-within:ring-faint/60">
           <textarea
             ref={ref}
             data-composer
@@ -230,23 +249,25 @@ function Composer({ session }: { session: Session }) {
                 send();
               }
             }}
-            className="max-h-60 min-h-9 flex-1 resize-none bg-transparent px-2 py-1.5 text-[14px] outline-none focus-visible:outline-none placeholder:text-faint"
+            className="max-h-60 min-h-8 flex-1 resize-none bg-transparent py-1.5 text-[13.5px] leading-relaxed outline-none placeholder:text-faint focus-visible:outline-none"
           />
           <button
             onClick={send}
             disabled={!text.trim() || sending}
-            className="grid size-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-fg transition disabled:opacity-30"
+            className="grid size-8 shrink-0 place-items-center rounded-md bg-accent text-accent-fg transition disabled:bg-raised disabled:text-faint"
             aria-label="Send"
+            title="Send (Enter)"
           >
             <ArrowUp className="size-4" />
           </button>
         </div>
-        <div className="mt-1.5 flex justify-between px-1 text-[11px] text-faint">
-          <span>
-            <Kbd>Enter</Kbd> send · <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> new line
+        <div className="mt-1.5 hidden justify-between px-1 text-[11px] text-faint sm:flex">
+          <span className="flex items-center gap-1">
+            <Kbd>Enter</Kbd> send <span className="mx-1">·</span> <Kbd>Shift</Kbd>
+            <Kbd>Enter</Kbd> new line
           </span>
           {session.status === "working" && (
-            <span>
+            <span className="flex items-center gap-1">
               <Kbd>Esc</Kbd> stop the turn
             </span>
           )}

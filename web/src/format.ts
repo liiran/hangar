@@ -8,8 +8,8 @@ export function bytes(b: number | null | undefined): string {
   return `${mb.toFixed(1)} MB`;
 }
 
-export function ago(ms: number): string {
-  const s = Math.max(0, (Date.now() - ms) / 1000);
+export function ago(ms: number, now = Date.now()): string {
+  const s = Math.max(0, (now - ms) / 1000);
   if (s < 45) return "now";
   if (s < 3600) return `${Math.round(s / 60)}m`;
   if (s < 86400) return `${Math.round(s / 3600)}h`;
@@ -23,23 +23,29 @@ export function duration(ms: number): string {
   return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 }
 
+export function usd(v: number): string {
+  if (v <= 0) return "$0";
+  return `$${v.toFixed(v < 0.1 ? 3 : 2)}`;
+}
+
 export function basename(path: string): string {
   const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/);
   return parts[parts.length - 1] || path;
 }
 
-export const STATUS: Record<Status, { label: string; tone: string; group: string }> = {
-  needs_you: { label: "Needs you", tone: "amber", group: "Needs you" },
-  working: { label: "Working", tone: "sky", group: "Working" },
-  starting: { label: "Starting", tone: "sky", group: "Working" },
-  queued: { label: "Queued", tone: "slate", group: "Queued" },
-  idle: { label: "Done", tone: "emerald", group: "Ready for you" },
-  hibernated: { label: "Paused", tone: "violet", group: "Paused" },
-  stopped: { label: "Stopped", tone: "zinc", group: "Paused" },
-  error: { label: "Error", tone: "rose", group: "Needs you" },
+/** How each status reads in the app, and which list group it sorts into. */
+export const STATUS: Record<Status, { label: string; group: string; hint: string }> = {
+  needs_you: { label: "Needs you", group: "Needs you", hint: "Waiting for your approval" },
+  error: { label: "Error", group: "Needs you", hint: "Stopped with an error" },
+  working: { label: "Working", group: "Working", hint: "Claude is working" },
+  starting: { label: "Starting", group: "Working", hint: "Starting Claude" },
+  queued: { label: "Queued", group: "Queued", hint: "Waiting for memory" },
+  idle: { label: "Ready", group: "Ready", hint: "Finished its turn; your move" },
+  hibernated: { label: "Paused", group: "Paused", hint: "Paused to free memory; resumes on your next message" },
+  stopped: { label: "Stopped", group: "Paused", hint: "Process stopped; resumes on your next message" },
 };
 
-export const GROUP_ORDER = ["Needs you", "Working", "Queued", "Ready for you", "Paused"];
+export const GROUP_ORDER = ["Needs you", "Working", "Queued", "Ready", "Paused"];
 
 export const PERMISSION_MODES: { value: string; label: string; hint: string }[] = [
   { value: "default", label: "Ask first", hint: "Asks before editing files or running commands" },

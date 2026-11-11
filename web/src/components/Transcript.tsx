@@ -1,8 +1,23 @@
-import { AlertTriangle, Brain, Check, ChevronRight, FileText, Globe, Hammer, Search, ShieldQuestion, SquareTerminal, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  Brain,
+  Check,
+  ChevronRight,
+  FileText,
+  Globe,
+  Hammer,
+  Search,
+  Shield,
+  ShieldAlert,
+  Sparkles,
+  SquareTerminal,
+  User,
+  X,
+} from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session, SessionEvent } from "../api";
 import { api } from "../api";
-import { duration } from "../format";
+import { ago, duration, usd } from "../format";
 import { report } from "../store";
 import { relative, toRows, toolSummary, type Row } from "../transcript";
 import { Markdown } from "./Markdown";
@@ -23,7 +38,7 @@ const TOOL_ICONS: Record<string, typeof Hammer> = {
   WebSearch: Globe,
 };
 
-export function Transcript({ session, events }: { session: Session; events: SessionEvent[] | undefined }) {
+export function Transcript({ session, events, header }: { session: Session; events: SessionEvent[] | undefined; header?: ReactNode }) {
   const rows = useMemo(() => toRows(events ?? []), [events]);
   const lastError = useMemo(() => {
     for (let i = rows.length - 1; i >= 0; i--) {
@@ -52,31 +67,35 @@ export function Transcript({ session, events }: { session: Session; events: Sess
 
   return (
     <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-3xl space-y-4 px-6 py-6">
-        {events === undefined && <p className="text-[13px] text-faint">Loading…</p>}
-        {rows.map((r) => (
-          <RowView key={r.key} row={r} session={session} />
-        ))}
-        {(session.status === "working" || session.status === "starting") && (
-          <div className="flex items-center gap-2 pl-1 text-[12.5px] text-muted">
-            <span className="flex gap-1">
-              {[0, 1, 2].map((i) => (
-                <span key={i} className="size-1.5 animate-soft-pulse rounded-full bg-sky-400" style={{ animationDelay: `${i * 0.2}s` }} />
-              ))}
+      <div className="mx-auto max-w-[760px] px-4 pt-8 pb-6 sm:px-8">
+        {header}
+        <div className="mb-4 flex items-baseline justify-between border-b border-line pb-2">
+          <h3 className="text-[13px] font-medium">Activity</h3>
+          {session.turns > 0 && (
+            <span className="text-[12px] text-faint">
+              {session.turns} {session.turns === 1 ? "turn" : "turns"} · {usd(session.cost_usd)}
             </span>
-            {session.status === "starting" ? "Starting Claude…" : "Working…"}
-          </div>
-        )}
-        {session.status === "queued" && (
-          <div className="rounded-xl border border-dashed border-line-strong px-4 py-3 text-[13px] text-muted">
-            <span className="font-medium text-fg">Waiting for memory{session.queue_position != null && ` (#${session.queue_position} in line)`}.</span>{" "}
-            {session.status_detail ?? "This session starts as soon as there is room."}
-          </div>
-        )}
-        {(session.status === "error" || session.status === "stopped") && <Stopped session={session} shownError={lastError} />}
-        {session.status === "hibernated" && (
-          <p className="text-center text-[12.5px] text-faint">Paused to free memory. Send a message to pick up where it left off.</p>
-        )}
+          )}
+        </div>
+        <div className="space-y-3">
+          {events === undefined && <p className="text-[12.5px] text-faint">Loading…</p>}
+          {rows.map((r) => (
+            <RowView key={r.key} row={r} session={session} />
+          ))}
+          {(session.status === "working" || session.status === "starting") && (
+            <Activity icon={<Dots />}>
+              <span className="text-muted">{session.status === "starting" ? "Starting Claude…" : "Working…"}</span>
+            </Activity>
+          )}
+          {session.status === "queued" && (
+            <div className="rounded-lg border border-dashed border-line-strong px-4 py-3 text-[12.5px] text-muted">
+              <span className="font-medium text-fg">Waiting for memory{session.queue_position != null && ` (#${session.queue_position} in line)`}.</span>{" "}
+              {session.status_detail ?? "This session starts as soon as there is room."}
+            </div>
+          )}
+          {session.status === "hibernated" && <p className="pt-2 text-center text-[12px] text-faint">Paused to free memory. Send a message to pick up where it left off.</p>}
+          {(session.status === "error" || session.status === "stopped") && <Stopped session={session} shownError={lastError} />}
+        </div>
       </div>
     </div>
   );
@@ -87,10 +106,45 @@ function Stopped({ session, shownError }: { session: Session; shownError: string
   const detail = session.status_detail && session.status_detail !== shownError ? session.status_detail : null;
   const what = session.status === "error" ? "Stopped with an error" : "The process is stopped";
   return (
-    <p className="text-center text-[12.5px] text-faint">
+    <p className="pt-2 text-center text-[12px] text-faint">
       {what}
       {detail ? `: ${detail}` : ""}. Send a message to {session.claude_session_id ? "resume where it left off" : "start it again"}.
     </p>
+  );
+}
+
+/** A timeline entry: a small icon in the gutter and a line of text. */
+function Activity({ icon, children, tone }: { icon: ReactNode; children: ReactNode; tone?: "error" }) {
+  return (
+    <div className="flex gap-3 text-[12.5px]">
+      <span
+        className={cx(
+          "mt-px grid size-5 shrink-0 place-items-center rounded-full bg-panel ring-1 ring-inset",
+          tone === "error" ? "text-s-error ring-s-error/30" : "text-muted ring-line-strong",
+        )}
+      >
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1 pt-0.5">{children}</div>
+    </div>
+  );
+}
+
+function Avatar({ claude }: { claude?: boolean }) {
+  return (
+    <span className={cx("grid size-5 shrink-0 place-items-center rounded-full", claude ? "bg-accent-soft text-accent" : "bg-raised text-muted")}>
+      {claude ? <Sparkles className="size-3" /> : <User className="size-3" />}
+    </span>
+  );
+}
+
+function Dots() {
+  return (
+    <span className="flex gap-[2px]">
+      {[0, 1, 2].map((i) => (
+        <span key={i} className="size-[3px] animate-soft-pulse rounded-full bg-current" style={{ animationDelay: `${i * 0.2}s` }} />
+      ))}
+    </span>
   );
 }
 
@@ -98,46 +152,52 @@ function RowView({ row, session }: { row: Row; session: Session }) {
   switch (row.kind) {
     case "user":
       return (
-        <div className="flex justify-end">
-          <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-accent-soft px-4 py-2.5 text-[14px] ring-1 ring-inset ring-accent/20">{row.text}</div>
+        <div className="rounded-lg bg-panel-2/70 px-4 py-3 ring-1 ring-inset ring-line">
+          <div className="mb-1.5 flex items-center gap-2 text-[12px]">
+            <Avatar />
+            <span className="font-medium">You</span>
+            <span className="text-faint">{ago(row.ts)}</span>
+          </div>
+          <div className="text-[13.5px] leading-relaxed whitespace-pre-wrap">{row.text}</div>
         </div>
       );
     case "text":
       return (
-        <div className="text-[14.5px]">
-          <Markdown text={row.text} />
+        <div className="flex gap-3 py-1">
+          <Avatar claude />
+          <div className="min-w-0 flex-1 text-[13.5px]">
+            <Markdown text={row.text} />
+          </div>
         </div>
       );
     case "thinking":
-      return <Collapsible icon={<Brain className="size-3.5" />} label="Thinking" body={row.text} />;
+      return <Collapsible icon={<Brain className="size-3" />} label="Thinking" body={row.text} />;
     case "tool":
       return <ToolRow row={row} cwd={session.cwd} live={LIVE.has(session.status)} />;
     case "permission":
       return <PermissionRow row={row} session={session} />;
     case "result":
       return (
-        <div className={cx("flex items-center gap-2 border-t border-line pt-2 text-[11.5px]", row.isError ? "text-rose-400" : "text-faint")}>
-          {row.isError ? <AlertTriangle className="size-3.5" /> : <Check className="size-3.5" />}
-          <span>
-            {row.isError ? row.text ?? "The turn failed" : "Done"}
+        <Activity icon={row.isError ? <AlertTriangle className="size-3" /> : <Check className="size-3" />} tone={row.isError ? "error" : undefined}>
+          <span className={row.isError ? "text-s-error" : "text-faint"}>
+            {row.isError ? (row.text ?? "The turn failed") : "Done"}
             {row.durationMs != null && ` in ${duration(row.durationMs)}`}
             {row.cost != null && row.cost > 0 && ` · $${row.cost.toFixed(row.cost < 0.1 ? 3 : 2)}`}
           </span>
-        </div>
+        </Activity>
       );
     case "error":
       return (
-        <div className="flex items-start gap-2 rounded-xl bg-rose-500/10 px-4 py-3 text-[13px] text-rose-300 ring-1 ring-inset ring-rose-500/25">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-          <span>{row.message}</span>
-        </div>
+        <Activity icon={<AlertTriangle className="size-3" />} tone="error">
+          <span className="text-s-error">{row.message}</span>
+        </Activity>
       );
   }
 }
 
 /** Shows what the user is approving in the most readable form for the tool. */
 function PermissionPreview({ tool, input, cwd, description }: { tool: string; input: any; cwd: string; description?: string | null }) {
-  const box = "mt-2.5 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-3 font-mono text-[12px] ring-1 ring-inset ring-line";
+  const box = "mt-2.5 max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-code p-3 font-mono text-[12px] ring-1 ring-inset ring-line";
   const path = typeof input?.file_path === "string" ? relative(input.file_path, cwd) : null;
   if (tool === "Bash" && typeof input?.command === "string") {
     return (
@@ -170,12 +230,20 @@ function PermissionPreview({ tool, input, cwd, description }: { tool: string; in
         <div className={box}>
           {edits.map((e, i) => (
             <div key={i} className={i > 0 ? "mt-3 border-t border-line pt-3" : ""}>
-              {String(e.old_string ?? "").split("\n").map((l, j) => (
-                <div key={`o${j}`} className="bg-rose-500/10 text-rose-300 [@media(prefers-color-scheme:light)]:text-rose-700">- {l}</div>
-              ))}
-              {String(e.new_string ?? "").split("\n").map((l, j) => (
-                <div key={`n${j}`} className="bg-emerald-500/10 text-emerald-300 [@media(prefers-color-scheme:light)]:text-emerald-700">+ {l}</div>
-              ))}
+              {String(e.old_string ?? "")
+                .split("\n")
+                .map((l, j) => (
+                  <div key={`o${j}`} className="bg-s-error/10 text-s-error">
+                    - {l}
+                  </div>
+                ))}
+              {String(e.new_string ?? "")
+                .split("\n")
+                .map((l, j) => (
+                  <div key={`n${j}`} className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    + {l}
+                  </div>
+                ))}
             </div>
           ))}
         </div>
@@ -190,17 +258,16 @@ function PermissionPreview({ tool, input, cwd, description }: { tool: string; in
   );
 }
 
-function Collapsible({ icon, label, body, mono }: { icon: React.ReactNode; label: React.ReactNode; body: string; mono?: boolean }) {
+function Collapsible({ icon, label, body }: { icon: ReactNode; label: ReactNode; body: string }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-lg">
-      <button onClick={() => setOpen(!open)} className="flex items-center gap-1.5 text-[12.5px] text-muted hover:text-fg">
-        <ChevronRight className={cx("size-3.5 transition-transform", open && "rotate-90")} />
-        {icon}
+    <Activity icon={icon}>
+      <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex items-center gap-1 text-muted hover:text-fg">
         {label}
+        <ChevronRight className={cx("size-3 transition-transform", open && "rotate-90")} />
       </button>
-      {open && <pre className={cx("mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-3 text-[12px] text-muted ring-1 ring-inset ring-line", mono !== false && "font-mono")}>{body}</pre>}
-    </div>
+      {open && <pre className="mt-2 max-h-96 overflow-auto rounded-md bg-code p-3 font-sans text-[12px] whitespace-pre-wrap text-muted ring-1 ring-inset ring-line">{body}</pre>}
+    </Activity>
   );
 }
 
@@ -210,27 +277,33 @@ function ToolRow({ row, cwd, live }: { row: Extract<Row, { kind: "tool" }>; cwd:
   const summary = toolSummary(row.name, row.input, cwd);
   const failed = row.result?.isError;
   return (
-    <div className={cx("rounded-xl bg-panel ring-1 ring-inset", failed ? "ring-rose-500/30" : "ring-line")}>
-      <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
-        <ChevronRight className={cx("size-3.5 shrink-0 text-faint transition-transform", open && "rotate-90")} />
-        <Icon className="size-3.5 shrink-0 text-muted" />
-        <span className="shrink-0 text-[12.5px] font-medium">{row.name.replace(/^mcp__/, "").replace(/__/g, " · ")}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-faint">{summary}</span>
-        {!row.result && live && <span className="size-1.5 shrink-0 animate-soft-pulse rounded-full bg-sky-400" title="Running" />}
+    <Activity icon={<Icon className="size-3" />} tone={failed ? "error" : undefined}>
+      <button onClick={() => setOpen(!open)} aria-expanded={open} className="group flex w-full min-w-0 items-center gap-2 text-left">
+        <span className="shrink-0 font-medium text-fg">{row.name.replace(/^mcp__/, "").replace(/__/g, " · ")}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint group-hover:text-muted">{summary}</span>
+        {!row.result && live && <span className="size-1.5 shrink-0 animate-soft-pulse rounded-full bg-s-working" title="Running" />}
         {!row.result && !live && <span className="shrink-0 text-[11px] text-faint">no result</span>}
-        {failed && <X className="size-3.5 shrink-0 text-rose-400" />}
+        {failed && <X className="size-3.5 shrink-0 text-s-error" />}
+        <ChevronRight className={cx("size-3 shrink-0 text-faint transition-transform", open && "rotate-90")} />
       </button>
       {open && (
-        <div className="space-y-2 border-t border-line px-3 py-2.5">
-          <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-2.5 font-mono text-[11.5px] text-muted">{JSON.stringify(row.input, null, 2)}</pre>
+        <div className="mt-2 space-y-2">
+          <pre className="max-h-72 overflow-auto rounded-md bg-code p-2.5 font-mono text-[11.5px] whitespace-pre-wrap text-muted ring-1 ring-inset ring-line">
+            {JSON.stringify(row.input, null, 2)}
+          </pre>
           {row.result && (
-            <pre className={cx("max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-code p-2.5 font-mono text-[11.5px]", failed ? "text-rose-300" : "text-muted")}>
+            <pre
+              className={cx(
+                "max-h-96 overflow-auto rounded-md bg-code p-2.5 font-mono text-[11.5px] whitespace-pre-wrap ring-1 ring-inset ring-line",
+                failed ? "text-s-error" : "text-muted",
+              )}
+            >
               {row.result.text || "(no output)"}
             </pre>
           )}
         </div>
       )}
-    </div>
+    </Activity>
   );
 }
 
@@ -257,33 +330,32 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
   if (!pending) {
     const label = DECISIONS[row.decision ?? ""] ?? "Expired";
     return (
-      <div className="flex items-center gap-2 text-[12px] text-faint">
-        <ShieldQuestion className="size-3.5" />
-        <span>
+      <Activity icon={<Shield className="size-3" />}>
+        <span className="text-faint">
           {label} <span className="font-medium text-muted">{row.tool}</span>
-          {summary && <span className="font-mono"> {summary.slice(0, 90)}</span>}
+          {summary && <span className="font-mono text-[11.5px]"> {summary.slice(0, 90)}</span>}
         </span>
-      </div>
+      </Activity>
     );
   }
   return (
-    <div className="rounded-xl bg-amber-400/[0.07] p-4 ring-1 ring-inset ring-amber-400/30">
-      <div className="flex items-center gap-2 text-[13px] font-medium text-amber-300 [@media(prefers-color-scheme:light)]:text-amber-700">
-        <ShieldQuestion className="size-4" />
+    <div className="rounded-lg bg-s-needs/[0.06] p-4 ring-1 ring-inset ring-s-needs/35">
+      <div className="flex items-center gap-2 text-[13px] font-medium">
+        <ShieldAlert className="size-4 text-s-needs" />
         Claude wants to use {row.tool}
       </div>
       <PermissionPreview tool={row.tool} input={row.input} cwd={session.cwd} description={row.description} />
       <div className="mt-3 flex flex-wrap gap-2">
-        <Button variant="primary" disabled={busy} onClick={() => decide("allow")}>
-          <Check className="size-4" /> Allow
+        <Button variant="primary" size="sm" disabled={busy} onClick={() => decide("allow")}>
+          <Check className="size-3.5" /> Allow
         </Button>
         {pending.can_remember && (
-          <Button disabled={busy} onClick={() => decide("allow_always")} title="Allow calls like this for the rest of this session">
+          <Button size="sm" disabled={busy} onClick={() => decide("allow_always")} title="Allow calls like this for the rest of this session">
             Allow for session
           </Button>
         )}
-        <Button variant="ghost" disabled={busy} onClick={() => decide("deny")}>
-          <X className="size-4" /> Deny
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => decide("deny")}>
+          <X className="size-3.5" /> Deny
         </Button>
       </div>
     </div>
