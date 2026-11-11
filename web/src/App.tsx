@@ -1,5 +1,5 @@
 import { Gauge, Layers, ShieldCheck } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { api } from "./api";
 import { CommandPalette } from "./components/CommandPalette";
 import { NewSession } from "./components/NewSession";
@@ -7,7 +7,7 @@ import { PoolView } from "./components/PoolView";
 import { SessionList } from "./components/SessionList";
 import { SessionPane } from "./components/SessionPane";
 import { Sidebar } from "./components/Sidebar";
-import { Button, cx, Kbd, Logo } from "./components/ui";
+import { Button, cx, Kbd, Logo, useDialog } from "./components/ui";
 import { report, useStore } from "./store";
 import { attentionCount, ignoreShortcut } from "./sync";
 import { focusComposer, useUI, useVisible } from "./ui";
@@ -49,7 +49,7 @@ export function App() {
         if (overlay !== "new") open(overlay === "palette" ? null : "palette");
         return;
       }
-      if (overlay || ignoreShortcut(e)) return;
+      if (overlay || navDrawer || ignoreShortcut(e)) return;
       if (mod && e.key === "\\") {
         e.preventDefault();
         toggleNav();
@@ -74,7 +74,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [overlay, open, toggleNav, list, selected, select, session, view]);
+  }, [overlay, navDrawer, open, toggleNav, list, selected, select, session, view]);
 
   if (conn === "unauthorized") {
     return (
@@ -104,13 +104,7 @@ export function App() {
           <Sidebar />
         </div>
       )}
-      {navDrawer && (
-        <div className="animate-fade fixed inset-0 z-40 bg-black/40 lg:hidden" onMouseDown={(e) => e.target === e.currentTarget && closeDrawer()}>
-          <div className="animate-slide-left h-full w-[260px] border-r border-line shadow-pop">
-            <Sidebar />
-          </div>
-        </div>
-      )}
+      {navDrawer && <Drawer onClose={closeDrawer} />}
 
       <div className={cx("flex min-w-0 flex-1 lg:py-2 lg:pr-2", navHidden && "lg:pl-2")}>
         <div className="flex min-w-0 flex-1 overflow-hidden bg-panel lg:rounded-lg lg:ring-1 lg:ring-line">
@@ -137,6 +131,22 @@ export function App() {
         </div>
       )}
       <Toasts />
+    </div>
+  );
+}
+
+/** The sidebar as a drawer on narrow windows. */
+function Drawer({ onClose }: { onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useDialog(onClose);
+  useEffect(() => {
+    ref.current?.querySelector<HTMLElement>('nav[aria-label="Main"] button')?.focus();
+  }, []);
+  return (
+    <div className="animate-fade fixed inset-0 z-40 bg-black/40 lg:hidden" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div ref={ref} role="dialog" aria-modal="true" aria-label="Navigation" className="animate-slide-left h-full w-[260px] border-r border-line shadow-pop">
+        <Sidebar />
+      </div>
     </div>
   );
 }

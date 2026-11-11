@@ -1,7 +1,7 @@
 // Where the user is in the app and which panels are open. Kept apart from
 // the data store, which mirrors the daemon.
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 import { saved, useStore } from "./store";
 import { type View, visible } from "./views";
@@ -66,6 +66,16 @@ export function openSession(id: string) {
   if (useStore.getState().selected === id) return focusComposer();
   intent.focusComposer = true;
   useStore.getState().select(id);
+}
+
+/** The current time, refreshed every `every` ms, so relative times stay true. */
+export function useNow(every = 30_000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), every);
+    return () => clearInterval(t);
+  }, [every]);
+  return now;
 }
 
 /** The sessions the current view lists, in display order. */

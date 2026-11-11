@@ -222,6 +222,11 @@ try {
   await mp.click('button[aria-label="Back to the list"]');
   await mp.waitForSelector('nav[aria-label="Sessions"]');
   check("…and Back returns to the list", true);
+  await mp.click('button[aria-label="Toggle sidebar"]');
+  await mp.waitForSelector('[aria-label="Navigation"]');
+  await mp.keyboard.press("Escape");
+  await sleep(250);
+  check("the sidebar drawer opens and Escape closes it", (await mp.locator('[aria-label="Navigation"]').count()) === 0);
   await shot(mp, "6-phone");
   await phone.close();
 

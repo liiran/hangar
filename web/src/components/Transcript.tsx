@@ -19,6 +19,7 @@ import type { Session, SessionEvent } from "../api";
 import { api } from "../api";
 import { ago, duration, usd } from "../format";
 import { report } from "../store";
+import { useNow } from "../ui";
 import { relative, toRows, toolSummary, type Row } from "../transcript";
 import { Markdown } from "./Markdown";
 import { Button, cx } from "./ui";
@@ -151,16 +152,7 @@ function Dots() {
 function RowView({ row, session }: { row: Row; session: Session }) {
   switch (row.kind) {
     case "user":
-      return (
-        <div className="rounded-lg bg-panel-2/70 px-4 py-3 ring-1 ring-inset ring-line">
-          <div className="mb-1.5 flex items-center gap-2 text-[12px]">
-            <Avatar />
-            <span className="font-medium">You</span>
-            <span className="text-faint">{ago(row.ts)}</span>
-          </div>
-          <div className="text-[13.5px] leading-relaxed whitespace-pre-wrap">{row.text}</div>
-        </div>
-      );
+      return <UserMessage text={row.text} ts={row.ts} />;
     case "text":
       return (
         <div className="flex gap-3 py-1">
@@ -193,6 +185,22 @@ function RowView({ row, session }: { row: Row; session: Session }) {
         </Activity>
       );
   }
+}
+
+function UserMessage({ text, ts }: { text: string; ts: number }) {
+  const now = useNow();
+  return (
+    <div className="rounded-lg bg-panel-2/70 px-4 py-3 ring-1 ring-inset ring-line">
+      <div className="mb-1.5 flex items-center gap-2 text-[12px]">
+        <Avatar />
+        <span className="font-medium">You</span>
+        <span className="text-faint" title={new Date(ts).toLocaleString()}>
+          {ago(ts, now)}
+        </span>
+      </div>
+      <div className="text-[13.5px] leading-relaxed whitespace-pre-wrap">{text}</div>
+    </div>
+  );
 }
 
 /** Shows what the user is approving in the most readable form for the tool. */

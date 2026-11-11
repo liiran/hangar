@@ -3,11 +3,13 @@ import { useState, type ReactNode } from "react";
 import { api, type Session } from "../api";
 import { ago, basename, bytes, PERMISSION_MODES, STATUS, usd } from "../format";
 import { report } from "../store";
+import { useNow } from "../ui";
 import { cx, StatusIcon } from "./ui";
 
 const MCP_DOT: Record<string, string> = { connected: "bg-emerald-500", pending: "bg-s-working", failed: "bg-s-error" };
 
 export function Properties({ session: s }: { session: Session }) {
+  const now = useNow();
   const setMode = (mode: string) => {
     if (mode === "bypassPermissions" && !confirm("Full access lets Claude run any command and edit any file without asking. Only use it in a sandbox you trust. Continue?")) return;
     api.update(s.id, { permission_mode: mode }).catch(report);
@@ -68,7 +70,7 @@ export function Properties({ session: s }: { session: Session }) {
 
       <Section title="Session">
         <Row icon={<Clock className="size-3.5" />}>
-          Started {ago(s.created_ms)} <span className="text-faint">· active {ago(s.updated_ms)}</span>
+          Started {ago(s.created_ms, now)} <span className="text-faint">· active {ago(s.updated_ms, now)}</span>
         </Row>
         {s.claude_session_id && <CopyRow label="Claude session" value={s.claude_session_id} />}
       </Section>

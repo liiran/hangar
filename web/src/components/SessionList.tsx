@@ -2,7 +2,8 @@ import { Folder, Inbox, Layers, PanelLeft, Plus } from "lucide-react";
 import type { Session, Status } from "../api";
 import { ago, basename, bytes } from "../format";
 import { useStore } from "../store";
-import { openSession, useUI, useVisible } from "../ui";
+import { useEffect, useRef } from "react";
+import { openSession, useNow, useUI, useVisible } from "../ui";
 import { groups } from "../views";
 import { cx, IconButton, Kbd, StatusIcon } from "./ui";
 
@@ -15,6 +16,7 @@ export function SessionList() {
   const toggleNav = useUI((s) => s.toggleNav);
   const open = useUI((s) => s.open);
   const list = useVisible();
+  const now = useNow();
   const project = view.kind === "all" ? view.project : null;
   const title = view.kind === "inbox" ? "Needs you" : project ? basename(project) : "Sessions";
   const icon = view.kind === "inbox" ? <Inbox className="size-4" /> : project ? <Folder className="size-4" /> : <Layers className="size-4" />;
@@ -47,7 +49,7 @@ export function SessionList() {
             <ul>
               {items.map((s) => (
                 <li key={s.id}>
-                  <Row session={s} showProject={!project} />
+                  <Row session={s} showProject={!project} now={now} />
                 </li>
               ))}
             </ul>
@@ -58,8 +60,13 @@ export function SessionList() {
   );
 }
 
-function Row({ session: s, showProject }: { session: Session; showProject: boolean }) {
+function Row({ session: s, showProject, now }: { session: Session; showProject: boolean; now: number }) {
   const selected = useStore((st) => st.selected === s.id);
+  const ref = useRef<HTMLButtonElement>(null);
+  // Keep the selection in view as J/K move it.
+  useEffect(() => {
+    if (selected) ref.current?.scrollIntoView({ block: "nearest" });
+  }, [selected]);
   const sub =
     s.status === "needs_you" && s.pending[0] ? (
       <span className="text-s-needs">Wants to use {s.pending[0].tool_name}</span>
@@ -72,6 +79,7 @@ function Row({ session: s, showProject }: { session: Session; showProject: boole
     );
   return (
     <button
+      ref={ref}
       onClick={() => openSession(s.id)}
       aria-current={selected ? "true" : undefined}
       className={cx("group block w-full border-b border-line px-4 py-2.5 text-left transition-colors", selected ? "bg-raised" : "hover:bg-panel-2/70")}
@@ -79,7 +87,7 @@ function Row({ session: s, showProject }: { session: Session; showProject: boole
       <div className="flex items-center gap-2.5">
         <StatusIcon status={s.status} />
         <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{s.title}</span>
-        <span className="shrink-0 text-[11.5px] tabular-nums text-faint">{ago(s.updated_ms)}</span>
+        <span className="shrink-0 text-[11.5px] tabular-nums text-faint">{ago(s.updated_ms, now)}</span>
       </div>
       <div className="mt-0.5 flex items-center gap-2 pl-[24px] text-[12px] text-muted">
         <span className="min-w-0 flex-1 truncate">
