@@ -156,12 +156,27 @@ export function Meter({ used, total, reserve }: { used: number; total: number; r
 }
 
 /** The mark: a hangar roof, in the accent color. */
-export function Logo({ className }: { className?: string }) {
+/**
+ * The hangar mark. At 16 px it uses the drawing made for that pixel grid
+ * (web/icons/logo-16.svg, also the favicon), so it stays sharp.
+ */
+export function Logo({ size = 32, className }: { size?: number; className?: string }) {
+  const small = size <= 16;
   return (
-    <svg viewBox="0 0 32 32" className={cx("shrink-0", className)} aria-hidden>
-      <rect width="32" height="32" rx="8" fill="var(--accent)" />
-      <path d="M6 22 L16 9 L26 22" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinejoin="round" strokeLinecap="round" />
-      <path d="M11.5 22v-4.5h9V22" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinejoin="round" />
+    <svg width={size} height={size} viewBox={small ? "0 0 16 16" : "0 0 32 32"} className={cx("shrink-0", className)} aria-hidden>
+      {small ? (
+        <>
+          <rect width="16" height="16" rx="4" fill="var(--accent)" />
+          <path d="M3 11 L8 4.5 L13 11" fill="none" stroke="#fff" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+          <path d="M5.5 12V8.5h5V12" fill="none" stroke="#fff" strokeWidth="1" />
+        </>
+      ) : (
+        <>
+          <rect width="32" height="32" rx="8" fill="var(--accent)" />
+          <path d="M6 22 L16 9 L26 22" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinejoin="round" strokeLinecap="round" />
+          <path d="M11.5 22v-4.5h9V22" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinejoin="round" />
+        </>
+      )}
     </svg>
   );
 }

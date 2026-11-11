@@ -79,7 +79,7 @@ export function App() {
   if (conn === "unauthorized") {
     return (
       <Centered>
-        <Logo className="mx-auto mb-5 size-9" />
+        <Logo size={36} className="mx-auto mb-5" />
         <h1 className="text-[15px] font-semibold">Open hangar from your terminal</h1>
         <p className="mt-1.5 text-[13px] text-muted">
           Run <code className="rounded bg-panel-2 px-1.5 py-0.5 font-mono text-[12px] text-fg">hangar up</code> to sign this window in.
@@ -91,7 +91,7 @@ export function App() {
   if (conn === "connecting") {
     return (
       <Centered>
-        <Logo className="mx-auto mb-4 size-8 animate-soft-pulse" />
+        <Logo size={32} className="mx-auto mb-4 animate-soft-pulse" />
         <p className="text-[12.5px] text-muted">Connecting to hangar…</p>
       </Centered>
     );
@@ -202,7 +202,7 @@ function Placeholder({ empty }: { empty: boolean }) {
   return (
     <div className="grid flex-1 place-items-center overflow-y-auto p-10">
       <div className="max-w-md">
-        <Logo className="mb-5 size-8" />
+        <Logo size={32} className="mb-5" />
         <h1 className="text-[20px] font-semibold tracking-tight">Run all your agents from one place</h1>
         <p className="mt-1.5 text-[13px] text-muted">Start a Claude Code session in any folder. Start as many as you like; hangar keeps your machine responsive.</p>
         <ul className="mt-6 space-y-4">

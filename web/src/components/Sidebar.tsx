@@ -23,7 +23,7 @@ export function Sidebar() {
     <aside className="flex h-full w-full flex-col bg-bg" aria-label="Sidebar">
       <div className="flex h-12 items-center gap-1 px-3">
         <div className="flex min-w-0 flex-1 items-center gap-2 px-1">
-          <Logo className="size-[18px]" />
+          <Logo size={16} />
           <span className="truncate text-[13.5px] font-semibold tracking-tight">hangar</span>
         </div>
         <IconButton label="Search and commands" shortcut="Ctrl K" onClick={() => open("palette")}>
