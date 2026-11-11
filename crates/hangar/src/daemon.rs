@@ -117,10 +117,7 @@ impl Daemon {
         let port = listener.local_addr()?.port();
         let ui_listener = match opts.ui_port {
             None => None,
-            Some(p) => Some(match TcpListener::bind(("127.0.0.1", p)).await {
-                Ok(l) => l,
-                Err(_) => TcpListener::bind(("127.0.0.1", 0)).await.context("binding the UI port")?,
-            }),
+            Some(p) => Some(bind_ui(&opts.home, p).await?),
         };
         let ui_port = match &ui_listener {
             Some(l) => Some(l.local_addr()?.port()),
@@ -399,6 +396,28 @@ async fn control(cmd: &str, req: &Value, shared: &Shared) -> Value {
     }
 }
 
+/// Binds the app's port: the preferred one, else the one this home used last,
+/// else any free one. Reusing the last port lets windows that are already
+/// open find a restarted daemon when the preferred port is taken (say, by
+/// another hangar).
+async fn bind_ui(home: &Path, preferred: u16) -> Result<TcpListener> {
+    let file = home.join("ui-port");
+    let last = std::fs::read_to_string(&file).ok().and_then(|s| s.trim().parse::<u16>().ok());
+    let mut listener = None;
+    for p in [preferred, last.unwrap_or(0)].into_iter().filter(|p| *p != 0) {
+        if let Ok(l) = TcpListener::bind(("127.0.0.1", p)).await {
+            listener = Some(l);
+            break;
+        }
+    }
+    let listener = match listener {
+        Some(l) => l,
+        None => TcpListener::bind(("127.0.0.1", 0)).await.context("binding the UI port")?,
+    };
+    let _ = crate::util::write_private(&file, listener.local_addr()?.port().to_string().as_bytes());
+    Ok(listener)
+}
+
 /// Sends a control request to the running daemon, after checking that it
 /// really is the daemon.
 pub async fn send_control(home: &Path, cmd: &str, extra: Value) -> Result<Value> {
@@ -434,6 +453,21 @@ pub async fn send_control(home: &Path, cmd: &str, extra: Value) -> Result<Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_app_keeps_its_port_across_restarts_when_the_default_is_taken() {
+        let home = std::env::temp_dir().join(format!("hangar-uiport-{}-{}", std::process::id(), random_hex(3)));
+        std::fs::create_dir_all(&home).unwrap();
+        let taken = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let preferred = taken.local_addr().unwrap().port();
+        let first = bind_ui(&home, preferred).await.unwrap().local_addr().unwrap().port();
+        assert_ne!(first, preferred);
+        let again = bind_ui(&home, preferred).await.unwrap().local_addr().unwrap().port();
+        assert_eq!(again, first, "a restart comes back on the same port");
+        drop(taken);
+        assert_eq!(bind_ui(&home, preferred).await.unwrap().local_addr().unwrap().port(), preferred, "the preferred port wins once free");
+        let _ = std::fs::remove_dir_all(home);
+    }
 
     #[test]
     fn pairing_codes_work_once() {
