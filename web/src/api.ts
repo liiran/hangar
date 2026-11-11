@@ -103,6 +103,15 @@ export interface Trust {
   mcp_servers: string[];
 }
 
+/** What the folder picker shows for a typed path (see crates/hangar/src/folders.rs). */
+export interface Folders {
+  dir: string | null;
+  exists: boolean;
+  parent: string | null;
+  entries: { name: string; path: string }[];
+  truncated: boolean;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -138,6 +147,8 @@ export const api = {
   state: () => call<AppState>("GET", "/state"),
   events: (id: string, after = 0) => call<SessionEvent[]>("GET", `/sessions/${id}/events?after=${after}`),
   trust: (cwd: string) => call<Trust>("GET", `/trust?cwd=${q(cwd)}`),
+  folders: (path: string) => call<Folders>("GET", `/folders?path=${q(path)}`),
+  createFolder: (path: string) => call<{ path: string }>("POST", "/folders", { path }),
   create: (b: { cwd: string; prompt: string; model?: string; permission_mode?: string; trust?: boolean }) => call<Session>("POST", "/sessions", b),
   send: (id: string, text: string) => call("POST", `/sessions/${id}/messages`, { text }),
   decide: (id: string, requestId: string, behavior: "allow" | "allow_always" | "deny") => call("POST", `/sessions/${id}/permissions/${q(requestId)}`, { behavior }),

@@ -79,11 +79,44 @@ try {
   check("the code is removed from the address bar", !page.url().includes("pair="), page.url());
   await shot(page, "1-welcome");
 
-  // ---- a new session in an untrusted folder
+  // ---- the folder picker: browse, create, choose
   const dialog = page.locator('[role="dialog"]');
+  const folderButton = 'button[aria-label="Choose project folder"]';
+  const folderPath = 'input[aria-label="Folder path"]';
+  const option = (text) => page.locator('[role="listbox"][aria-label="Folders"] [role="option"]', { hasText: text });
+  async function pickFolder(path) {
+    await page.click(folderButton);
+    await page.fill(folderPath, path);
+    await option("Use this folder").waitFor();
+    await page.keyboard.press("Enter");
+    await page.locator(folderPath).waitFor({ state: "detached" });
+  }
   await page.keyboard.press("Control+n");
   await dialog.waitFor();
-  await page.fill('input[list="hangar-projects"]', proj);
+  await page.click(folderButton);
+  await page.fill(folderPath, tmp + path.sep);
+  await option("proj").waitFor();
+  check("typing a path lists its folders", (await option("home").count()) === 1 && (await option("proj").count()) === 1);
+  await page.locator(folderPath).press("ArrowDown"); // past "Use this folder" and "Parent folder", onto "home"
+  await page.locator(folderPath).press("ArrowDown");
+  await page.locator(folderPath).press("Tab");
+  await option("Use this folder").waitFor();
+  check("Tab goes into a folder", (await page.inputValue(folderPath)).endsWith(path.sep) && (await page.inputValue(folderPath)).includes(path.sep + "home"), await page.inputValue(folderPath));
+  await page.fill(folderPath, path.join(tmp, "made-by-picker"));
+  await option("Create folder").waitFor();
+  await page.keyboard.press("Enter");
+  await page.locator(folderPath).waitFor({ state: "detached" });
+  check("the picker creates a new folder and selects it", fs.existsSync(path.join(tmp, "made-by-picker")) && (await page.locator(folderButton).innerText()).includes("made-by-picker"));
+  await shot(page, "0-picker");
+  await pickFolder(proj);
+  check("choosing a folder shows it", (await page.locator(folderButton).innerText()).includes("proj"));
+
+  // ---- custom dropdowns
+  await page.click('button[aria-label="Model: Default model"]');
+  await page.locator('[role="listbox"][aria-label="Model"] [role="option"]', { hasText: "Haiku" }).click();
+  check("the model dropdown is the app's own and picks Haiku", (await page.locator('button[aria-label="Model: Haiku"]').count()) === 1);
+
+  // ---- a new session in an untrusted folder
   await page.fill('[role="dialog"] textarea', "Refactor the auth module into smaller functions and add tests");
   await page.waitForSelector("text=New folder");
   const startBtn = dialog.locator('button:has-text("Start session"), button:has-text("Queue session")');
@@ -100,7 +133,7 @@ try {
   async function newSession(prompt) {
     await page.keyboard.press("Control+n");
     await dialog.waitFor();
-    await page.fill('input[list="hangar-projects"]', proj);
+    if (!(await page.locator(folderButton).innerText()).includes("proj")) await pickFolder(proj);
     await page.fill('[role="dialog"] textarea', prompt);
     await sleep(500); // the trust lookup
     check(`a trusted folder asks nothing again (${prompt.slice(0, 16)}…)`, (await page.locator("text=New folder").count()) === 0);
@@ -112,6 +145,17 @@ try {
   check("the session-scoped approval is offered", (await page.locator("button:has-text('Allow for session')").count()) === 1);
   await newSession("Write release notes for v0.4 from the changelog");
   await sleep(800);
+
+  // ---- permissions from the properties panel, with the app's dropdown
+  await page.click('button[aria-label="Permissions: Ask first"]');
+  await page.locator('[role="listbox"][aria-label="Permissions"] [role="option"]', { hasText: "Plan only" }).click();
+  await page.locator('button[aria-label="Permissions: Plan only"]').waitFor();
+  check("permissions change from the properties panel", true);
+  await page.click('nav[aria-label="Sessions"] >> text=Refactor the auth');
+  await sleep(200);
+  check("the model chosen in the dialog is the session's", (await page.locator('aside[aria-label="Properties"]').innerText()).includes("haiku"));
+  await page.click('nav[aria-label="Sessions"] >> text=Write release notes');
+  await sleep(200);
 
   // ---- drafts survive switching sessions
   const composer = "main textarea[data-composer]";

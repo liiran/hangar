@@ -325,13 +325,24 @@ impl Manager {
         Ok(self.store.events(id, after))
     }
 
+    /// Folders to offer for a new session: hangar's most recent first, then
+    /// the folders Claude Code has been used in that still exist.
     pub fn recent_projects(&self) -> Vec<String> {
-        let inner = self.inner.lock().unwrap();
-        let mut seen: Vec<(u64, String)> = inner.sessions.values().map(|s| (s.meta.updated_ms, s.meta.cwd.clone())).collect();
+        const MAX: usize = 20;
+        let key = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+        let mut seen: Vec<(u64, String)> = {
+            let inner = self.inner.lock().unwrap();
+            inner.sessions.values().map(|s| (s.meta.updated_ms, s.meta.cwd.clone())).collect()
+        };
         seen.sort_by_key(|s| std::cmp::Reverse(s.0));
         let mut out: Vec<String> = Vec::new();
-        for (_, cwd) in seen {
-            if !out.iter().any(|c| c.eq_ignore_ascii_case(&cwd)) {
+        let claude = trust::claude_projects(&self.claude_json.lock().unwrap().clone());
+        let from_claude = claude.into_iter().rev().filter(|p| Path::new(p).is_dir());
+        for cwd in seen.into_iter().map(|(_, c)| c).chain(from_claude) {
+            if out.len() >= MAX {
+                break;
+            }
+            if !out.iter().any(|c| key(c) == key(&cwd)) {
                 out.push(cwd);
             }
         }

@@ -46,6 +46,14 @@ fn claude_trusts(claude_json: &Path, cwd: &Path) -> bool {
         .is_some_and(|p| p.iter().any(|(k, v)| normalize(Path::new(k)) == want && v.get("hasTrustDialogAccepted") == Some(&Value::Bool(true))))
 }
 
+/// Folders Claude Code has been used in, in the order its config lists them
+/// (oldest first), with this platform's separators.
+pub fn claude_projects(claude_json: &Path) -> Vec<String> {
+    let Some(doc) = read_json(claude_json) else { return Vec::new() };
+    let Some(projects) = doc.get("projects").and_then(Value::as_object) else { return Vec::new() };
+    projects.keys().map(|k| if cfg!(windows) { k.replace('/', "\\") } else { k.clone() }).collect()
+}
+
 fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }

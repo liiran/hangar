@@ -14,6 +14,7 @@ pub mod claude_config;
 pub mod client;
 pub mod config;
 pub mod daemon;
+pub mod folders;
 pub mod jsonrpc;
 pub mod launch;
 pub mod policy;

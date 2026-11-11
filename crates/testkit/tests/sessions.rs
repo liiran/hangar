@@ -371,6 +371,36 @@ async fn pairing_codes_unlock_the_api_once() {
 }
 
 #[tokio::test]
+async fn the_folder_picker_lists_and_creates_folders_for_the_signed_in_app() {
+    let ui = ui_daemon("api-folders").await;
+    let root = temp_home("api-folders-tree");
+    std::fs::create_dir_all(root.join("web-app")).unwrap();
+    std::fs::write(root.join("notes.txt"), "files are never listed").unwrap();
+    let url = format!("{}/api/folders", ui.base);
+    let list = |token: Option<String>, path: String| {
+        let mut r = ui.http.get(&url).query(&[("path", path)]);
+        if let Some(t) = token {
+            r = r.header("x-hangar-token", t);
+        }
+        r.send()
+    };
+    assert_eq!(list(None, root.display().to_string()).await.unwrap().status(), 401, "only for the signed-in app");
+    let token = ui.token().await;
+    let listing: Value = list(Some(token.clone()), root.display().to_string()).await.unwrap().json().await.unwrap();
+    assert_eq!(listing["exists"], true);
+    let names: Vec<&str> = listing["entries"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["web-app"], "folders only, never files");
+
+    let create = |path: String| ui.http.post(&url).header("x-hangar-token", &token).json(&json!({ "path": path })).send();
+    let made = create(root.join("todo-app").display().to_string()).await.unwrap();
+    assert_eq!(made.status(), 200);
+    assert!(root.join("todo-app").is_dir());
+    assert_eq!(create(root.join("todo-app").display().to_string()).await.unwrap().status(), 400, "never over an existing folder");
+    assert_eq!(create(root.join("no").join("such").display().to_string()).await.unwrap().status(), 400, "one level at a time");
+    ui.d.shutdown().await;
+}
+
+#[tokio::test]
 async fn foreign_hosts_origins_and_websockets_are_refused() {
     let ui = ui_daemon("api-origin").await;
     let token = ui.token().await;

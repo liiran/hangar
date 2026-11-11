@@ -1,9 +1,11 @@
-import { ChevronDown, ChevronRight, Cpu, FolderOpen, Shield, ShieldAlert, X } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronRight, Cpu, Shield, ShieldAlert, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type Trust } from "../api";
 import { basename, bytes, MODELS, PERMISSION_MODES } from "../format";
 import { askNotificationPermission, report, saved, upsertSession, useStore } from "../store";
 import { useUI } from "../ui";
+import { FolderPicker } from "./FolderPicker";
+import { Select } from "./Select";
 import { Button, cx, Kbd, Logo, useDialog } from "./ui";
 
 const LAST_CWD = "hangar.lastCwd";
@@ -83,23 +85,16 @@ export function NewSession({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="px-4 pt-3">
-          <label className={cx("flex h-8 items-center gap-2 rounded-md px-2 ring-1 ring-inset focus-within:ring-faint/60", folder.error ? "ring-s-error/50" : "ring-line-strong")}>
-            <FolderOpen className="size-3.5 shrink-0 text-muted" />
-            <span className="sr-only">Project folder</span>
-            <input
-              list="hangar-projects"
-              value={cwd}
-              onChange={(e) => setCwd(e.target.value)}
-              spellCheck={false}
-              className="min-w-0 flex-1 bg-transparent text-[12.5px] text-muted outline-none placeholder:text-faint focus:text-fg"
-              placeholder="C:\code\my-app"
-            />
-            <datalist id="hangar-projects">
-              {projects.map((p) => (
-                <option key={p} value={p} />
-              ))}
-            </datalist>
-          </label>
+          <FolderPicker
+            value={cwd}
+            onChange={(p) => {
+              setCwd(p);
+              promptRef.current?.focus();
+            }}
+            recent={projects}
+            home={home}
+            error={folder.error}
+          />
           {folder.error && <p className="mt-1 px-1 text-[12px] text-s-error">{folder.error}</p>}
           <textarea
             ref={promptRef}
@@ -114,15 +109,8 @@ export function NewSession({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5 px-4 pt-1 pb-3">
-          <PillSelect icon={<Cpu className="size-3.5" />} label="Model" value={model} onChange={setModel} options={MODELS} />
-          <PillSelect
-            icon={<Shield className="size-3.5" />}
-            label="Permissions"
-            value={mode}
-            onChange={setMode}
-            options={PERMISSION_MODES}
-            warn={mode === "bypassPermissions"}
-          />
+          <Select icon={<Cpu className="size-3.5" />} label="Model" value={model} onChange={setModel} options={MODELS} />
+          <Select icon={<Shield className="size-3.5" />} label="Permissions" value={mode} onChange={setMode} options={PERMISSION_MODES} />
           <span className={cx("ml-1 text-[11.5px]", mode === "bypassPermissions" ? "text-s-needs" : "text-faint")}>{PERMISSION_MODES.find((o) => o.value === mode)?.hint}</span>
         </div>
 
@@ -137,38 +125,6 @@ export function NewSession({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </div>
-  );
-}
-
-/** A native select dressed as a property pill. */
-function PillSelect({
-  icon,
-  label,
-  value,
-  onChange,
-  options,
-  warn,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-  warn?: boolean;
-}) {
-  return (
-    <label className={cx("relative inline-flex h-7 items-center gap-1.5 rounded-md pr-2 pl-2 text-[12px] ring-1 ring-inset hover:bg-panel-2", warn ? "text-s-needs ring-s-needs/40" : "text-muted ring-line-strong")}>
-      {icon}
-      <span className="sr-only">{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="cursor-pointer appearance-none bg-transparent pr-4 text-fg outline-none">
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-1.5 size-3 text-faint" />
-    </label>
   );
 }
 

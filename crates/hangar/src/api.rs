@@ -58,6 +58,7 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState, mut shutd
     let api = Router::new()
         .route("/state", get(get_state))
         .route("/trust", get(get_trust))
+        .route("/folders", get(list_folders).post(create_folder))
         .route("/sessions", post(create_session))
         .route("/sessions/{id}", axum::routing::patch(update_session).delete(delete_session))
         .route("/sessions/{id}/events", get(get_events))
@@ -220,8 +221,34 @@ async fn get_state(State(st): State<AppState>) -> Response {
     let mut sys = system_snapshot(&st).await;
     sys["sessions"] = serde_json::to_value(st.manager.list()).unwrap_or(Value::Null);
     sys["projects"] = json!(st.manager.recent_projects());
-    sys["home"] = json!(std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_default());
+    sys["home"] = json!(crate::util::user_home().display().to_string());
     Json(sys).into_response()
+}
+
+#[derive(Deserialize)]
+struct FoldersQuery {
+    #[serde(default)]
+    path: String,
+}
+
+/// Folder names for the app's folder picker (never files or contents).
+async fn list_folders(Query(q): Query<FoldersQuery>) -> Response {
+    match tokio::task::spawn_blocking(move || crate::folders::list(&q.path, &crate::util::user_home())).await {
+        Ok(listing) => Json(listing).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateFolderBody {
+    path: String,
+}
+
+async fn create_folder(Json(b): Json<CreateFolderBody>) -> Response {
+    match crate::folders::create(&b.path, &crate::util::user_home()) {
+        Ok(path) => Json(json!({ "path": path })).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")),
+    }
 }
 
 #[derive(Deserialize)]

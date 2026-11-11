@@ -47,16 +47,16 @@ export const STATUS: Record<Status, { label: string; group: string; hint: string
 
 export const GROUP_ORDER = ["Needs you", "Working", "Queued", "Ready", "Paused"];
 
-export const PERMISSION_MODES: { value: string; label: string; hint: string }[] = [
+export const PERMISSION_MODES: { value: string; label: string; hint: string; warn?: boolean }[] = [
   { value: "default", label: "Ask first", hint: "Asks before editing files or running commands" },
   { value: "acceptEdits", label: "Auto-accept edits", hint: "Edits files freely; asks before commands" },
   { value: "plan", label: "Plan only", hint: "Reads and plans; changes nothing" },
-  { value: "bypassPermissions", label: "Full access", hint: "Never asks. Only for sandboxes you trust" },
+  { value: "bypassPermissions", label: "Full access", hint: "Never asks. Only for sandboxes you trust", warn: true },
 ];
 
-export const MODELS: { value: string; label: string }[] = [
-  { value: "", label: "Default model" },
-  { value: "opus", label: "Opus" },
-  { value: "sonnet", label: "Sonnet" },
-  { value: "haiku", label: "Haiku" },
+export const MODELS: { value: string; label: string; hint: string }[] = [
+  { value: "", label: "Default model", hint: "Whatever Claude Code uses on your plan" },
+  { value: "opus", label: "Opus", hint: "Most capable; slowest and uses the most" },
+  { value: "sonnet", label: "Sonnet", hint: "Fast and strong; a good default for code" },
+  { value: "haiku", label: "Haiku", hint: "Fastest and cheapest; fine for small tasks" },
 ];

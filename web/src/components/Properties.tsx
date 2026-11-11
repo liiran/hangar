@@ -1,9 +1,10 @@
-import { Check, ChevronDown, CircleDollarSign, Clock, Copy, Cpu, Folder, MemoryStick, Shield } from "lucide-react";
+import { Check, CircleDollarSign, Clock, Copy, Cpu, Folder, MemoryStick, Shield } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api, type Session } from "../api";
 import { ago, basename, bytes, PERMISSION_MODES, STATUS, usd } from "../format";
 import { report } from "../store";
 import { useNow } from "../ui";
+import { Select } from "./Select";
 import { cx, StatusIcon } from "./ui";
 
 const MCP_DOT: Record<string, string> = { connected: "bg-emerald-500", pending: "bg-s-working", failed: "bg-s-error" };
@@ -21,22 +22,7 @@ export function Properties({ session: s }: { session: Session }) {
         <Row icon={<StatusIcon status={s.status} />} title={STATUS[s.status].hint}>
           {STATUS[s.status].label}
         </Row>
-        <label className="group relative flex h-8 cursor-pointer items-center gap-2.5 rounded-md px-2 text-[13px] hover:bg-panel-2">
-          <Shield className="size-3.5 shrink-0 text-muted" />
-          <select
-            aria-label="Permissions"
-            value={s.permission_mode}
-            onChange={(e) => setMode(e.target.value)}
-            className={cx("min-w-0 flex-1 cursor-pointer appearance-none bg-transparent outline-none", s.permission_mode === "bypassPermissions" && "text-s-needs")}
-          >
-            {PERMISSION_MODES.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="size-3.5 text-faint opacity-0 group-hover:opacity-100" />
-        </label>
+        <Select variant="row" icon={<Shield className="size-3.5" />} label="Permissions" value={s.permission_mode} onChange={setMode} options={PERMISSION_MODES} />
         <Row icon={<Cpu className="size-3.5" />}>{s.model ?? "Default model"}</Row>
         <Row icon={<Folder className="size-3.5" />} title={s.cwd}>
           {basename(s.cwd)}
