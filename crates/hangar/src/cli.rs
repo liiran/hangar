@@ -67,7 +67,7 @@ pub async fn status(home: &Path, as_json: bool) -> Result<()> {
         }
     };
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&v)?);
+        println!("{}", hangar::util::json_printable(&serde_json::to_string_pretty(&v)?));
         return Ok(());
     }
     let d = &v["daemon"];
@@ -333,7 +333,8 @@ pub fn wrap(home: &Path, dry_run: bool, wrap: bool) -> Result<()> {
         return Ok(());
     }
     for c in &changes {
-        println!("{} {} ({})\n  {}\n  -> {}", if dry_run { "would change" } else { "changed" }, c.name, c.scope, c.before, c.after);
+        let p = hangar::util::printable;
+        println!("{} {} ({})\n  {}\n  -> {}", if dry_run { "would change" } else { "changed" }, p(&c.name), p(&c.scope), p(&c.before), p(&c.after));
     }
     if !dry_run {
         println!("\n{} server(s) updated in {}. Restart Claude Code sessions to pick it up.", changes.len(), path.display());

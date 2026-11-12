@@ -12,6 +12,8 @@ use tokio::process::{Child, ChildStdout, Command};
 use tokio::sync::mpsc;
 
 /// Last lines a server wrote to stderr, for `hangar status` and errors.
+/// Lines are cleaned as they are stored (see [`crate::util::printable`]), so that
+/// nothing a server prints can act on a terminal or a log viewer later.
 pub type Ring = Arc<Mutex<VecDeque<String>>>;
 
 const RING_LINES: usize = 200;
@@ -21,7 +23,7 @@ pub fn push(ring: &Ring, line: String) {
     if r.len() >= RING_LINES {
         r.pop_front();
     }
-    r.push_back(line);
+    r.push_back(crate::util::printable(&line));
 }
 
 pub fn tail(ring: &Ring, n: usize) -> Vec<String> {

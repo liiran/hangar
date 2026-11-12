@@ -133,6 +133,8 @@ fn main() {
                     let junk = vec![0xffu8; 256 * 1024];
                     let _ = std::io::stderr().write_all(&junk);
                     let _ = std::io::stderr().write_all(b"\n");
+                    // And a line that would clear the screen of a terminal it was printed on.
+                    let _ = std::io::stderr().write_all(b"\x1b[2Jcleared\x07\n");
                 }
                 call_tool(&server, id, &msg)
             }

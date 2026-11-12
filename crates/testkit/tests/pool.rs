@@ -537,12 +537,28 @@ async fn sessions_with_different_credentials_never_share() {
 }
 
 #[tokio::test]
-async fn invalid_utf8_on_stderr_does_not_stall_the_server() {
+async fn junk_from_a_server_neither_stalls_it_nor_reaches_a_terminal() {
     let home = temp_home("stderr-junk");
     let d = start_daemon(&home, config(&[("fake", Share::Global)])).await;
+    // 256 KB of invalid UTF-8 on stderr per call: the server must keep answering.
     let a = client(&home, "fake", &["--stderr-garbage"]).await;
     for i in 0..4 {
         assert_eq!(tool(&a, "echo", json!({"text": format!("call {i}")})).await.unwrap(), format!("call {i}"));
     }
+    // A name and stderr lines that carry terminal escape codes are cleaned as they
+    // arrive, so `hangar status`, the app and the log file never hold them.
+    let _b = client(&home, &format!("ev{}[2Jil{}", '\u{1b}', '\u{202e}'), &[]).await;
+    let mut lines: Vec<String> = Vec::new();
+    for _ in 0..60 {
+        lines = d.pool.stats().await.iter().flat_map(|s| s.stderr_tail.clone()).collect();
+        if lines.iter().any(|l| l.contains("[2Jcleared")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(lines.iter().any(|l| l.contains("[2Jcleared")), "the text of the line is kept");
+    assert!(lines.iter().all(|l| !l.chars().any(char::is_control)), "and no control character is");
+    let names: Vec<String> = d.pool.stats().await.into_iter().map(|s| s.name).collect();
+    assert!(names.contains(&"ev[2Jil".to_string()), "{names:?}");
     d.shutdown().await;
 }

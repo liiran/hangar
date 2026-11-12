@@ -333,12 +333,14 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
     });
 
     let req = AttachRequest {
-        name: hello.name.clone(),
+        // The name comes from a configuration file, which a downloaded folder can supply.
+        // It is shown in `hangar status`, the app and the log, so it is cleaned here, once.
+        name: crate::util::printable(&hello.name),
         spec: hello.spec.clone(),
         share: decision.share,
         cwd: PathBuf::from(&hello.cwd),
         env: hello.env.clone(),
-        session: hello.session.clone(),
+        session: hello.session.as_deref().map(crate::util::printable),
         client_pid: hello.client_pid,
         shim_pid: hello.shim_pid,
         init: init.clone(),

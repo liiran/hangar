@@ -248,6 +248,24 @@ pub fn printable(text: &str) -> String {
     text.chars().filter(|c| *c == '\t' || !(c.is_control() || hidden(*c))).collect()
 }
 
+/// JSON for a terminal. Inside strings, the characters [`printable`] drops
+/// are written as `\uXXXX` instead. A JSON parser reads the same data, and the
+/// terminal never receives them raw. (serde_json already escapes the
+/// controls below U+0020, but not U+007F to U+009F or invisible characters.)
+pub fn json_printable(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        if c != '\n' && (c.is_control() || hidden(c)) {
+            for unit in c.encode_utf16(&mut [0; 2]) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Invisible and text-direction characters (soft hyphen, zero-width,
 /// bidirectional controls, byte-order mark, tags).
 fn hidden(c: char) -> bool {
@@ -340,6 +358,7 @@ mod tests {
             "MEMORY_FILE_PATH",
             "AZURE_CONFIG_DIR",
             "ANTHROPIC_BASE_URL",
+            "ACME_TENANT",
         ] {
             assert!(separates_sessions(name), "{name}");
         }
@@ -356,6 +375,8 @@ mod tests {
             "PROCESSOR_ARCHITECTURE",
             "NVM_HOME",
             "ComSpec",
+            // The known limit that SECURITY.md describes: nothing in this name says it picks a database.
+            "APP_ENV",
         ] {
             assert!(!separates_sessions(name), "{name}");
         }
@@ -363,6 +384,10 @@ mod tests {
         assert_eq!(printable("ok\x1b[2Jgone\r\n\tx"), "ok[2Jgone\tx");
         let disguised = format!("exe.{}gpj{}{}]0;title{}", '\u{202e}', '\u{200b}', '\u{9d}', '\u{7}');
         assert_eq!(printable(&disguised), "exe.gpj]0;title", "no direction changes, invisible characters or 8-bit escapes");
+        let hostile = serde_json::json!({ "name": format!("a{}2J{}b{}", '\u{9b}', '\u{202e}', '\u{1b}') });
+        let shown = json_printable(&serde_json::to_string_pretty(&hostile).unwrap());
+        assert!(shown.contains(r"a\u009b2J\u202eb\u001b") && shown.contains('\n'), "escaped, and still laid out on lines: {shown}");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&shown).unwrap(), hostile, "the same data to a parser");
         assert_eq!(redact_command(&s(&["pg", "postgres://user:pw@db:5432/x"])), "pg postgres://***@db:5432/x");
         assert_eq!(redact_command(&s(&["npx", "@scope/pkg@latest", "--headless"])), "npx @scope/pkg@latest --headless");
         assert_eq!(redact_command(&s(&["node", "C:/My Dir/a.js"])), "node \"C:/My Dir/a.js\"");
