@@ -51,9 +51,20 @@ An MCP server is a helper program that gives Claude extra tools: a browser to dr
   - A database server reaches a local database.
   - Some, like Context7 (current library documentation), run locally and call a web service.
 
-**The cost.** Claude Code starts its own copy of every local server for every session. On Windows, a server started with `npx` is a tree of five processes taking about 150 MB. Five sessions with two servers each means ten such trees.
+**The cost.** Claude Code starts its own copy of every local server for every session. And a server started with `npx`, as most are, is not one program but a chain of them. This is Context7 on Windows a moment after it started, with the memory each program holds:
 
-**What hangar does.** It runs one copy of every server that can safely be shared, and starts each of the others as a single process instead of a tree.
+```
+cmd                 7 MB   launcher
+└─ node (npx)      91 MB   launcher: finds the package, starts it, then only waits
+   └─ cmd           6 MB   launcher
+      └─ node      69 MB   the server itself
+```
+
+Only the last one does any work, but all of them stay in memory for as long as the session runs. Windows adds a small console helper, which makes five processes and typically 150 to 170 MB for each server. Five sessions with two servers each means ten such chains.
+
+**What hangar does.** Two things, and they add up:
+1. **It shares.** A server that can safely be shared runs once for all sessions, not once per session.
+2. **It skips the launchers.** Once a package is downloaded, hangar starts the server itself, without the chain above. This applies to every server started with `npx`, including those that still run once per session. So hangar saves memory even with a single session.
 
 **Turning it on.** Sharing is off until you turn it on, because that changes your Claude Code settings. When hangar sees local servers that are not shared yet, the app's MCP pool page says so and offers a **Turn on sharing** button. `hangar wrap` in a terminal does the same thing. Either way, local servers then start through hangar, for sessions started in hangar and for `claude` in a terminal alike. `hangar unwrap` puts everything back. See [Commands](#commands).
 
@@ -220,6 +231,13 @@ Once a server is wrapped, Claude Code starts the shim in its place, and the shim
                                                                                unless you turn sharing on)
 ```
 
+*Example.* You start three sessions. Each has Context7 and Playwright.
+1. **Session A starts.** Claude Code runs the shim twice, once for each server. The daemon has neither server running yet, so it starts both.
+2. **Session B starts.** Its Context7 shim is connected to the Context7 that is already running. Playwright keeps a browser per session, so B gets a Playwright of its own.
+3. **Session C starts.** The same as B.
+
+The result is one Context7 and three Playwrights. Claude Code alone would run three of each.
+
 **Keeping sessions apart.** Every request carries an id that its session chose, so two sessions can both send request 1. The daemon gives each request a fresh id on its way to the server, and puts the original back on the answer:
 
 ```
@@ -273,7 +291,7 @@ In the example the two tokens differ, so each session gets its own GitHub server
 - stops idle servers;
 - keeps every process in a Windows job object, so nothing outlives hangar there, even if it crashes.
 
-**The npx fast path.** `npx` is a launcher: it checks the npm registry, then starts the package with `node`. For a package it has already downloaded, hangar starts the package's entry script with `node` directly. That skips two launcher processes (about 70 MB) and npm's registry round-trip.
+**The npx fast path.** `npx` is a launcher: it checks the npm registry, then starts the package with `node`. For a package it has already downloaded, hangar starts the package's entry script with `node` directly. That skips three launcher processes (about 95 MB for each server) and npm's registry round-trip.
 - hangar finds the package in npx's cache, whose folder name is `sha512(package spec)[..16]`.
 - Exact versions always qualify.
 - Tags like `@latest` qualify only if hangar saw real npx resolve them within the last day, so you still get updates.
