@@ -106,7 +106,7 @@ export function App() {
       )}
       {navDrawer && <Drawer onClose={closeDrawer} />}
 
-      <div className={cx("flex min-w-0 flex-1 lg:py-2 lg:pr-2", navHidden && "lg:pl-2")}>
+      <div className={cx("main-area flex min-w-0 flex-1 lg:py-2 lg:pr-2", navHidden && "lg:pl-2")}>
         <div className="flex min-w-0 flex-1 overflow-hidden bg-panel lg:rounded-lg lg:ring-1 lg:ring-line">
           {view.kind === "pool" ? (
             <PoolView />

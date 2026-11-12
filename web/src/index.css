@@ -57,10 +57,12 @@
 /* Tailwind's dark: classes follow the same switch. */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
-/* Installed as an app with its title bar hidden, the page reaches the top
-   of the window (src/theme.ts sets .overlay on <html> then). A strip in the
-   window's color stays empty there: the window is dragged by it, and the
-   window buttons sit over its end. */
+/* Installed as an app with its title bar hidden (the ^ in the title bar), the
+   page reaches the top of the window, as in VS Code (src/theme.ts sets
+   .overlay on <html> then). The sidebar starts at the very top. The gap above
+   the main panel grows to the height of the window buttons, which Chrome draws
+   over its right end. The window is dragged by that top band: .titlebar marks
+   it, and lets clicks through to the buttons under it. */
 .titlebar {
   display: none;
 }
@@ -70,13 +72,20 @@
   inset: 0 0 auto 0;
   z-index: 100;
   height: env(titlebar-area-height, 32px);
-  background: var(--bg);
+  pointer-events: none;
   app-region: drag;
   -webkit-app-region: drag;
 }
-:root.overlay #root {
-  box-sizing: border-box;
+:root.overlay :is(button, a, input, textarea, select, [role="button"], [role="option"]) {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+:root.overlay .main-area {
   padding-top: env(titlebar-area-height, 32px);
+}
+/* macOS puts the window buttons on the left, over the sidebar's first row. */
+:root.overlay aside[aria-label="Sidebar"] > :first-child {
+  padding-left: calc(env(titlebar-area-x, 0px) + 0.75rem);
 }
 
 @theme inline {

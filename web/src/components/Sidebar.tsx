@@ -140,7 +140,8 @@ function MachineFooter() {
   const queued = list.filter((s) => s.status === "queued").length;
   const m = system.machine;
   const used = m.total_bytes - m.available_bytes;
-  // How many more sessions can start before new ones wait in the queue.
+  // About how many more sessions can start before new ones wait in the queue: an estimate,
+  // since it divides free memory by what a typical session of yours has used.
   const room = Math.max(0, Math.floor((m.available_bytes - m.reserve_bytes) / Math.max(1, m.estimate_bytes)));
   const budget = `A session uses about ${bytes(m.estimate_bytes)}. hangar keeps ${bytes(m.reserve_bytes)} free for the rest of your PC, so a new session waits in the queue (or an idle one is paused) once less than ${bytes(m.estimate_bytes + m.reserve_bytes)} is free.`;
   return (
@@ -157,7 +158,7 @@ function MachineFooter() {
           <span className="truncate">
             {running} running{queued > 0 && ` · ${queued} waiting`}
           </span>
-          <span className="shrink-0">{queued > 0 || room === 0 ? "next one waits" : `room for ${room} more ${room === 1 ? "session" : "sessions"}`}</span>
+          <span className="shrink-0">{queued > 0 || room === 0 ? "next one waits" : `room for ~${room} more ${room === 1 ? "session" : "sessions"}`}</span>
         </div>
       </div>
       <div className="flex items-center justify-between text-[11px] text-faint">
