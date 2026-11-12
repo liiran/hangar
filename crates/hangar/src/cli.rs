@@ -366,7 +366,6 @@ mod tests {
         let page = std::fs::read_to_string(&path).unwrap();
         assert!(page.contains(concat!(r#"location.replace("http://127.0.0.1:7317/#pair=abc\""#, "\\", r#"u003c/script>")"#)), "{page}");
         assert_eq!(page.matches("</script>").count(), 1, "the link cannot end the script early");
-        assert_eq!(page.matches("</script>").count(), 1, "the link cannot end the script early");
         let _ = std::fs::remove_dir_all(home);
     }
 

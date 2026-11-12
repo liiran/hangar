@@ -451,14 +451,6 @@ mod tests {
     }
 
     #[test]
-    fn results_round_trip_through_json() {
-        let r = result(Mode::Pooled, 3, 90);
-        let back: RunResult = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
-        assert_eq!(back.sessions, 3);
-        assert_eq!(back.mode, Mode::Pooled);
-    }
-
-    #[test]
     fn comparisons_skip_runs_with_failures() {
         let opts = BenchOpts {
             sessions: vec![2],

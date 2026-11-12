@@ -593,31 +593,20 @@ mod tests {
     }
 
     #[test]
-    fn parses_options_and_command() {
+    fn parses_its_command_line() {
         let o = parse(&["--name", "pw", "--env-keys", "A, B", "--", "cmd", "/c", "npx", "-y", "@playwright/mcp@latest"]).unwrap();
         assert_eq!(o.name, "pw");
         assert_eq!(o.env_keys, vec!["A", "B"]);
         assert_eq!(o.command, "cmd");
         assert_eq!(o.args, vec!["/c", "npx", "-y", "@playwright/mcp@latest"]);
-    }
-
-    #[test]
-    fn command_without_separator() {
+        // The separator is optional.
         let o = parse(&["node", "server.js", "--flag"]).unwrap();
         assert_eq!(o.command, "node");
         assert_eq!(o.args, vec!["server.js", "--flag"]);
-    }
-
-    #[test]
-    fn args_after_command_are_not_options() {
-        let o = parse(&["--", "npx", "--name", "x"]).unwrap();
-        assert_eq!(o.args, vec!["--name", "x"]);
-    }
-
-    #[test]
-    fn missing_command_is_an_error() {
-        assert!(parse(&["--name", "x"]).is_err());
-        assert!(parse(&["--bogus", "x"]).is_err());
+        // What follows the command belongs to the server, even if it looks like an option.
+        assert_eq!(parse(&["--", "npx", "--name", "x"]).unwrap().args, vec!["--name", "x"]);
+        assert!(parse(&["--name", "x"]).is_err(), "a command is required");
+        assert!(parse(&["--bogus", "x"]).is_err(), "unknown options are refused");
     }
 
     #[test]

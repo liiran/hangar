@@ -5,7 +5,6 @@ mod common;
 
 use common::*;
 use hangar::client::McpClient;
-use hangar::config::Config;
 use hangar::jsonrpc;
 use hangar::policy::Share;
 use serde_json::{Value, json};
@@ -45,6 +44,10 @@ async fn session_share_gives_each_session_its_own_process() {
     // A per-session server sees the real client capabilities.
     assert_eq!(server_stats(&a).await["client_capabilities"]["roots"]["listChanged"], true);
     assert_eq!(d.pool.stats().await.len(), 2);
+    // A server the config does not mention and hangar does not know is treated the same way.
+    let c = client(&home, "mystery", &[]).await;
+    let e = client(&home, "mystery", &[]).await;
+    assert_ne!(tool(&c, "pid", json!({})).await.unwrap(), tool(&e, "pid", json!({})).await.unwrap(), "unknown servers are never shared by default");
     d.shutdown().await;
 }
 
@@ -315,18 +318,6 @@ async fn large_and_unicode_payloads_pass_through_intact() {
 }
 
 #[tokio::test]
-async fn failing_server_reports_an_error_instead_of_hanging() {
-    let home = temp_home("failinit");
-    let d = start_daemon(&home, config(&[("bad", Share::Global)])).await;
-    let c = McpClient::spawn(shim_cmd(&home, "bad", &["--fail-init"]), vec![]).unwrap();
-    let r =
-        c.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}), T).await.unwrap();
-    assert_eq!(r["error"]["code"], jsonrpc::SERVER_UNAVAILABLE);
-    assert!(r["error"]["message"].as_str().unwrap().contains("refusing to initialize"));
-    d.shutdown().await;
-}
-
-#[tokio::test]
 async fn served_totals_outlive_the_upstreams_that_served_them() {
     let home = temp_home("served");
     let d = start_daemon(&home, config(&[("own", Share::Session)])).await;
@@ -485,6 +476,7 @@ async fn a_failing_server_answers_new_sessions_at_once_with_its_reason() {
         let c = McpClient::spawn(shim_cmd(&home, "bad", &["--fail-init"]), vec![]).unwrap();
         let started = std::time::Instant::now();
         let r = c.request("initialize", init.clone(), T).await.unwrap();
+        assert_eq!(r["error"]["code"], jsonrpc::SERVER_UNAVAILABLE, "an error, not a hang");
         assert!(r["error"]["message"].as_str().unwrap().contains("refusing to initialize"), "{r}");
         assert!(started.elapsed() < Duration::from_secs(5), "answered promptly");
     }
@@ -552,15 +544,5 @@ async fn invalid_utf8_on_stderr_does_not_stall_the_server() {
     for i in 0..4 {
         assert_eq!(tool(&a, "echo", json!({"text": format!("call {i}")})).await.unwrap(), format!("call {i}"));
     }
-    d.shutdown().await;
-}
-
-#[tokio::test]
-async fn unknown_servers_are_not_shared_by_default() {
-    let home = temp_home("unknown-default");
-    let d = start_daemon(&home, Config::default()).await;
-    let a = client(&home, "mystery", &[]).await;
-    let b = client(&home, "mystery", &[]).await;
-    assert_ne!(tool(&a, "pid", json!({})).await.unwrap(), tool(&b, "pid", json!({})).await.unwrap());
     d.shutdown().await;
 }

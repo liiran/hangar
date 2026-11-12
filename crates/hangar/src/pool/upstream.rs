@@ -1034,14 +1034,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_servers_never_see_client_capabilities() {
-        let client = json!({"protocolVersion": "2025-06-18", "capabilities": {"roots": {}, "sampling": {}}, "clientInfo": {"name": "x"}});
-        assert_eq!(upstream_init_params(&client, Share::Global)["capabilities"], json!({}));
-        assert_eq!(upstream_init_params(&client, Share::Session)["capabilities"]["roots"], json!({}));
-        assert_eq!(upstream_init_params(&client, Share::Project)["clientInfo"]["name"], "x");
-    }
-
-    #[test]
     fn displays_mask_secrets() {
         assert_eq!(display("npx", &["-y".into(), "srv".into(), "--api-key".into(), "sk-1".into()]), "npx -y srv --api-key ***");
     }

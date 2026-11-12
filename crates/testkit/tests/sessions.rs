@@ -73,7 +73,7 @@ async fn wait_texts(m: &Manager, id: &str, n: usize) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_session_runs_a_turn_and_goes_idle() {
+async fn a_session_runs_turns_goes_idle_and_counts_each_turns_cost_once() {
     let home = temp_home("sess-basic");
     let m = manager(&home, Config::default());
     let s = m.create(new(&home, "hello there\nsecond line")).unwrap();
@@ -87,18 +87,8 @@ async fn a_session_runs_a_turn_and_goes_idle() {
     let s = wait_status(&m, &s.meta.id, Status::Idle).await;
     assert!(s.pid.is_some(), "process stays up between turns");
     assert!(s.meta.outbox.is_empty(), "everything was delivered");
-}
-
-#[tokio::test]
-async fn cost_counts_each_turn_once() {
     // Claude reports a running total per process; summing it would double count.
-    let home = temp_home("sess-cost");
-    let m = manager(&home, Config::default());
-    let id = m.create(new(&home, "one")).unwrap().meta.id;
-    wait_status(&m, &id, Status::Idle).await;
-    m.send(&id, "two").unwrap();
-    wait_texts(&m, &id, 2).await;
-    let s = wait_status(&m, &id, Status::Idle).await;
+    let id = s.meta.id.clone();
     assert!((s.meta.cost_usd - 0.02).abs() < 1e-9, "cost {}", s.meta.cost_usd);
     let turn_costs: Vec<f64> = m
         .events(&id, 0)
@@ -157,21 +147,6 @@ async fn interrupting_withdraws_a_pending_request() {
 }
 
 #[tokio::test]
-async fn untrusted_folders_need_confirmation_once() {
-    let home = temp_home("sess-trust");
-    let repo = temp_home("sess-trust-repo");
-    let m = manager(&home, Config::default());
-    let mut req = new(&repo, "hi");
-    req.trust = false;
-    let err = m.create(req).unwrap_err();
-    assert!(err.downcast_ref::<NeedsTrust>().is_some(), "{err:#}");
-    m.create(new(&repo, "hi")).unwrap(); // trust: true records it
-    let mut again = new(&repo, "hi again");
-    again.trust = false;
-    m.create(again).expect("remembered as trusted");
-}
-
-#[tokio::test]
 async fn the_budget_queues_sessions_instead_of_overcommitting() {
     let home = temp_home("sess-queue");
     let mut cfg = Config::default();
@@ -210,7 +185,7 @@ async fn idle_sessions_are_paused_to_make_room_and_resume_later() {
 }
 
 #[tokio::test]
-async fn queued_messages_survive_a_daemon_restart() {
+async fn sessions_and_queued_messages_survive_a_daemon_restart() {
     let home = temp_home("sess-persist-queue");
     let mut cfg = Config::default();
     cfg.budget.max_sessions = 1;
@@ -227,7 +202,8 @@ async fn queued_messages_survive_a_daemon_restart() {
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
     let m = manager(&home, cfg);
-    assert_eq!(get(&m, &a).meta.status, Status::Hibernated);
+    assert_eq!(get(&m, &a).meta.status, Status::Hibernated, "a live session comes back resumable");
+    assert_eq!(texts(&m, &a), vec!["echo: first"], "with its history");
     wait_status(&m, &b, Status::Idle).await;
     let t = wait_texts(&m, &b, 2).await;
     assert_eq!(t, vec!["echo: second", "echo: and more"], "both queued messages were delivered");
@@ -341,22 +317,6 @@ async fn bad_requests_are_refused() {
     assert!(m.events("../../etc", 0).is_err(), "unknown ids never reach the disk");
 }
 
-#[tokio::test]
-async fn sessions_survive_a_daemon_restart() {
-    let home = temp_home("sess-persist");
-    let id;
-    {
-        let m = manager(&home, Config::default());
-        id = m.create(new(&home, "keep this")).unwrap().meta.id;
-        wait_status(&m, &id, Status::Idle).await;
-        m.shutdown();
-        tokio::time::sleep(Duration::from_millis(400)).await;
-    }
-    let m = manager(&home, Config::default());
-    assert_eq!(get(&m, &id).meta.status, Status::Hibernated, "a live session comes back resumable");
-    assert_eq!(texts(&m, &id), vec!["echo: keep this"]);
-}
-
 // ------------------------------------------------------------------ API
 
 struct Ui {
@@ -390,6 +350,7 @@ async fn pairing_codes_unlock_the_api_once() {
     assert_eq!(ui.http.get(&url).header("x-hangar-token", "guess").send().await.unwrap().status(), 401);
     let code = ui.d.pairing.issue();
     let pair = |c: String| ui.http.post(format!("{}/api/pair", ui.base)).json(&json!({"code": c})).send();
+    assert_eq!(pair("0".repeat(32)).await.unwrap().status(), 401, "a guessed code");
     let first = pair(code.clone()).await.unwrap();
     assert_eq!(first.status(), 200);
     let token = first.json::<Value>().await.unwrap()["token"].as_str().unwrap().to_string();
@@ -519,13 +480,18 @@ async fn other_sites_get_nothing_and_answers_are_not_cached() {
 }
 
 #[tokio::test]
-async fn trust_covers_only_what_the_notice_showed() {
+async fn folders_are_confirmed_once_and_trust_covers_only_what_the_notice_showed() {
     let home = temp_home("sess-trust-seen");
     let repo = home.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join(".mcp.json"), r#"{"mcpServers":{"docs":{"command":"node","args":["docs.js"]}}}"#).unwrap();
     let m = manager(&home, Config::default());
     let ask = |seen: Option<String>| NewSession { trust: true, trust_seen: seen, ..new(&repo, "hi") };
+    // Any folder is confirmed before its first session, even one with no settings at all.
+    for folder in [&repo, &temp_home("sess-trust-empty")] {
+        let err = m.create(NewSession { trust: false, ..new(folder, "hi") }).unwrap_err();
+        assert!(err.downcast_ref::<NeedsTrust>().is_some(), "{err:#}");
+    }
     let shown = m.trust(&repo);
     assert_eq!(shown.mcp_servers, vec!["docs: node docs.js"]);
     // The folder changes after the user read the notice.
@@ -536,6 +502,7 @@ async fn trust_covers_only_what_the_notice_showed() {
     assert!(!m.trust(&repo).trusted, "nothing was trusted");
     m.create(ask(Some(again.fingerprint.clone()))).unwrap();
     assert!(m.trust(&repo).trusted);
+    m.create(NewSession { trust: false, ..new(&repo, "hi again") }).expect("a trusted folder is not asked about again");
 }
 
 #[tokio::test]

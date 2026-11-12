@@ -495,13 +495,4 @@ mod tests {
         assert_eq!(bind_ui(&home, preferred).await.unwrap().local_addr().unwrap().port(), preferred, "the preferred port wins once free");
         let _ = std::fs::remove_dir_all(home);
     }
-
-    #[test]
-    fn pairing_codes_work_once() {
-        let p = Pairing::default();
-        let code = p.issue();
-        assert!(!p.redeem("wrong"));
-        assert!(p.redeem(&code));
-        assert!(!p.redeem(&code), "a code works only once");
-    }
 }

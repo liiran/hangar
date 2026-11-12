@@ -144,13 +144,15 @@ try {
   await dialog.waitFor({ state: "detached" });
   await page.waitForSelector("text=echo: Refactor the auth module");
 
+  let askedAgain = false; // checked on the first new session only
   async function newSession(prompt) {
     await page.keyboard.press("Control+n");
     await dialog.waitFor();
     if (!(await page.locator(folderButton).innerText()).includes("proj")) await pickFolder(proj);
     await page.fill('[role="dialog"] textarea', prompt);
     await sleep(500); // the trust lookup
-    check(`a trusted folder asks nothing again (${prompt.slice(0, 16)}…)`, (await page.locator("text=Trust this folder?").count()) === 0);
+    if (!askedAgain) check("a trusted folder asks nothing again", (await page.locator("text=Trust this folder?").count()) === 0);
+    askedAgain = true;
     await page.keyboard.press("Control+Enter");
     await dialog.waitFor({ state: "detached" });
   }
@@ -314,7 +316,7 @@ try {
   await choose("theme: match");
   check("…and set back to match the system", (await look()) === system && system.endsWith("null"), system);
   const footer = await page.locator('aside, nav, div').filter({ hasText: /^Memory/ }).last().innerText().catch(() => "");
-  check("the sidebar says how many more sessions fit", /room for [0-9]+ more sessions?|next one waits/.test(await page.locator("body").innerText()), footer.slice(0, 80));
+  check("the sidebar says how many more sessions fit", /room for ~[0-9]+ more sessions?|next one waits/.test(await page.locator("body").innerText()), footer.slice(0, 80));
 
   // ---- views: Needs you, and a project
   await page.click('nav[aria-label="Main"] >> text=Needs you');

@@ -78,10 +78,7 @@ mod tests {
         assert_eq!(classify(&json!([1, 2])), Kind::Invalid);
         // A null id is a notification-shaped message, not a request.
         assert_eq!(classify(&json!({"method":"x","id":null})), Kind::Notification { method: "x" });
-    }
-
-    #[test]
-    fn id_keys_keep_types_apart() {
+        // The ids 1 and "1" are different requests.
         assert_ne!(id_key(&json!(1)), id_key(&json!("1")));
     }
 }

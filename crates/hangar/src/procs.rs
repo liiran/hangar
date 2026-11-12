@@ -467,10 +467,7 @@ mod tests {
         got.sort();
         assert_eq!(got, vec![1, 2, 3]);
         assert_eq!(Usage::of(tree(&snap, 2)).processes, 2);
-    }
-
-    #[test]
-    fn trees_deduplicate() {
+        // Overlapping trees count each process once.
         let snap = vec![p(1, 0, 1), p(2, 1, 2), p(3, 2, 3)];
         assert_eq!(trees(&snap, &[1, 2, 3]).len(), 3);
     }

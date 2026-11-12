@@ -238,10 +238,20 @@ pub fn redact_command(parts: &[String]) -> String {
     out.iter().map(|s| if s.contains(' ') { format!("\"{s}\"") } else { s.clone() }).collect::<Vec<_>>().join(" ")
 }
 
-/// Text from another program, safe to print in a terminal: control
-/// characters (which could move the cursor or rewrite lines) are dropped.
+/// Text from another program, safe to print in a terminal.
+///
+/// Control characters are dropped: every terminal escape sequence (clear the
+/// screen, move the cursor, set the window title, write the clipboard)
+/// starts with one. So are characters that are invisible or reverse the
+/// direction of text, which could make one name read as another.
 pub fn printable(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control() || *c == '\t').collect()
+    text.chars().filter(|c| *c == '\t' || !(c.is_control() || hidden(*c))).collect()
+}
+
+/// Invisible and text-direction characters (soft hyphen, zero-width,
+/// bidirectional controls, byte-order mark, tags).
+fn hidden(c: char) -> bool {
+    matches!(c as u32, 0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB | 0xE0000..=0xE007F)
 }
 
 /// Writes a file only the current user can read (Unix: mode 0600 from
@@ -351,6 +361,8 @@ mod tests {
         }
         assert!(looks_secret("GITHUB_PAT") && !looks_secret("PATH") && !looks_secret("COMPATIBLE"));
         assert_eq!(printable("ok\x1b[2Jgone\r\n\tx"), "ok[2Jgone\tx");
+        let disguised = format!("exe.{}gpj{}{}]0;title{}", '\u{202e}', '\u{200b}', '\u{9d}', '\u{7}');
+        assert_eq!(printable(&disguised), "exe.gpj]0;title", "no direction changes, invisible characters or 8-bit escapes");
         assert_eq!(redact_command(&s(&["pg", "postgres://user:pw@db:5432/x"])), "pg postgres://***@db:5432/x");
         assert_eq!(redact_command(&s(&["npx", "@scope/pkg@latest", "--headless"])), "npx @scope/pkg@latest --headless");
         assert_eq!(redact_command(&s(&["node", "C:/My Dir/a.js"])), "node \"C:/My Dir/a.js\"");

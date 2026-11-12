@@ -101,6 +101,7 @@ mod tests {
         assert!(b.admit(0, mb(1600)).is_ok());
         let err = b.admit(0, mb(1400)).unwrap_err();
         assert!(err.contains("waiting for memory"), "{err}");
+        assert!(budget(0, 0).reserve_bytes >= 2 << 30, "left to itself, the reserve is at least 2 GB");
     }
 
     #[test]
@@ -120,10 +121,5 @@ mod tests {
         assert_eq!(b.estimate(), 400 << 20);
         b.record_peak(0);
         assert_eq!(b.samples.len(), 3, "zero samples ignored");
-    }
-
-    #[test]
-    fn automatic_reserve_is_at_least_two_gigabytes() {
-        assert!(budget(0, 0).reserve_bytes >= 2 << 30);
     }
 }
