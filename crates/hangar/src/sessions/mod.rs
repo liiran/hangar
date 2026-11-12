@@ -245,6 +245,8 @@ pub struct Manager {
     store: Store,
     claude_bin: Mutex<Option<PathBuf>>,
     claude_json: Mutex<PathBuf>,
+    /// What `unshared_servers` found, and the config's (modified time, size) then.
+    unshared: Mutex<Option<(ConfigStamp, Vec<crate::claude_config::Unshared>)>>,
     inner: Mutex<Inner>,
     tx: broadcast::Sender<UiEvent>,
     driver_tx: mpsc::UnboundedSender<claude::DriverEvent>,
@@ -253,6 +255,8 @@ pub struct Manager {
     /// Set by `shutdown`: start nothing new.
     closing: std::sync::atomic::AtomicBool,
 }
+
+type ConfigStamp = Option<(Option<std::time::SystemTime>, u64)>;
 
 struct Inner {
     sessions: HashMap<String, Session>,
@@ -270,6 +274,7 @@ impl Manager {
             store: Store::new(home),
             claude_bin: Mutex::new(None),
             claude_json: Mutex::new(crate::claude_config::claude_json_path()),
+            unshared: Mutex::new(None),
             inner: Mutex::new(Inner { sessions: HashMap::new(), queue: Vec::new(), budget: Budget::new(b) }),
             tx,
             driver_tx,
@@ -355,6 +360,30 @@ impl Manager {
         dated.sort_by_key(|d| std::cmp::Reverse(d.0));
         let known = trust::claude_projects(&claude_json).into_iter().rev();
         recent::pick(dated.into_iter().map(|(_, c)| c).chain(known), MAX, &std::env::temp_dir())
+    }
+
+    /// Local MCP servers that Claude Code still starts on its own, for the
+    /// app's "turn on sharing" notice. The Claude config is read again only
+    /// when it has changed.
+    pub fn unshared_servers(&self) -> Vec<crate::claude_config::Unshared> {
+        let path = self.claude_json.locked().clone();
+        let stamp: ConfigStamp = std::fs::metadata(&path).ok().map(|m| (m.modified().ok(), m.len()));
+        let mut cache = self.unshared.locked();
+        if let Some((at, found)) = cache.as_ref()
+            && *at == stamp
+        {
+            return found.clone();
+        }
+        let found = crate::claude_config::unshared(&path);
+        *cache = Some((stamp, found.clone()));
+        found
+    }
+
+    /// What `hangar wrap` (`on`) and `hangar unwrap` do. Returns how many
+    /// server entries changed.
+    pub fn set_sharing(&self, on: bool) -> Result<usize> {
+        let path = self.claude_json.locked().clone();
+        Ok(crate::claude_config::set_shared(&path, &self.home, on, false)?.len())
     }
 
     /// Whether `cwd` is trusted, and what it would run.

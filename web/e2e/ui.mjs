@@ -34,6 +34,17 @@ fs.writeFileSync(
   }),
 );
 fs.writeFileSync(path.join(proj, ".mcp.json"), JSON.stringify({ mcpServers: { docs: { command: "node", args: ["docs-server.js"] } } }));
+// Claude Code's own settings: one local server it starts itself, and one remote server.
+const claudeJson = path.join(tmp, ".claude.json");
+fs.writeFileSync(
+  claudeJson,
+  JSON.stringify({
+    mcpServers: {
+      "docs-lookup": { command: "node", args: ["docs.js"], env: { DOCS_API_KEY: "k-123" } },
+      hosted: { type: "http", url: "https://example.com/mcp" },
+    },
+  }),
+);
 const shots = process.env.E2E_SHOTS;
 if (shots) fs.mkdirSync(shots, { recursive: true });
 const shot = (page, name) => (shots ? page.screenshot({ path: path.join(shots, `${name}.png`) }) : Promise.resolve());
@@ -271,6 +282,33 @@ try {
   const poolText = await pool.innerText();
   check("one shared server serves all three clients", /fake[\s\S]*Shared[\s\S]*3 sessions/.test(poolText), poolText.replace(/\n+/g, " | ").slice(0, 160));
   await shot(page, "4-pool");
+
+  // ---- turning sharing on from the app (what `hangar wrap` does)
+  const badge = page.locator('nav[aria-label="Main"]').getByText("1 not shared");
+  const sharing = pool.locator('[aria-label="Sharing is off"]');
+  const sharingText = (await sharing.count()) ? await sharing.innerText() : "";
+  check(
+    "a local server that is not shared yet is offered, by name and without its key",
+    (await badge.count()) === 1 && sharingText.includes("1 local MCP server is not shared yet") && sharingText.includes("docs-lookup") && !sharingText.includes("hosted") && !sharingText.includes("k-123"),
+    sharingText.slice(0, 200),
+  );
+  await shot(page, "4b-sharing-off");
+  await sharing.getByRole("button", { name: "Turn on sharing" }).click();
+  await pool.locator('[role="status"]', { hasText: "Sharing is on for 1 server" }).waitFor({ timeout: 5000 }).catch(() => {});
+  const wrapped = JSON.parse(fs.readFileSync(claudeJson, "utf8")).mcpServers;
+  const backups = fs.existsSync(path.join(home, "backups")) ? fs.readdirSync(path.join(home, "backups")) : [];
+  check(
+    "one click sends it through hangar, keeps a backup and leaves the remote server alone",
+    path.basename(wrapped["docs-lookup"].command).startsWith("hangar-shim") &&
+      wrapped["docs-lookup"].args.includes("docs.js") &&
+      wrapped["docs-lookup"].env.DOCS_API_KEY === "k-123" &&
+      wrapped.hosted.url === "https://example.com/mcp" &&
+      backups.length === 1,
+    JSON.stringify(wrapped["docs-lookup"]).slice(0, 200),
+  );
+  await sleep(2500); // the next system tick confirms it
+  check("…and the notice and its badge are gone", (await sharing.count()) === 0 && (await badge.count()) === 0 && (await pool.locator('[role="status"]').count()) === 1);
+  await shot(page, "4c-sharing-on");
   await page.keyboard.press("Escape");
   await sleep(200);
   check("Escape leaves the pool view", (await pool.count()) === 0 && (await page.locator('nav[aria-label="Sessions"]').count()) === 1);

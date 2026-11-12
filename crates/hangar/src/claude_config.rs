@@ -189,6 +189,35 @@ pub fn unwrapped(doc: &Value) -> Vec<(String, String)> {
     out
 }
 
+/// A local server that Claude Code still starts on its own.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Unshared {
+    /// `user`, or `project <folder>`.
+    pub scope: String,
+    pub name: String,
+}
+
+/// The local (stdio) servers in the Claude config at `path` that do not go
+/// through hangar yet. A missing or unreadable config has none.
+pub fn unshared(path: &Path) -> Vec<Unshared> {
+    let Some(doc) = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else {
+        return Vec::new();
+    };
+    let clean = crate::util::printable;
+    unwrapped(&doc).into_iter().map(|(scope, name)| Unshared { scope: clean(&scope), name: clean(&name) }).collect()
+}
+
+/// `hangar wrap` (`on`) and `hangar unwrap`: sends the local servers in the
+/// Claude config at `path` through hangar, or puts the original entries back.
+pub fn set_shared(path: &Path, home: &Path, on: bool, dry_run: bool) -> Result<Vec<Change>> {
+    if on {
+        let shim = shim_path()?;
+        edit_file(path, home, dry_run, |doc, originals| wrap_doc(doc, &shim, originals))
+    } else {
+        edit_file(path, home, dry_run, unwrap_doc)
+    }
+}
+
 fn originals_path(home: &Path) -> PathBuf {
     home.join("wrapped.json")
 }

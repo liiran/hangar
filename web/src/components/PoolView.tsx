@@ -1,11 +1,11 @@
 import { ChevronRight, PanelLeft, Server as ServerIcon, Square, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, type Server, type Share } from "../api";
+import { api, type Server, type Share, type Unshared } from "../api";
 import { bytes } from "../format";
 import { report, useStore } from "../store";
 import { ignoreShortcut } from "../sync";
 import { useUI } from "../ui";
-import { cx, IconButton } from "./ui";
+import { Button, cx, IconButton } from "./ui";
 
 const SHARE: Record<Share, { label: string; hint: string; tone: string }> = {
   global: { label: "Shared", hint: "One process for every session", tone: "text-emerald-500 ring-emerald-500/30" },
@@ -25,6 +25,9 @@ export function PoolView() {
   const servers = system?.servers ?? [];
   const total = servers.reduce((n, s) => n + s.memory.private_bytes, 0);
   const attachments = servers.reduce((n, s) => n + s.sessions.length, 0);
+  // Servers whose sharing was just turned on stay out of the notice until the next update confirms it.
+  const [turnedOn, setTurnedOn] = useState<string[]>([]);
+  const unshared = (system?.unshared ?? []).filter((s) => !turnedOn.includes(`${s.scope}/${s.name}`));
 
   // Escape goes back to the sessions, as from any secondary view.
   useEffect(() => {
@@ -49,6 +52,13 @@ export function PoolView() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[1000px] px-4 py-6 sm:px-8">
+          {unshared.length > 0 && <SharingNotice unshared={unshared} onDone={(keys) => setTurnedOn(keys)} />}
+          {unshared.length === 0 && turnedOn.length > 0 && (
+            <p role="status" className="mb-6 rounded-lg bg-emerald-500/10 px-4 py-3 text-[12.5px] text-fg ring-1 ring-emerald-500/25">
+              Sharing is on for {turnedOn.length === 1 ? "1 server" : `${turnedOn.length} servers`}. Sessions started from now on use it. Sessions that are already running
+              keep their own servers until they restart.
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-line ring-1 ring-line md:grid-cols-4">
             <Stat label="Servers running" value={String(servers.length)} />
             <Stat label="Session connections" value={String(attachments)} />
@@ -68,8 +78,9 @@ export function PoolView() {
             </div>
             {servers.length === 0 && (
               <p className="px-4 py-10 text-center text-[12.5px] text-muted">
-                No pooled servers are running. Run <code className="rounded bg-panel-2 px-1 font-mono text-fg">hangar wrap</code> once so Claude Code starts its stdio MCP servers
-                through hangar.
+                {unshared.length > 0
+                  ? "No pooled servers are running. Turn on sharing above, and they appear here when a session starts them."
+                  : "No pooled servers are running. A local MCP server appears here when a session starts it."}
               </p>
             )}
             {servers.map((s) => (
@@ -84,6 +95,40 @@ export function PoolView() {
         </div>
       </div>
     </main>
+  );
+}
+
+/** Offers what `hangar wrap` does, when Claude Code still starts local servers on its own. */
+function SharingNotice({ unshared, onDone }: { unshared: Unshared[]; onDone: (keys: string[]) => void }) {
+  const [busy, setBusy] = useState(false);
+  const n = unshared.length;
+  const names = unshared.map((s) => s.name);
+  const shown = names.length > 5 ? `${names.slice(0, 4).join(", ")} and ${names.length - 4} more` : names.join(", ");
+  const turnOn = () => {
+    setBusy(true);
+    api
+      .setSharing(true)
+      .then(() => onDone(unshared.map((s) => `${s.scope}/${s.name}`)))
+      .catch(report)
+      .finally(() => setBusy(false));
+  };
+  return (
+    <section aria-label="Sharing is off" className="mb-6 flex flex-col gap-3 rounded-lg bg-accent/8 px-4 py-3.5 ring-1 ring-accent/30 sm:flex-row sm:items-center sm:gap-5">
+      <div className="min-w-0 flex-1">
+        <h2 className="text-[13px] font-medium">{n === 1 ? "1 local MCP server is not shared yet" : `${n} local MCP servers are not shared yet`}</h2>
+        <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
+          <span className="font-mono text-[12px] text-fg">{shown}</span>. Every session starts its own copy. With sharing on, sessions use one copy wherever that is safe,
+          which saves memory.
+        </p>
+        <p className="mt-1 text-[12px] leading-relaxed text-faint">
+          This changes how those servers start in your Claude Code settings (~/.claude.json) and keeps a backup. It applies to sessions started from now on, here and in a
+          terminal. <code className="font-mono">hangar unwrap</code> undoes it.
+        </p>
+      </div>
+      <Button variant="primary" disabled={busy} onClick={turnOn}>
+        Turn on sharing
+      </Button>
+    </section>
   );
 }
 

@@ -81,9 +81,17 @@ export interface Machine {
   estimate_bytes: number;
 }
 
+/** A local MCP server that Claude Code still starts on its own (not through hangar). */
+export interface Unshared {
+  /** `user`, or `project <folder>`. */
+  scope: string;
+  name: string;
+}
+
 export interface System {
   machine: Machine;
   servers: Server[];
+  unshared?: Unshared[];
   saved_bytes: number;
   daemon_bytes: number;
   version: string;
@@ -171,6 +179,8 @@ export const api = {
   update: (id: string, b: { title?: string; permission_mode?: string; model?: string }) => call<Session>("PATCH", `/sessions/${id}`, b),
   remove: (id: string) => call("DELETE", `/sessions/${id}`),
   stopServer: (id: number) => call("POST", `/servers/${id}/stop`),
+  /** What `hangar wrap` (on) and `hangar unwrap` do. */
+  setSharing: (on: boolean) => call<{ ok: boolean; changed: number }>("POST", "/sharing", { on }),
 };
 
 export function socketUrl() {

@@ -605,3 +605,27 @@ async fn sessions_run_end_to_end_through_the_api() {
     assert!(events.as_array().unwrap().iter().any(|e| e["kind"] == "claude" && e["msg"]["result"] == "echo: hi"));
     ui.d.shutdown().await;
 }
+
+#[tokio::test]
+async fn the_app_is_told_which_local_servers_are_not_shared_yet() {
+    let ui = ui_daemon("api-sharing").await;
+    let config = temp_home("api-sharing-claude").join("claude.json");
+    let doc = json!({"mcpServers": {
+        "docs": {"command": "node", "args": ["docs.js"], "env": {"DOCS_API_KEY": "k-123"}},
+        "hosted": {"type": "http", "url": "https://example.com/mcp"},
+    }});
+    std::fs::write(&config, doc.to_string()).unwrap();
+    ui.d.sessions.set_claude_json(config.clone());
+    let token = ui.token().await;
+    let state = ui.http.get(format!("{}/api/state", ui.base)).header("x-hangar-token", &token).send().await.unwrap().text().await.unwrap();
+    let v: Value = serde_json::from_str(&state).unwrap();
+    assert_eq!(v["unshared"], json!([{"scope": "user", "name": "docs"}]), "the local server, not the remote one");
+    assert!(!state.contains("k-123"), "names only: no command lines or keys");
+    // Turning sharing off when nothing is wrapped changes nothing, and it needs the token like every other request.
+    let url = format!("{}/api/sharing", ui.base);
+    assert_eq!(ui.http.post(&url).json(&json!({"on": false})).send().await.unwrap().status(), 401);
+    let off: Value = ui.http.post(&url).header("x-hangar-token", &token).json(&json!({"on": false})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(off, json!({"ok": true, "changed": 0}));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), doc.to_string(), "the file is untouched");
+    ui.d.shutdown().await;
+}

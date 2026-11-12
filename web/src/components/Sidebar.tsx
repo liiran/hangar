@@ -9,6 +9,7 @@ import { cx, IconButton, Kbd, Logo, Meter } from "./ui";
 export function Sidebar() {
   const sessions = useStore((s) => s.sessions);
   const system = useStore((s) => s.system);
+  const unshared = system?.unshared?.length ?? 0;
   const view = useUI((s) => s.view);
   const setView = useUI((s) => s.setView);
   const open = useUI((s) => s.open);
@@ -46,8 +47,9 @@ export function Sidebar() {
           active={view.kind === "pool"}
           onClick={() => setView({ kind: "pool" })}
           count={system?.servers.length ?? 0}
-          badge={system && system.saved_bytes > 0 ? `−${bytes(system.saved_bytes)}` : undefined}
-          badgeTitle="Memory the pool saves right now"
+          badge={unshared > 0 ? `${unshared} not shared` : system && system.saved_bytes > 0 ? `−${bytes(system.saved_bytes)}` : undefined}
+          badgeTitle={unshared > 0 ? "Local MCP servers that every session still starts on its own. Open this page to turn sharing on." : "Memory the pool saves right now"}
+          badgeTone={unshared > 0 ? "note" : "good"}
         >
           MCP pool
         </NavItem>
@@ -94,6 +96,7 @@ function NavItem({
   title,
   badge,
   badgeTitle,
+  badgeTone = "good",
 }: {
   icon: ReactNode;
   children: ReactNode;
@@ -104,6 +107,7 @@ function NavItem({
   title?: string;
   badge?: string;
   badgeTitle?: string;
+  badgeTone?: "good" | "note";
 }) {
   return (
     <button
@@ -118,7 +122,10 @@ function NavItem({
       <span className={active ? "text-fg" : "text-faint"}>{icon}</span>
       <span className="min-w-0 flex-1 truncate">{children}</span>
       {badge && (
-        <span className="rounded bg-emerald-500/12 px-1.5 text-[11px] font-medium whitespace-nowrap text-emerald-500" title={badgeTitle}>
+        <span
+          className={cx("rounded px-1.5 text-[11px] font-medium whitespace-nowrap", badgeTone === "note" ? "bg-accent/12 text-accent" : "bg-emerald-500/12 text-emerald-500")}
+          title={badgeTitle}
+        >
           {badge}
         </span>
       )}

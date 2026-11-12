@@ -322,12 +322,7 @@ fn is_chromium(exe: &Path) -> bool {
 pub fn wrap(home: &Path, dry_run: bool, wrap: bool) -> Result<()> {
     use hangar::claude_config as cc;
     let path = cc::claude_json_path();
-    let changes = if wrap {
-        let shim = cc::shim_path()?;
-        cc::edit_file(&path, home, dry_run, |doc, originals| cc::wrap_doc(doc, &shim, originals))?
-    } else {
-        cc::edit_file(&path, home, dry_run, cc::unwrap_doc)?
-    };
+    let changes = cc::set_shared(&path, home, wrap, dry_run)?;
     if changes.is_empty() {
         println!("{}", if wrap { "no stdio MCP servers to wrap" } else { "nothing is wrapped" });
         return Ok(());

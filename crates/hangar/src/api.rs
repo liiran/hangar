@@ -72,6 +72,7 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState, mut shutd
         .route("/sessions/{id}/stop", post(stop))
         .route("/sessions/{id}/start", post(start_now))
         .route("/servers/{id}/stop", post(stop_server))
+        .route("/sharing", post(set_sharing))
         .route("/ws", get(ws))
         // An unknown API path is an error, not the app's page.
         .fallback(|| async { err(StatusCode::NOT_FOUND, "no such API path") })
@@ -240,9 +241,12 @@ pub async fn system_snapshot(st: &AppState) -> Value {
         .collect();
     let daemon = mem_of(std::process::id());
     let saved = if duplicated > 0 { duplicated.saturating_sub(overhead + daemon) } else { 0 };
+    let manager = st.manager.clone();
+    let unshared = tokio::task::spawn_blocking(move || manager.unshared_servers()).await.unwrap_or_default();
     let v = json!({
         "machine": st.manager.machine(),
         "servers": servers,
+        "unshared": unshared,
         "saved_bytes": saved,
         "daemon_bytes": daemon,
         "version": env!("CARGO_PKG_VERSION"),
@@ -436,6 +440,24 @@ async fn start_now(State(st): State<AppState>, Path(id): Path<String>) -> Respon
 
 async fn stop_server(State(st): State<AppState>, Path(id): Path<u64>) -> Response {
     if st.pool.stop(id).await { Json(json!({"ok": true})).into_response() } else { err(StatusCode::NOT_FOUND, "no such server") }
+}
+
+#[derive(Deserialize)]
+struct SharingBody {
+    on: bool,
+}
+
+/// `hangar wrap` and `hangar unwrap`, from the app. It edits the Claude
+/// config, so off the async threads.
+async fn set_sharing(State(st): State<AppState>, Json(body): Json<SharingBody>) -> Response {
+    let manager = st.manager.clone();
+    let done = tokio::task::spawn_blocking(move || manager.set_sharing(body.on)).await;
+    *st.snapshot.lock().await = None; // the next snapshot shows the new state
+    match done {
+        Ok(Ok(changed)) => Json(json!({"ok": true, "changed": changed})).into_response(),
+        Ok(Err(e)) => err(StatusCode::BAD_REQUEST, format!("{e:#}")),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 fn result(r: anyhow::Result<()>) -> Response {
