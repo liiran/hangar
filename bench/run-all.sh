@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduces every table in bench/results. Takes about 45 minutes.
+# Reproduces every table in bench/results. Takes about 50 minutes.
 # H=path/to/hangar picks the binary (default: the release build here).
 set -u
 H=${H:-./target/release/hangar.exe}
@@ -23,4 +23,5 @@ $H bench --preset $P --sessions 1,5,10 --modes direct,pooled --warm-wave --no-wa
 # (share = "native" in config.toml).
 $H bench --agent claude --preset $P --sessions 1,3,5 --modes pooled --shared-browser --no-warmup --out bench/results/claude-pw-c7-shared
 $H bench --preset $P --sessions 1,3,5 --modes pooled --browse --shared-browser --no-warmup --out bench/results/sim-browse-pw-c7-shared
-$H bench --sessions 3 --modes pooled --browse --shared-browser --no-warmup --out bench/results/sim-browse-shared
+$H bench --agent claude --sessions 1,3,5 --modes pooled --shared-browser --no-warmup --out bench/results/claude-shared
+$H bench --sessions 1,3,5 --modes pooled --browse --shared-browser --no-warmup --out bench/results/sim-browse-shared
