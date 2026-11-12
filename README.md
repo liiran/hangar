@@ -55,7 +55,7 @@ An MCP server is a helper program that gives Claude extra tools: a browser to dr
 
 **What hangar does.** It runs one copy of every server that can safely be shared, and starts each of the others as a single process instead of a tree.
 
-**Turning it on.** Run `hangar wrap` once. It changes your Claude Code settings so that local servers start through hangar, for sessions started in hangar and for `claude` in a terminal alike. `hangar unwrap` puts everything back. See [Commands](#commands).
+**Turning it on.** Sharing is off until you turn it on, because that changes your Claude Code settings. When hangar sees local servers that are not shared yet, the app's MCP pool page says so and offers a **Turn on sharing** button. `hangar wrap` in a terminal does the same thing. Either way, local servers then start through hangar, for sessions started in hangar and for `claude` in a terminal alike. `hangar unwrap` puts everything back. See [Commands](#commands).
 
 Real Claude Code sessions with Playwright and Context7, measured by `hangar bench`:
 
@@ -117,7 +117,7 @@ cargo build --release
 
 ### `hangar wrap`
 
-`wrap` is the switch that turns sharing on. Until you run it, every session starts its own servers, exactly as without hangar.
+`wrap` is the switch that turns sharing on. The **Turn on sharing** button on the app's MCP pool page runs the same thing. Until then, every session starts its own servers, exactly as without hangar.
 
 - **What it changes.** It rewrites each local (stdio) server in `~/.claude.json`, the file where `claude mcp add` keeps your servers, to start through `hangar-shim`.
 - **What it leaves alone.** Remote servers, servers that are already wrapped, and a project's own `.mcp.json` file, which is usually shared with a team.
@@ -250,11 +250,20 @@ Run `hangar stop` and `hangar up` afterwards. Every other shared server talks to
 
 Playwright is not the only server that runs once per session: Sequential Thinking, Filesystem and every server hangar doesn't know do too. It is the only one with a switch, because it is the only server hangar knows that can serve several sessions by itself. Sequential Thinking and Filesystem offer nothing like it, so they stay one per session.
 
-**One server, two accounts.** You might use the same server with a work account in one session and a personal one in another. Those two must not share a process, or the second session would act as the first one's account. So, whatever the level, a session gets its own server when:
-- anything in the server's own entry differs: command, arguments or `env` values. This is an exact comparison.
-- an environment variable the server inherits differs, and its name suggests a credential or a choice of account, server or data (`GITHUB_TOKEN`, `AWS_PROFILE`, `DATABASE_URL`).
+**One server, two accounts.** Some servers act as an account, and many take that account from an environment variable: a named setting that a program receives when it starts. The GitHub server, for example, reads its token from `GITHUB_PERSONAL_ACCESS_TOKEN`. A variable you set in a terminal is passed on to every program started from that terminal, so it reaches `claude` and the servers `claude` starts.
 
-Inherited variables are recognized by name, so one with an unusual name can be missed. [SECURITY.md](SECURITY.md#what-hangar-does-not-protect-you-from) has an example of each case. To be certain, put the setting in the server's `env` block or mark the server `share = "session"`.
+*How sharing could go wrong.* Say you have a work GitHub account and a personal one.
+1. In one terminal you set the work token and start `claude`. The GitHub server starts, and it acts as your work account.
+2. In a second terminal you set the personal token and start `claude`.
+3. If the second session simply joined the server that is already running, its "open an issue" would be done by your work account.
+
+*What hangar does.* Before a session joins a running server, hangar compares how the two were set up. The session gets a server of its own when:
+- anything in the server's own entry differs: its command, its arguments or the `env` values written next to it. This comparison is exact.
+- a variable the server inherits from the terminal differs, and its name suggests an account, a credential or a place where data lives. hangar looks for words such as `TOKEN`, `KEY`, `PASSWORD`, `PROFILE`, `ACCOUNT`, `URL`, `HOST` and `DATABASE`.
+
+In the example the two tokens differ, so each session gets its own GitHub server. This applies at every share level.
+
+*The limit.* The second check goes by the variable's name, so a variable with a plain name can be missed. [SECURITY.md](SECURITY.md#what-hangar-does-not-protect-you-from) walks through that case. To rule it out for a server, write the setting into the server's `env` block, or mark the server `share = "session"`.
 
 **The daemon also:**
 - counts resource subscriptions, so a server is unsubscribed only when the last session leaves;
@@ -346,7 +355,7 @@ The integration tests run real shim processes against an in-process daemon. They
 
 - **Windows is the tested platform.** The Unix code passes `cargo clippy` for `x86_64-unknown-linux-gnu` and `x86_64-apple-darwin`, but has never been run. `hangar bench` refuses to run there, because it relies on Windows job accounting to count every process.
 - **Claude Code only** for now.
-- **Sharing needs `hangar wrap`,** and covers the servers in `~/.claude.json`. Servers defined in a project's `.mcp.json` start the usual way.
+- **Sharing has to be turned on** (the button on the MCP pool page, or `hangar wrap`), and covers the servers in `~/.claude.json`. Servers defined in a project's `.mcp.json` start the usual way.
 - **Headless Claude Code.** Sessions have Claude Code's models, tools and settings, but not the terminal's own screens, such as its `/` command menus. hangar has its own controls for the model, the permission level and stopping a turn.
 - **A newer handshake.** Claude Code 2.1.3xx first probes servers with `server/discover`, from a newer MCP revision. hangar answers the way today's servers do (method not found), and Claude falls back to `initialize`.
 - **The fast path can lag.** Between real npx runs (at most a day apart), the fast path starts the version of an `@latest` package that npx cached last. Set `fast_npx = false` to check the registry on every start.

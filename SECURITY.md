@@ -98,7 +98,7 @@ Everything is under `~/.hangar`, readable only by your account (on Unix by file 
 | `sessions/<id>/events.jsonl` | each session's history: your messages, Claude's replies, tool calls |
 | `trusted.json` | the folders you trusted |
 | `logs/daemon.log` | start-up and server events. No messages, tokens or environment values |
-| `backups/`, `wrapped.json` | copies of `~/.claude.json` made by `hangar wrap`, which include any keys in your MCP settings |
+| `backups/`, `wrapped.json` | copies of `~/.claude.json` made when you turn sharing on (`hangar wrap`, or the button in the app). They include any keys in your MCP settings |
 
 ## What hangar does not protect you from
 
@@ -121,18 +121,30 @@ hangar is built for a computer that is yours.
 By default every session gets its own Playwright, with no port. Setting `share = "native"` makes one Playwright serve every session, and for that Playwright must listen on a local port. Playwright offers no password for that port. Any program on the computer, including another user's, could then connect and drive that browser, which runs under your account. Turn it on only on a computer that only you use.
 
 **One server used with two of your accounts, in a rare case.**
-This is about you alone, not about two people. You may use the same MCP server with different accounts or targets in different sessions: a work GitHub token in one project and a personal one in another, or a test database in one and the live database in another. A shared server is one program that was started once, with one set of settings. If two such sessions shared it, the second would quietly work with the first one's account.
+This is about you alone, not about two people.
 
-hangar prevents that by comparing how the two sessions set the server up:
+*Background.* Some MCP servers act as an account or work on one particular database. Many learn which one from an environment variable: a named setting that a program receives when it starts, such as `GITHUB_PERSONAL_ACCESS_TOKEN`. A variable you set in a terminal is passed on to every program started from that terminal. So it reaches `claude`, and the servers `claude` starts.
 
-- **The server's own entry must match exactly:** its command, its arguments and the `env` values written next to it. Any difference gives the session its own server. This check has no gaps.
-- **Inherited variables are compared by name.** A server also inherits the environment variables of the place Claude Code was started from, for example `$env:AWS_PROFILE = "work"` typed in a terminal before `claude`. hangar compares the ones whose names suggest a credential or a choice of account, server or data: names with words such as `TOKEN`, `KEY`, `PASSWORD`, `PROFILE`, `ACCOUNT`, `URL`, `HOST`, `DATABASE`.
+*What could go wrong.* A shared server is one program that was started once, with one set of settings. Say you set your work GitHub token in one terminal and your personal token in another, and start `claude` in both. If the second session simply joined the GitHub server that the first one started, its requests would be made by your work account.
 
-*Example that is caught.* Terminal 1 has `DATABASE_URL` pointing at a test database. Terminal 2 has it pointing at the live one. Both run `claude` with the same database server. The values differ, so each session gets its own server.
+*What hangar does.* Before a session joins a running server, hangar compares how the two were set up. The session gets a server of its own when:
+- **anything in the server's own entry differs:** its command, its arguments or the `env` values written next to it. This check is exact and has no gaps.
+- **an inherited variable differs, and its name suggests it matters.** hangar cannot know what every variable means, so it goes by the name. It looks for words that suggest a credential (`TOKEN`, `KEY`, `PASSWORD`, `SECRET`) or a choice of account, server or data (`PROFILE`, `ACCOUNT`, `URL`, `HOST`, `DATABASE` and similar). Variables that Claude Code and hangar set themselves for every session, such as the session's folder, are not compared: they differ between any two sessions and say nothing about an account.
 
-*Example that is missed.* Your own server picks its database from a variable called `APP_ENV`. Terminal 1 has `APP_ENV=staging`, terminal 2 has `APP_ENV=production`. Nothing in that name tells hangar it matters, so the two sessions share one server, and the second session works on staging while you believe it is on production.
+In the GitHub example the two tokens differ and the name contains `TOKEN`, so each session gets its own server.
 
-*The sure way.* Put such a setting in the server's own entry (its `env` block), where every difference counts. Or set `share = "session"` for that server in `~/.hangar/config.toml`.
+*The case hangar can miss.* All three of these have to be true:
+1. hangar shares the server: it is on hangar's built-in list, or you marked it as shareable in `config.toml`. A server hangar does not know is never shared.
+2. The server picks its account or its data from a variable it inherits from the terminal, not from its own entry.
+3. Nothing in that variable's name hints at it.
+
+*Example.* You wrote a small server for your own app. It reads a variable called `APP_ENV` to decide which database to use: `staging` is your test copy, `production` is the real one. You marked the server `share = "global"`.
+1. In terminal 1 you run `$env:APP_ENV = "staging"` and start `claude`. Your server starts, connected to the test database.
+2. In terminal 2 you run `$env:APP_ENV = "production"` and start `claude`.
+3. hangar sees the same server, set up the same way, and no difference it recognizes, because nothing in the name `APP_ENV` says "this picks a database". Session 2 joins the server from step 1.
+4. In session 2 you ask Claude to look something up in production. It gets its answer from the test database.
+
+*The sure way.* Write such a setting into the server's own entry (its `env` block), where every difference counts. Or set `share = "session"` for that server in `~/.hangar/config.toml`.
 
 Sessions started in the hangar app are all started by hangar, from the same environment. So this mostly concerns `claude` started in different terminals.
 
