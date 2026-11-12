@@ -45,8 +45,10 @@ const up = () => execFileSync(hangar, ["up", "--no-open"], { env, encoding: "utf
 const errors = [];
 const results = [];
 let restarting = false; // connection errors are expected while the daemon restarts
+const failed = [];
 function check(name, ok, detail = "") {
   results.push(ok);
+  if (!ok) failed.push(name);
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 }
 
@@ -294,6 +296,26 @@ try {
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
 
+  // ---- the theme can be pinned, and goes back to following the system
+  const look = () => page.evaluate(() => `${document.documentElement.dataset.theme} ${getComputedStyle(document.body).backgroundColor} ${localStorage.getItem("hangar.theme")}`);
+  const system = await look();
+  const choose = async (words) => {
+    await page.keyboard.press("Control+k");
+    await page.keyboard.type(words);
+    await sleep(250);
+    await page.keyboard.press("Enter");
+    await sleep(250);
+  };
+  await choose("theme: dark");
+  const pinnedDark = await look();
+  await choose("theme: light");
+  const pinnedLight = await look();
+  check("the theme can be pinned to dark or light from the command palette", pinnedDark === "dark rgb(8, 9, 10) dark" && pinnedLight === "light rgb(243, 243, 244) light", `${pinnedDark} | ${pinnedLight}`);
+  await choose("theme: match");
+  check("…and set back to match the system", (await look()) === system && system.endsWith("null"), system);
+  const footer = await page.locator('aside, nav, div').filter({ hasText: /^Memory/ }).last().innerText().catch(() => "");
+  check("the sidebar says how many more sessions fit", /room for [0-9]+ more sessions?|next one waits/.test(await page.locator("body").innerText()), footer.slice(0, 80));
+
   // ---- views: Needs you, and a project
   await page.click('nav[aria-label="Main"] >> text=Needs you');
   await sleep(200);
@@ -382,7 +404,7 @@ try {
   } catch {}
 }
 
-const failed = results.filter((ok) => !ok).length;
 console.log(errors.length ? `\nPAGE ERRORS:\n${errors.join("\n")}` : "\nno page errors");
-console.log(`${results.length - failed}/${results.length} checks passed`);
-process.exit(failed || errors.length ? 1 : 0);
+// The names again on the last line, so a failure is never lost in a long log.
+console.log(`${results.length - failed.length}/${results.length} checks passed${failed.length ? ". Failed: " + failed.join("; ") : ""}`);
+process.exit(failed.length || errors.length ? 1 : 0);

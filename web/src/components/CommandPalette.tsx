@@ -1,8 +1,9 @@
-import { Copy, Inbox, Layers, PanelLeft, PanelRight, Play, Search, Server, Square, SquarePen } from "lucide-react";
+import { Check, Copy, Download, Inbox, Layers, Monitor, Moon, PanelLeft, PanelRight, Play, Search, Server, Square, SquarePen, Sun } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { basename } from "../format";
 import { report, useStore } from "../store";
+import { THEMES, useInstall, useTheme } from "../theme";
 import { openSession, useUI } from "../ui";
 import { matches } from "../views";
 import { cx, Kbd, StatusIcon, useDialog } from "./ui";
@@ -21,6 +22,8 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   const sessions = useStore((s) => s.sessions);
   const selected = useStore((s) => (s.selected ? s.sessions[s.selected] : undefined));
   const ui = useUI();
+  const theme = useTheme();
+  const install = useInstall();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const list = useRef<HTMLDivElement>(null);
@@ -35,6 +38,15 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       { id: "nav", group: "Actions", label: "Toggle sidebar", icon: <PanelLeft className="size-4" />, shortcut: "Ctrl \\", run: ui.toggleNav },
       { id: "props", group: "Actions", label: "Toggle properties panel", icon: <PanelRight className="size-4" />, run: ui.toggleProps },
     ];
+    // After the sessions, so the list still opens on what is used most.
+    const themeIcons = { system: Monitor, light: Sun, dark: Moon };
+    const appearance: Item[] = THEMES.map((t) => {
+      const Icon = theme.choice === t.value ? Check : themeIcons[t.value];
+      return { id: `theme-${t.value}`, group: "Appearance", label: `Theme: ${t.label}`, detail: theme.choice === t.value ? "current" : undefined, icon: <Icon className="size-4" />, run: () => theme.choose(t.value) };
+    });
+    if (install.offer) {
+      appearance.push({ id: "install", group: "Appearance", label: "Install hangar as an app", detail: "its own taskbar icon and window", icon: <Download className="size-4" />, run: install.install });
+    }
     if (selected) {
       const s = selected;
       if (s.status === "working")
@@ -48,8 +60,8 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       .filter((s) => matches(query, s.title, s.cwd, s.preview))
       .slice(0, query ? 12 : 6)
       .map((s) => ({ id: s.id, group: query ? "Sessions" : "Recent sessions", label: s.title, detail: basename(s.cwd), icon: <StatusIcon status={s.status} />, run: () => openSession(s.id) }));
-    return [...actions.filter((a) => matches(query, a.label, a.detail)), ...found];
-  }, [query, sessions, selected, ui]);
+    return [...actions.filter((a) => matches(query, a.label, a.detail)), ...found, ...appearance.filter((a) => matches(query, a.label, a.detail))];
+  }, [query, sessions, selected, ui, theme, install]);
 
   useEffect(() => setActive(0), [query]);
   useEffect(() => {

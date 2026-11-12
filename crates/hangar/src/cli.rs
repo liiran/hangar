@@ -178,13 +178,30 @@ fn spawn_detached_daemon(home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Opens `url` in the default browser: as a chromeless app window when that
-/// is Chrome, Edge or another Chromium browser, else in a tab.
+/// Opens `url` in the default browser. In Chrome, Edge or another Chromium
+/// browser that is hangar's own window: the installed app if the user
+/// installed hangar from the browser (its own taskbar icon, a title bar in
+/// the app's color), else a plain app window. Other browsers get a tab.
 #[cfg_attr(windows, allow(unused_variables))]
 fn open_app(home: &Path, url: &str) {
     #[cfg(windows)]
     {
-        let app = |exe: &Path| is_chromium(exe) && std::process::Command::new(exe).arg(format!("--app={url}")).spawn().is_ok();
+        let origin = url.split("/#").next().unwrap_or(url);
+        let app = |exe: &Path| {
+            if !is_chromium(exe) {
+                return false;
+            }
+            let mut cmd = std::process::Command::new(exe);
+            match installed_app(exe, origin) {
+                // The installed app, opened at the one-time link.
+                Some((profile, id)) => cmd
+                    .arg(format!("--profile-directory={profile}"))
+                    .arg(format!("--app-id={id}"))
+                    .arg(format!("--app-launch-url-for-shortcuts-menu-item={url}")),
+                None => cmd.arg(format!("--app={url}")),
+            };
+            cmd.spawn().is_ok()
+        };
         match default_browser() {
             Some(exe) if app(&exe) => return,
             Some(_) => {}
@@ -224,6 +241,34 @@ fn launcher(home: &Path, url: &str) -> Option<PathBuf> {
     let path = home.join("open.html");
     hangar::util::write_private(&path, page.as_bytes()).ok()?;
     Some(path)
+}
+
+/// The id Chromium browsers give an installed web app: its manifest id (for
+/// hangar, its address with a trailing slash) hashed twice with SHA-256,
+/// the first 16 bytes, each hex digit written as a letter from `a` to `p`.
+#[cfg(any(windows, test))]
+fn web_app_id(manifest_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(Sha256::digest(manifest_id.as_bytes())).iter().take(16).flat_map(|b| [b >> 4, b & 15]).map(|n| (b'a' + n) as char).collect()
+}
+
+/// The profile of `browser` in which hangar at `origin` is installed as an
+/// app, with the app's id. The browser keeps a folder per installed app.
+#[cfg(windows)]
+fn installed_app(browser: &Path, origin: &str) -> Option<(String, String)> {
+    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
+    let data = match browser.file_stem()?.to_string_lossy().to_ascii_lowercase().as_str() {
+        "chrome" => local.join("Google").join("Chrome").join("User Data"),
+        "msedge" => local.join("Microsoft").join("Edge").join("User Data"),
+        "brave" => local.join("BraveSoftware").join("Brave-Browser").join("User Data"),
+        _ => return None,
+    };
+    let id = web_app_id(&format!("{origin}/"));
+    std::fs::read_dir(data)
+        .ok()?
+        .flatten()
+        .find(|profile| profile.path().join("Web Applications").join(format!("_crx_{id}")).is_dir())
+        .map(|profile| (profile.file_name().to_string_lossy().into_owned(), id))
 }
 
 /// The program that opens web links, as chosen in Windows settings.
@@ -323,6 +368,18 @@ mod tests {
         assert_eq!(page.matches("</script>").count(), 1, "the link cannot end the script early");
         assert_eq!(page.matches("</script>").count(), 1, "the link cannot end the script early");
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn web_app_ids_match_the_ones_chrome_gives() {
+        // Read from Chrome 157's profile folder after installing hangar from these addresses.
+        for (address, id) in [
+            ("http://127.0.0.1:51381/", "kdgcpaiokhdocediedmcodeobfhaocem"),
+            ("http://127.0.0.1:53777/", "ahlljijehjmohjhjdincpfkfjlolhdnf"),
+            ("http://127.0.0.1:53926/", "lalklbbfcihdnefdhkjiaebiicfhfahf"),
+        ] {
+            assert_eq!(web_app_id(address), id);
+        }
     }
 
     #[test]

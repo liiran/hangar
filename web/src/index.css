@@ -21,54 +21,62 @@
 
 /* Surfaces step up from the window (bg) to the main panel, rows, and
    selected rows. Lines are translucent so they work on every surface.
-   Dark follows Linear's own tokens: neutral near-black levels, cool gray
-   text, a muted indigo. */
+   Each color is written once as light-dark(light, dark). Dark follows
+   Linear's own tokens: neutral near-black levels, cool gray text, a muted
+   indigo. The theme follows the system until src/theme.ts sets data-theme
+   on <html> (which the user can pin to light or dark). */
 :root {
-  --bg: #08090a;
-  --panel: #0f1011;
-  --panel-2: #161718;
-  --raised: #1c1d1f;
-  --line: rgba(255, 255, 255, 0.06);
-  --line-strong: rgba(255, 255, 255, 0.1);
-  --fg: #f7f8f8;
-  --muted: #8a8f98;
-  --faint: #62666d;
+  color-scheme: light dark;
+  --bg: light-dark(#f3f3f4, #08090a);
+  --panel: light-dark(#fcfcfd, #0f1011);
+  --panel-2: light-dark(#f3f3f5, #161718);
+  --raised: light-dark(#eaeaed, #1c1d1f);
+  --line: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.06));
+  --line-strong: light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.1));
+  --fg: light-dark(#18181b, #f7f8f8);
+  --muted: light-dark(#5d5e66, #8a8f98);
+  --faint: light-dark(#8f9097, #62666d);
   --accent: #5e6ad2;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(94, 106, 210, 0.18);
-  --code: #0b0c0d;
-  --shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
-  --s-needs: #fc7840;
-  --s-working: #f0bf00;
+  --accent-soft: light-dark(rgba(94, 106, 210, 0.1), rgba(94, 106, 210, 0.18));
+  --code: light-dark(#f5f5f7, #0b0c0d);
+  --shadow: 0 16px 48px light-dark(rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0.6)), 0 0 0 1px light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.08));
+  --s-needs: light-dark(#e07b1f, #fc7840);
+  --s-working: light-dark(#c99a06, #f0bf00);
   --s-done: #5e6ad2;
-  --s-idle: #8a8f98;
-  --s-error: #eb5757;
+  --s-idle: light-dark(#8f9097, #8a8f98);
+  --s-error: light-dark(#d93f3f, #eb5757);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
   color-scheme: dark;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f3f3f4;
-    --panel: #fcfcfd;
-    --panel-2: #f3f3f5;
-    --raised: #eaeaed;
-    --line: rgba(0, 0, 0, 0.07);
-    --line-strong: rgba(0, 0, 0, 0.12);
-    --fg: #18181b;
-    --muted: #5d5e66;
-    --faint: #8f9097;
-    --accent: #5e6ad2;
-    --accent-fg: #ffffff;
-    --accent-soft: rgba(94, 106, 210, 0.1);
-    --code: #f5f5f7;
-    --shadow: 0 16px 48px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.06);
-    --s-needs: #e07b1f;
-    --s-working: #c99a06;
-    --s-done: #5e6ad2;
-    --s-idle: #8f9097;
-    --s-error: #d93f3f;
-    color-scheme: light;
-  }
+/* Tailwind's dark: classes follow the same switch. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Installed as an app with its title bar hidden, the page reaches the top
+   of the window (src/theme.ts sets .overlay on <html> then). A strip in the
+   window's color stays empty there: the window is dragged by it, and the
+   window buttons sit over its end. */
+.titlebar {
+  display: none;
+}
+:root.overlay .titlebar {
+  display: block;
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 100;
+  height: env(titlebar-area-height, 32px);
+  background: var(--bg);
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+:root.overlay #root {
+  box-sizing: border-box;
+  padding-top: env(titlebar-area-height, 32px);
 }
 
 @theme inline {

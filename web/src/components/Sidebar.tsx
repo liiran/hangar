@@ -157,7 +157,7 @@ function MachineFooter() {
           <span className="truncate">
             {running} running{queued > 0 && ` · ${queued} waiting`}
           </span>
-          <span className="shrink-0">{queued > 0 || room === 0 ? "next one waits" : `room for ${room} more`}</span>
+          <span className="shrink-0">{queued > 0 || room === 0 ? "next one waits" : `room for ${room} more ${room === 1 ? "session" : "sessions"}`}</span>
         </div>
       </div>
       <div className="flex items-center justify-between text-[11px] text-faint">

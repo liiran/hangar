@@ -22,7 +22,12 @@ const ICO = [
   { size: 32, from: "logo.svg" },
   { size: 48, from: "logo.svg" },
 ];
-const PNG = [{ file: "apple-touch-icon.png", size: 180, from: "logo.svg" }];
+const PNG = [
+  { file: "apple-touch-icon.png", size: 180, from: "logo.svg" },
+  // For hangar installed as an app (manifest.webmanifest): its taskbar and Start menu icon.
+  { file: "icon-192.png", size: 192, from: "logo.svg" },
+  { file: "icon-512.png", size: 512, from: "logo.svg" },
+];
 
 const browser = await chromium.launch({ channel: process.env.E2E_CHANNEL ?? "chrome", headless: true });
 const page = await browser.newPage({ deviceScaleFactor: 1 });

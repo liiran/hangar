@@ -8,9 +8,14 @@
          from it (see web/scripts/icons.mjs). -->
     <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- Lets hangar be installed as an app from the browser: its own
+         taskbar icon at full size, and a title bar in the app's color. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#f3f3f4" />
     <title>hangar</title>
   </head>
   <body>
+    <div class="titlebar"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -21,6 +21,7 @@
 - **Settings per session.** Each session gets a folder, a model (Opus, Sonnet or Haiku) and a permission level: ask first, accept edits, plan only or full access. Both the model and the permission level can be changed mid-session.
 - **A feed per session.** It shows messages, tool calls you can expand, and each turn's time and cost. A properties panel shows the session's status, model, memory, cost and MCP servers.
 - **History that lasts.** Sessions outlive restarts. A stopped or paused session carries on in the same conversation when you send your next message.
+- **Light or dark.** hangar follows your system. To pin one, press `Ctrl K` and type *theme*.
 - **Keyboard first:**
 
 | Key | |
@@ -87,6 +88,11 @@ cargo build --release
 - If your default browser is Chrome or Edge, the app opens as its own window.
 - Closing the window leaves your sessions running. `hangar stop` ends hangar and every session.
 - To start it from anywhere, put `target/release` on your `PATH`, or make a shortcut to `hangar.exe up`.
+
+**Make it an app of its own (optional, Chrome or Edge).** In hangar, press `Ctrl K`, type *install* and choose **Install hangar as an app**.
+- hangar gets its own taskbar and Start menu icon, drawn at full sharpness.
+- Its title bar takes the app's color. Click the `^` in the title bar to hide it altogether.
+- From then on, `hangar up` opens the installed app.
 
 ## Commands
 
