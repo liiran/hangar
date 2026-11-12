@@ -203,7 +203,7 @@ Many agents at once can use more memory than your PC has. The budget decides whe
 - **The rule.** A session starts, or resumes, only if a reserve of free memory would remain after its expected cost.
 - **The reserve** is the larger of 2 GB and 10% of your RAM.
 - **The expected cost** is the median peak of your recent sessions (600 MB until hangar has seen some).
-- *Example.* With 31 GB of RAM the reserve is 3.1 GB. If 6 GB is free and a session is expected to need 600 MB, it starts, because 5.4 GB would remain. The sidebar shows the result as "room for ~4 more sessions".
+- *Example.* With 31 GB of RAM the reserve is 3.1 GB. If 6 GB is free and a session is expected to need 600 MB, it starts, because 5.4 GB would remain. When the next session would have to wait, the sidebar says "next one waits".
 - **When there isn't room,** the session waits in the queue. hangar first pauses idle sessions to make room, longest idle first.
 - **Idle** means the session finished its turn, isn't waiting for you, and has been quiet for 30 seconds. A session that is working or waiting for an approval is never paused.
 - **Pausing** ends the `claude` process, which holds 400–470 MB on this machine. Your next message resumes the conversation with `--resume`, so Claude sees the whole history.

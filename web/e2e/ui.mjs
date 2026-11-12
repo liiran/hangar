@@ -354,7 +354,8 @@ try {
   await choose("theme: match");
   check("…and set back to match the system", (await look()) === system && system.endsWith("null"), system);
   const footer = await page.locator('aside, nav, div').filter({ hasText: /^Memory/ }).last().innerText().catch(() => "");
-  check("the sidebar says how many more sessions fit", /room for ~[0-9]+ more sessions?|next one waits/.test(await page.locator("body").innerText()), footer.slice(0, 80));
+  const bodyText = await page.locator("body").innerText();
+  check("the sidebar counts what is running, without guessing how many more would fit", /[0-9]+ running/.test(bodyText) && !bodyText.includes("room for"), footer.slice(0, 80));
 
   // ---- views: Needs you, and a project
   await page.click('nav[aria-label="Main"] >> text=Needs you');
