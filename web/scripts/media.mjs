@@ -25,6 +25,8 @@ const IMG = path.join(root, "docs", "img");
 const MEDIA = path.join(root, "docs", "media");
 const SIZE = { width: 1920, height: 1080 };
 const MAX_GIF_MB = 15;
+// The README's pictures use the dark theme. MEDIA_THEME=light records the light one.
+const THEME = process.env.MEDIA_THEME === "light" ? "light" : "dark";
 const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -248,9 +250,9 @@ async function until(check, timeout = 300_000) {
 }
 
 const browser = await chromium.launch({ channel: process.env.E2E_CHANNEL ?? "chrome", headless: true });
-const context = await browser.newContext({ viewport: SIZE, colorScheme: "light", deviceScaleFactor: 1 });
+const context = await browser.newContext({ viewport: SIZE, colorScheme: THEME, deviceScaleFactor: 1 });
 // A visible pointer and the keys being pressed, since a headless browser shows neither.
-await context.addInitScript(() => {
+await context.addInitScript((dark) => {
   addEventListener("DOMContentLoaded", () => {
     const pointer = document.createElement("div");
     pointer.dataset.demoOverlay = "";
@@ -262,7 +264,10 @@ await context.addInitScript(() => {
     const keys = document.createElement("div");
     keys.dataset.demoOverlay = "";
     keys.style.cssText =
-      "position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:99999;pointer-events:none;padding:8px 14px;border-radius:10px;background:rgba(24,24,27,.86);color:#fff;font:600 15px/1.2 'Inter Variable',system-ui,sans-serif;letter-spacing:.02em;opacity:0;transition:opacity .2s";
+      "position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:99999;pointer-events:none;padding:8px 14px;border-radius:10px;font:600 15px/1.2 'Inter Variable',system-ui,sans-serif;letter-spacing:.02em;opacity:0;transition:opacity .2s";
+    // The label for a pressed key stands out from the page: light on a dark page, dark on a light one.
+    keys.style.background = dark ? "rgba(244,244,245,.94)" : "rgba(24,24,27,.86)";
+    keys.style.color = dark ? "#18181b" : "#fff";
     document.documentElement.append(keys);
     let hide;
     window.__showKeys = (text) => {
@@ -272,7 +277,7 @@ await context.addInitScript(() => {
       hide = setTimeout(() => (keys.style.opacity = "0"), 1100);
     };
   });
-});
+}, THEME === "dark");
 const page = await context.newPage();
 const rec = new Recorder();
 
