@@ -282,7 +282,10 @@ fn credential_fingerprint(env: &BTreeMap<String, String>, spec: &ServerSpec) -> 
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     for (k, v) in env {
-        let is_ours = k.starts_with("HANGAR_") || k.starts_with("CLAUDE_CODE_") || k == "CLAUDECODE";
+        // Variables that Claude Code and hangar set for each session say nothing about an
+        // account. `CLAUDE_PROJECT_DIR` is the session's folder: counting it would give every
+        // folder its own copy of every server. (Folder-bound servers use the `project` level.)
+        let is_ours = k.starts_with("HANGAR_") || k.starts_with("CLAUDE_") || k == "CLAUDECODE";
         if crate::util::separates_sessions(k) && !is_ours && !spec.env.contains_key(k) {
             h.update((k.len() as u64).to_le_bytes());
             h.update(k.as_bytes());

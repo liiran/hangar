@@ -521,17 +521,19 @@ async fn a_refused_subscription_is_rolled_back() {
 async fn sessions_with_different_credentials_never_share() {
     let home = temp_home("credentials");
     let d = start_daemon(&home, config(&[("fake", Share::Global)])).await;
-    let with_key = |key: &str| {
+    // What Claude Code itself sets for each session (its folder, its session id) differs
+    // between sessions in two projects, and must not keep them apart.
+    let with_key = |key: &str, folder: &str| {
         let mut c = shim_cmd(&home, "fake", &[]);
-        c.env("SERVICE_API_KEY", key);
+        c.env("SERVICE_API_KEY", key).env("CLAUDE_PROJECT_DIR", folder).env("CLAUDE_CODE_SESSION_ID", folder).env("PWD", folder);
         McpClient::spawn(c, vec![]).unwrap()
     };
-    let (a, b, c) = (with_key("alice"), with_key("alice"), with_key("bob"));
+    let (a, b, c) = (with_key("alice", "C:/code/site"), with_key("alice", "C:/code/notes"), with_key("bob", "C:/code/site"));
     for x in [&a, &b, &c] {
         x.initialize("t", T).await.unwrap();
     }
     let pa = tool(&a, "pid", json!({})).await.unwrap();
-    assert_eq!(pa, tool(&b, "pid", json!({})).await.unwrap(), "same credentials share");
+    assert_eq!(pa, tool(&b, "pid", json!({})).await.unwrap(), "same credentials share, also from another project folder");
     assert_ne!(pa, tool(&c, "pid", json!({})).await.unwrap(), "other credentials get their own server");
     d.shutdown().await;
 }

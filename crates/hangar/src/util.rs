@@ -162,10 +162,11 @@ pub fn separates_sessions(name: &str) -> bool {
         "VIRTUAL_ENV",
         "PYENV_ROOT",
     ];
-    if looks_secret(name) {
-        return true;
+    // First, so that `PWD` (the current folder) is not read as a password.
+    if COMMON.contains(&name.to_ascii_uppercase().as_str()) {
+        return false;
     }
-    !COMMON.contains(&name.to_ascii_uppercase().as_str()) && name_words(name).iter().any(|w| IDENTITY_NAMES.contains(&w.as_str()))
+    looks_secret(name) || name_words(name).iter().any(|w| IDENTITY_NAMES.contains(&w.as_str()))
 }
 
 /// A URL for display: a password, a bare token before `@`, and the values
@@ -365,6 +366,8 @@ mod tests {
         for name in [
             "PATH",
             "Path",
+            "PWD",
+            "OLDPWD",
             "HOME",
             "USERPROFILE",
             "TEMP",
