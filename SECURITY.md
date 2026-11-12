@@ -77,7 +77,18 @@ A project folder can carry Claude settings that act automatically: hooks that ru
 - **A shared secret between shim and daemon.** The shim is the small program Claude Code starts in place of an MCP server. Before it sends anything, the shim and the daemon each prove they know the secret in `~/.hangar/daemon.json`. A program that cannot read that file cannot start anything through hangar, and a fake daemon cannot collect a shim's environment.
 - **Nothing is left behind (Windows).** Everything hangar starts lives in a job object that ends with hangar, even if hangar crashes.
 
-### 7. What is stored, and where
+### 7. Text from servers cannot take over your terminal
+
+`hangar status` prints MCP server names and the last line a failed server wrote, and the log file records them. A terminal treats certain invisible characters as commands: clear the screen, move the cursor, rename the window, write to the clipboard. A server could put those in its name or in what it prints.
+
+- **Names and error lines are cleaned as soon as hangar receives them.** Every control character is removed. Each of those commands has to begin with one, so what is left is ordinary text. That cleaned text is what `hangar status`, the app and the log file hold.
+- **Invisible and text-reversing characters are removed too,** so one name cannot be made to look like another.
+- **Ordinary text is untouched:** letters in any language, digits, punctuation, emoji.
+- **What `hangar status` prints is checked again on the way out.** In `--json` output, any such character left in another field is written as a `\uXXXX` escape, which a terminal shows as text.
+
+*Example.* A server named `\x1b[2J\x1b[Hdocs` would clear your screen and print `docs` at the top. hangar prints `[2J[Hdocs`: the leftovers are visible, and they do nothing.
+
+### 8. What is stored, and where
 
 Everything is under `~/.hangar`, readable only by your account (on Unix by file mode, on Windows through your profile folder's permissions).
 
@@ -109,12 +120,21 @@ hangar is built for a computer that is yours.
 **One shared Playwright browser, if you turn it on.**
 By default every session gets its own Playwright, with no port. Setting `share = "native"` makes one Playwright serve every session, and for that Playwright must listen on a local port. Playwright offers no password for that port. Any program on the computer, including another user's, could then connect and drive that browser, which runs under your account. Turn it on only on a computer that only you use.
 
-**The wrong account, in rare cases.**
-One server may be shared only by sessions that use the same account.
-- *Example.* Session A was started with `GITHUB_TOKEN` set to Alice's token, and session B with Bob's. If both used one GitHub server, B's requests would go out as Alice.
-- *What hangar does.* It compares the sessions' environment variables. If a variable that holds a credential, or names an account, server or data location, differs (`*_TOKEN`, `*_KEY`, `AWS_PROFILE`, `DATABASE_URL`, …), each session gets its own server.
-- *The limit.* hangar recognizes those variables by their names. A variable with an unusual name, such as `ACME_TENANT`, is not recognized, and two sessions that differ only in it would share.
-- *The sure way.* If you run one server under different accounts, set `share = "session"` for it in `~/.hangar/config.toml`.
+**One server used with two of your accounts, in a rare case.**
+This is about you alone, not about two people. You may use the same MCP server with different accounts or targets in different sessions: a work GitHub token in one project and a personal one in another, or a test database in one and the live database in another. A shared server is one program that was started once, with one set of settings. If two such sessions shared it, the second would quietly work with the first one's account.
+
+hangar prevents that by comparing how the two sessions set the server up:
+
+- **The server's own entry must match exactly:** its command, its arguments and the `env` values written next to it. Any difference gives the session its own server. This check has no gaps.
+- **Inherited variables are compared by name.** A server also inherits the environment variables of the place Claude Code was started from, for example `$env:AWS_PROFILE = "work"` typed in a terminal before `claude`. hangar compares the ones whose names suggest a credential or a choice of account, server or data: names with words such as `TOKEN`, `KEY`, `PASSWORD`, `PROFILE`, `ACCOUNT`, `URL`, `HOST`, `DATABASE`.
+
+*Example that is caught.* Terminal 1 has `DATABASE_URL` pointing at a test database. Terminal 2 has it pointing at the live one. Both run `claude` with the same database server. The values differ, so each session gets its own server.
+
+*Example that is missed.* Your own server picks its database from a variable called `APP_ENV`. Terminal 1 has `APP_ENV=staging`, terminal 2 has `APP_ENV=production`. Nothing in that name tells hangar it matters, so the two sessions share one server, and the second session works on staging while you believe it is on production.
+
+*The sure way.* Put such a setting in the server's own entry (its `env` block), where every difference counts. Or set `share = "session"` for that server in `~/.hangar/config.toml`.
+
+Sessions started in the hangar app are all started by hangar, from the same environment. So this mostly concerns `claude` started in different terminals.
 
 **A shared server's error text.**
 The last line a shared server printed can appear in an error shown to every session that uses it.

@@ -165,7 +165,9 @@ hangar bench --preset .mcp.json --sessions 1,5,10 --out my-results
 hangar has two parts:
 
 - **The daemon** is a background program. It starts and watches the Claude Code sessions, runs the MCP pool, and serves the app at `http://127.0.0.1:7317`. That address exists only inside your computer.
-- **The app** is a web page served by the daemon. Your browser shows it, as a window of its own or as a tab. Closing it stops nothing.
+- **The app** is a web page served by the daemon. Your browser shows it, as a window of its own or as a tab. Both are the same page from the same daemon, so they show the same sessions. Closing it stops nothing.
+
+**The address.** `127.0.0.1` means "this computer". Every computer has that address, and it always points back at itself. `7317` is the port: the numbered door hangar listens on, so that other programs on your PC can listen on other doors. A phone on your Wi-Fi cannot open hangar, because hangar does not listen on your PC's network address.
 
 ```
  you ── the app (a page in your browser) ──WebSocket── hangar daemon ──stdin / stdout── claude ──HTTPS── Anthropic
@@ -246,7 +248,13 @@ share = "native"
 
 Run `hangar stop` and `hangar up` afterwards. Every other shared server talks to hangar through private pipes, with no port, so this trade-off exists only for Playwright.
 
-**Different accounts never share.** Sessions get separate servers when their environments differ in a variable that looks like a credential or names an account, server or data location (`GITHUB_TOKEN`, `AWS_PROFILE`, `DATABASE_URL`), whatever the level. hangar recognizes those variables by name, so mark a server `share = "session"` if you need to be certain.
+Playwright is not the only server that runs once per session: Sequential Thinking, Filesystem and every server hangar doesn't know do too. It is the only one with a switch, because it is the only server hangar knows that can serve several sessions by itself. Sequential Thinking and Filesystem offer nothing like it, so they stay one per session.
+
+**One server, two accounts.** You might use the same server with a work account in one session and a personal one in another. Those two must not share a process, or the second session would act as the first one's account. So, whatever the level, a session gets its own server when:
+- anything in the server's own entry differs: command, arguments or `env` values. This is an exact comparison.
+- an environment variable the server inherits differs, and its name suggests a credential or a choice of account, server or data (`GITHUB_TOKEN`, `AWS_PROFILE`, `DATABASE_URL`).
+
+Inherited variables are recognized by name, so one with an unusual name can be missed. [SECURITY.md](SECURITY.md#what-hangar-does-not-protect-you-from) has an example of each case. To be certain, put the setting in the server's `env` block or mark the server `share = "session"`.
 
 **The daemon also:**
 - counts resource subscriptions, so a server is unsubscribed only when the last session leaves;

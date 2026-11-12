@@ -58,13 +58,15 @@ MCP memory for 5 sessions:
 - **`sim`, a stand-in for Claude Code.** When a session starts, Claude Code does three things with each MCP server: it says hello (`initialize`), confirms (`notifications/initialized`) and asks which tools exist (`tools/list`). After that the server is ready. `sim` does exactly those three steps and nothing else. So it measures the servers alone, it gives the same numbers every time, and ten of them fit in the memory that three real sessions need.
 - **`claude`, the real thing.** Real Claude Code is started the way hangar starts it (headless), with the servers passed in `--mcp-config`. The benchmark then asks Claude Code itself whether each server is connected yet (its `mcp_status` request goes from `pending` to `connected`). No message is ever sent to the model, so the benchmark uses no tokens.
 
-**Every run starts from nothing.** Each measured run happens in a new process of its own, and a pooled run starts a brand-new hangar daemon with no servers running. So every pooled number includes starting the daemon and starting each shared server for the first time. That is the worst case for hangar. In daily use hangar is already running, and a server that earlier sessions share is already up. [Joining a pool that is already running](#joining-a-pool-that-is-already-running) measures that case.
+**Every run starts from nothing.** Each measured run happens in a new process of its own, and a pooled run starts a brand-new hangar daemon with no servers running. So in every pooled run, memory and CPU include the daemon, and the sessions are the first to ask for each shared server, so they wait while it starts. That is the worst case for hangar. In daily use, a server that earlier sessions share is already up. [Joining a pool that is already running](#joining-a-pool-that-is-already-running) measures that case.
 
 **Memory** is private memory: what a process holds for itself and no other process can use. It is added up over every process of the run, 3 seconds after the last session became ready. Program files that several processes share are not counted twice.
 
 **CPU** is processor time, not time on the clock. Five processes that each keep a core busy for one second have used 5 seconds of CPU, even though one second passed. Windows keeps this total for a group of processes (a "job"), and the total includes processes that have already exited. That matters here, because `npx` starts helper processes that finish within a second. The benchmark's own CPU use is subtracted.
 
-**Ready** is the time from launching a session until all of its servers answered `tools/list` (sim) or reported `connected` (claude). A session that fails counts as failed, never as fast, and a comparison that includes a failed session is not reported.
+**Ready** is how long a session waits for its tools. The clock starts when the session is launched. It stops when the last of its servers has answered `tools/list` (sim) or reported `connected` (claude). A session's servers start side by side, so it waits for its slowest server, not for all of them added together.
+*Example.* One server needs 0.3 s to start and another 0.6 s. The session is ready after 0.6 s, not 0.9 s.
+A session that fails counts as failed, never as fast, and a comparison that includes a failed session is not reported.
 
 **Leftovers** are processes still alive 5 seconds after every session ended. The pool daemon and the shared servers it keeps running on purpose are not leftovers. A per-session server that outlives its session is.
 
@@ -77,13 +79,15 @@ MCP memory for 5 sessions:
 
 **The servers.** They are launched exactly as Claude Code requires on Windows (`cmd /c npx -y <package>`):
 
-| Server | Package | What it does |
-|---|---|---|
-| Playwright | `@playwright/mcp@latest --headless --isolated` | drives a browser |
-| Context7 | `@upstash/context7-mcp@latest` | looks up current library documentation |
-| Memory | `@modelcontextprotocol/server-memory` | keeps notes in a knowledge graph |
-| Sequential Thinking | `@modelcontextprotocol/server-sequential-thinking` | a scratchpad for step-by-step reasoning |
-| Filesystem | `@modelcontextprotocol/server-filesystem <dir>` | reads and writes files in one folder |
+| Server | Package | What it does | With hangar |
+|---|---|---|---|
+| Playwright | `@playwright/mcp@latest --headless --isolated` | drives a browser | one per session: each session needs its own pages. The only one with [a switch](#playwright-a-browser-per-session-or-one-for-all) to share it. |
+| Context7 | `@upstash/context7-mcp@latest` | looks up current library documentation | **one for all sessions:** it keeps nothing between requests |
+| Memory | `@modelcontextprotocol/server-memory` | keeps notes in a knowledge graph | **one for all sessions:** every copy would write the same file anyway |
+| Sequential Thinking | `@modelcontextprotocol/server-sequential-thinking` | a scratchpad for step-by-step reasoning | one per session: it holds that session's chain of thoughts in memory |
+| Filesystem | `@modelcontextprotocol/server-filesystem <dir>` | reads and writes files in one folder | one per session: it asks each session which folders it may use |
+
+So two of the five are shared and three are not. The three still get cheaper, because hangar starts each as one process instead of a tree of them ([where the savings come from](#where-the-savings-come-from-sim-no-fast-npxmd)).
 
 "Five popular servers" below means all five. Playwright needs `--isolated` to serve more than one session at all: without it, a second session's browser fails with "Browser is already in use", pooled or not.
 
@@ -168,7 +172,13 @@ Every number above includes hangar starting from nothing. To measure the everyda
 | | 5 | 1.9 s | 1.6 s |
 | | 10 | 2.9 s | 3.0 s |
 
-A shared server that is already running answers at once. A per-session server still has to start for each new session. With two servers, one of them shared, joining takes about half the time. With five servers, three of them per-session, starting those three dominates, and at 10 sessions there is no difference.
+**What the two columns compare.** Both are hangar. On the left nothing was running, so the sessions had to wait while the shared servers started for the first time. On the right the shared servers were already up, and a new session only had to start the servers that are its own.
+
+**Why two servers gain more than five.** A session is ready when its slowest server is ready.
+- *Playwright and Context7.* When joining, Context7 is already running. All that is left to start is the session's own Playwright, and the wait drops by about half.
+- *Five servers.* When joining, Context7 and Memory are already running, but the session still starts three servers of its own. With one session that helps (806 ms → 445 ms). With 10 sessions, 30 programs start at the same moment on a 6-core processor, and that is what takes the 3 seconds. The two shared servers were not the slow part, so having them ready changes nothing.
+
+**This is not the comparison with no hangar.** That one is in the tables above: 10 sessions are ready in 2.9 s instead of 21.5 s, because 115 processes start instead of 250.
 
 ## Every session uses its browser ([sim-browse.md](results/sim-browse.md))
 
@@ -192,7 +202,7 @@ A running browser is several processes and about 250 MB. By default each session
 
 **Why Playwright is different.** A server such as Context7 keeps nothing between requests, so hangar can pass every session's requests to one copy of it. Playwright keeps a browser with open pages, and each session needs its own. Passing every session's requests to one ordinary Playwright would mix their pages up.
 
-**What Playwright offers instead.** It has a mode of its own for serving many clients: it listens on a local port, and with `--isolated` gives each client a private browser context inside one browser. hangar can use that mode (`share = "native"`). Of the servers hangar knows, only Playwright has such a mode, so this choice exists only for Playwright.
+**What Playwright offers instead.** It has a mode of its own for serving many clients: it listens on a local port, and with `--isolated` gives each client a private browser context inside one browser. hangar can use that mode (`share = "native"`). Sequential Thinking and Filesystem also run once per session, for the same kind of reason: each keeps something that belongs to one session. But they offer no mode like this one. So they stay one per session, and the choice exists only for Playwright.
 
 **Why it is off by default.** Playwright offers no password for that port. While it is open, any program on the computer, including one run by another user, could connect and drive that browser. Every other shared server talks to hangar through a private pipe with no port, behind hangar's secret. Without hangar, Playwright opens no port at all. So hangar does not open one unless you ask it to.
 
