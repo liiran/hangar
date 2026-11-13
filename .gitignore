@@ -3,3 +3,9 @@
 /web/dist
 *.tsbuildinfo
 *.log
+# Never committed: secrets, per-user Claude Code settings, editor folders.
+.env
+.env.*
+.claude/settings.local.json
+.vscode/
+.idea/

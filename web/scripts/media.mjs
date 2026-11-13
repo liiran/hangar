@@ -9,8 +9,9 @@
 // Context7, shared through hangar's pool). Waiting for Claude is sped up in
 // the video; everything else plays at its real speed.
 //
-// HANGAR_MEDIA_DIR picks the throwaway folder (it must not exist yet; the
-// default is in the temp folder). Encoding needs ffmpeg: FFMPEG_PATH, or
+// HANGAR_MEDIA_DIR picks the throwaway folder. It must not exist yet, and it
+// must be outside your home folder, because its path is in the pictures (the
+// default is the temp folder, which on Windows is inside your home folder). Encoding needs ffmpeg: FFMPEG_PATH, or
 // ffmpeg on PATH. Without it the frames are kept, and the script prints how to
 // encode them later with `npm run media -- --encode <frames folder>`.
 import { execFileSync, spawnSync } from "node:child_process";
@@ -150,6 +151,10 @@ if (process.env.HANGAR_MEDIA_DIR) {
   fs.mkdirSync(work, { recursive: true });
 }
 const home = path.join(work, "home"); // the app's home folder: it lists nothing else
+// The folder's path is in the pictures, so one inside your home folder would show your user name.
+if (path.resolve(work).toLowerCase().startsWith(os.homedir().toLowerCase() + path.sep)) {
+  throw new Error("Set HANGAR_MEDIA_DIR to a folder outside your home folder, for example C:" + path.sep + "hangar-media, so that the pictures do not show your user name.");
+}
 const state = path.join(work, "state"); // HANGAR_HOME
 const project = (name, files) => {
   const dir = path.join(home, "code", name);

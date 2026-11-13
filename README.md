@@ -93,7 +93,10 @@ Real Claude Code sessions with Playwright and Context7, measured by `hangar benc
 
 ## Quick start
 
-You need Rust 1.89+, Node 22+, Claude Code (`npm i -g @anthropic-ai/claude-code`) and Windows 10 or later. Linux and macOS pass `cargo check` but have not been run yet.
+You need:
+- Windows 10 or later. Linux and macOS pass `cargo check` but have not been run yet.
+- Rust 1.89+ and Node 22+.
+- Claude Code (`npm i -g @anthropic-ai/claude-code`), signed in. If you have not used it on this computer, run `claude` once in a terminal and sign in there. hangar uses that login.
 
 ```sh
 cd web && npm ci && npm run build && cd ..
@@ -200,10 +203,10 @@ claude --input-format stream-json --output-format stream-json --permission-promp
 
 This is the stream-json control protocol that the official Agent SDKs use. Claude Code itself does the work: it talks to Anthropic with your login, runs the tools, reads your `CLAUDE.md` and settings, and writes its usual transcript under `~/.claude/projects`.
 
-**A folder's own settings ask first.** A folder's Claude settings can run commands (hooks), pre-approve tools and start MCP servers. Interactive Claude Code asks before trusting a new folder, but headless mode doesn't, so hangar asks instead.
-- The first session in a folder shows what its settings would do: hooks, pre-approved tools, MCP servers with their full command lines, and every other setting. It starts only after you confirm.
-- Your confirmation covers what was shown. If the settings changed since, hangar asks again.
-- A new folder you create from the app is empty, so it needs no confirmation.
+**A folder's own settings ask first.** A folder's Claude settings can run commands (hooks), pre-approve tools and start MCP servers. Claude Code's terminal asks before it uses them. Started by hangar it does not, so hangar asks instead.
+- The first session in a folder shows everything its settings would do, in full: hooks with their whole command lines, pre-approved tools, MCP servers (also those from a `.mcp.json` in a folder above it), and every other setting. It starts only after you confirm.
+- Your confirmation covers what was shown. When the folder's settings change later, for example after a `git pull`, hangar shows them again before the next session, and before an existing session starts again.
+- A new folder you create from the app is empty, so it needs no confirmation, unless a folder above it brings MCP servers along.
 
 "Allow for session" remembers a rule inside that Claude process only, never in the project's settings files.
 
@@ -255,6 +258,8 @@ Progress updates and cancellations are mapped the same way, so they reach only t
 | `project` | sessions in the same folder | servers you mark `project` in the config |
 | `session` | nobody: one process per session, as today, but supervised | servers that keep state per session (Playwright, filesystem roots, sequential thinking) and **every server hangar doesn't know**, which is the safe default |
 | `native` | every session, each with its own state inside the server | **opt-in:** Playwright with `--isolated`, as one browser with a separate context per session |
+
+**A shared server belongs to no session.** It gets none of the variables Claude Code sets for one session only, and a server shared by every folder starts in your home folder, not in whichever project came first.
 
 **One shared Playwright browser is opt-in.** Playwright keeps a browser per session, so it cannot be shared the way Context7 is. It can serve many sessions from one browser itself, but only by listening on a local port, and it offers no password for that port. Any program on the computer could then drive that browser. On a computer only you use, that is no more than those programs can already do, and it saves a browser per session:
 
@@ -327,8 +332,8 @@ hangar can start agents that run commands, so only your own hangar window may us
   - The page runs under a strict Content-Security-Policy and cannot be framed.
 - **Replies cannot act.** Claude's output is rendered as text and Markdown, never HTML. Images are not loaded, and only web links are links.
 - **You approve what really runs.** Requests show everything, cannot hide content below a fold or behind invisible characters, and "Allow for session" shows its rule.
-- **Folders ask first.** A folder's hooks, pre-approved tools, MCP servers and other settings are listed in full before its first session.
-- **No shell.** Programs are started with separate arguments, and values passed to `claude` are checked.
+- **Folders ask first.** A folder's hooks, pre-approved tools, MCP servers and other settings are listed in full before its first session, and again whenever they change.
+- **No shell.** Programs are started with separate arguments, and values passed to `claude` are checked. A project folder cannot supply its own `npx` or `node` in place of yours.
 - **A shared secret between shim and daemon.** Each proves it knows the secret in `~/.hangar/daemon.json` before the shim sends its command and environment.
 
 Two things to know:
@@ -343,7 +348,8 @@ cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all --check
 cd web && npm test                          # UI logic
 cargo build --workspace && npm run e2e      # the app in a real browser against a real daemon (fake Claude, no network)
 cargo build --release && npm run e2e:claude # one real Claude Code (Haiku) session through the API; costs well under a cent
-cargo build --release && npm run media      # re-records the README's pictures and video with real sessions (needs ffmpeg)
+cargo build --workspace && npm run e2e:attack # attacks a throwaway hangar from outside (Windows; fake Claude, no network)
+cargo build --release && npm run media      # re-records the README's pictures and video with real sessions (needs ffmpeg and HANGAR_MEDIA_DIR)
 npm run dev                                 # UI dev server on :5173, proxied to a daemon on :7317
 ```
 
@@ -381,4 +387,6 @@ The integration tests run real shim processes against an in-process daemon. They
 
 ## License
 
-MIT
+MIT.
+
+The app bundles the Inter typeface (SIL Open Font License 1.1), Lucide icons (ISC) and React (MIT). The other Rust and npm dependencies keep their own licenses.
