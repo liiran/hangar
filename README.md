@@ -353,7 +353,7 @@ cargo build --release && npm run media      # re-records the README's pictures a
 npm run dev                                 # UI dev server on :5173, proxied to a daemon on :7317
 ```
 
-On Windows with the GNU toolchain, put a MinGW `bin` folder (for `dlltool` and `as`) on `PATH`. The MSVC toolchain needs nothing extra.
+On Windows with the GNU toolchain, put a MinGW `bin` folder (for `dlltool` and `as`) on `PATH`. The MSVC toolchain, which is Rust's default on Windows, should need nothing extra, but hangar has only been built with the GNU one so far.
 
 The integration tests run real shim processes against an in-process daemon. They use a scriptable fake MCP server (stdio and HTTP) and a fake `claude` that speaks the stream-json protocol. They cover:
 - **Routing:** concurrent overlapping ids, progress isolation, caching, subscriptions and roots safety.
