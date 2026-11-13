@@ -387,6 +387,4 @@ The integration tests run real shim processes against an in-process daemon. They
 
 ## License
 
-MIT.
-
-The app bundles the Inter typeface (SIL Open Font License 1.1), Lucide icons (ISC) and React (MIT). The other Rust and npm dependencies keep their own licenses.
+MIT
