@@ -121,14 +121,16 @@ export function Transcript({ session, events, header }: { session: Session; even
               <span className="mr-auto" title="A long session is drawn from its newest entries, so that typing and new messages stay fast.">
                 {from.toLocaleString()} earlier {from === 1 ? "entry is" : "entries are"} not drawn.
               </span>
-              <Button size="sm" onClick={() => showEarlier(PAGE)}>
-                Show {Math.min(PAGE, from)} more
-              </Button>
-              {from > PAGE && (
-                <Button size="sm" variant="ghost" onClick={() => showEarlier(Number.MAX_SAFE_INTEGER)}>
-                  Show all
+              <span className="flex items-center gap-2">
+                <Button size="sm" onClick={() => showEarlier(PAGE)}>
+                  Show {Math.min(PAGE, from)} more
                 </Button>
-              )}
+                {from > PAGE && (
+                  <Button size="sm" variant="ghost" onClick={() => showEarlier(Number.MAX_SAFE_INTEGER)}>
+                    Show all
+                  </Button>
+                )}
+              </span>
             </div>
           )}
           {drawn.map((r, i) => (
