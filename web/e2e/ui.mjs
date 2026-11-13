@@ -226,6 +226,12 @@ try {
   const costs = await page.locator("main >> text=/Done in .*\\$/").allInnerTexts();
   check("each turn shows its own cost, not a running total", costs.length >= 2 && costs.every((c) => c.includes("$0.010")), costs.join(" / "));
 
+  // ---- Claude Code's "signed out" reply names /login, which hangar does not have
+  await page.fill(composer, "Not logged in - Please run /login");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("text=echo: Not logged in");
+  check("a signed-out reply says where to sign in", (await page.locator("main >> text=Claude Code is not signed in on this computer").count()) === 1);
+
   // ---- model output cannot load remote images
   await page.fill(composer, "look ![pixel](http://example.invalid/track.png)");
   await page.keyboard.press("Enter");

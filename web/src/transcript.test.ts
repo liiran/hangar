@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "./api";
-import { relative, toRows, toolSummary } from "./transcript";
+import { needsSignIn, relative, toRows, toolSummary } from "./transcript";
 
 let seq = 0;
 const ev = (body: Record<string, unknown>): SessionEvent => ({ seq: ++seq, ts: 1000 + seq, ...body }) as SessionEvent;
 const assistant = (content: unknown[], extra: Record<string, unknown> = {}) => ev({ kind: "claude", msg: { type: "assistant", message: { content }, ...extra } });
 const toolResults = (content: unknown[]) => ev({ kind: "claude", msg: { type: "user", message: { content } } });
+
+describe("needsSignIn", () => {
+  it("knows Claude Code's signed-out replies, and nothing else", () => {
+    expect(needsSignIn("Not logged in · Please run /login")).toBe(true);
+    expect(needsSignIn("Invalid API key · Please run /login")).toBe(true);
+    expect(needsSignIn("I added a /login route to the server.")).toBe(false);
+    expect(needsSignIn("Please run npm test")).toBe(false);
+    expect(needsSignIn("Not logged in. " + "x".repeat(300) + " /login")).toBe(false);
+  });
+});
 
 describe("toRows", () => {
   it("renders a full turn in order and attaches tool results to their calls", () => {

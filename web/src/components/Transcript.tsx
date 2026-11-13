@@ -20,8 +20,8 @@ import { api } from "../api";
 import { ago, duration, usd } from "../format";
 import { report } from "../store";
 import { useNow } from "../ui";
-import { hiddenParts, sessionRules, visible } from "../safe";
-import { relative, toRows, toolSummary, type Row } from "../transcript";
+import { hiddenParts, rightToLeft, sessionRules, visible } from "../safe";
+import { needsSignIn, relative, toRows, toolSummary, type Row } from "../transcript";
 import { Markdown } from "./Markdown";
 import { Button, cx, Guard } from "./ui";
 
@@ -178,6 +178,12 @@ function RowView({ row, session }: { row: Row; session: Session }) {
           <Avatar claude />
           <div className="min-w-0 flex-1 text-[13.5px]">
             <Markdown text={row.text} />
+            {needsSignIn(row.text) && (
+              <p className="mt-1.5 text-[12.5px] text-muted">
+                Claude Code is not signed in on this computer. Open a terminal, run <code className="rounded bg-panel-2 px-1 font-mono text-fg">claude</code> and sign in there.
+                Then send your message again.
+              </p>
+            )}
           </div>
         </div>
       );
@@ -442,7 +448,11 @@ const DECISIONS: Record<string, string> = {
   cancelled: "Withdrawn",
 };
 
-/** A new request ignores clicks for this long, so a click meant for the request before it cannot land on this one. */
+/**
+ * A request ignores clicks for this long after it appears, and after any request of its session
+ * is answered. Answering one moves the next one up, under the cursor: a click meant for the
+ * first, or the second half of a double-click, must not land on it.
+ */
 const ARM_MS = 600;
 
 function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission" }>; session: Session }) {
@@ -450,10 +460,12 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
   const [armed, setArmed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
+  const waiting = session.pending.map((p) => p.request_id).join(" ");
   useEffect(() => {
+    setArmed(false);
     const t = setTimeout(() => setArmed(true), ARM_MS);
     return () => clearTimeout(t);
-  }, []);
+  }, [waiting]);
   const pending = row.decision == null && !row.superseded ? session.pending.find((p) => p.request_id === row.requestId) : undefined;
   const decide = async (behavior: "allow" | "allow_always" | "deny") => {
     setBusy(true);
@@ -487,6 +499,11 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
         Claude wants to use {row.tool}
       </div>
       <PermissionPreview tool={row.tool} input={row.input} cwd={session.cwd} description={row.description} expanded={expanded} onExpand={() => setExpanded(true)} onClipped={setClipped} />
+      {rightToLeft(JSON.stringify(row.input ?? "")) && (
+        <p className="mt-2.5 text-[12px] text-s-needs">
+          This request has right-to-left letters in it. On screen they can put parts of a line in a different order than they are written.
+        </p>
+      )}
       {rules.length > 0 && (
         <p className="mt-2.5 text-[12px] [overflow-wrap:anywhere] text-muted">
           <span className="text-faint">"Allow for session" also allows, without asking again: </span>

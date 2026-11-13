@@ -12,6 +12,14 @@ export type Row =
   | { kind: "result"; key: string; cost: number | null; durationMs: number | null; turns: number | null; isError: boolean; text: string | null }
   | { kind: "error"; key: string; message: string };
 
+/**
+ * Claude Code's own "you are signed out" reply. It says to run `/login`, a command of Claude
+ * Code's terminal. hangar has no such command, so the app says where to sign in.
+ */
+export function needsSignIn(text: string): boolean {
+  return text.length < 200 && /\/login\b/.test(text) && /not logged in|invalid api key|please run/i.test(text);
+}
+
 function resultText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {

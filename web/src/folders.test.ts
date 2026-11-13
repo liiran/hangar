@@ -59,7 +59,7 @@ describe("sections", () => {
   });
 
   it("words search recent folders and never list a relative path", () => {
-    const recent = ["C:\\code\\personal\\hangar", "C:\\code\\work\\ifr", "D:\\games"];
+    const recent = ["C:\\code\\tools\\hangar", "C:\\code\\apps\\shop", "D:\\games"];
     const s = sections("hangar", listing({ entries }), recent);
     expect(s.recent).toEqual([{ kind: "recent", path: recent[0] }]);
     expect(s.folders).toEqual([]);
@@ -69,12 +69,12 @@ describe("sections", () => {
   it("words also list folders found by name, without repeating recent ones", () => {
     const recent = ["C:\\code\\hangar-demo"];
     const found = [
-      { name: "hangar", path: "C:\\code\\personal\\hangar" },
+      { name: "hangar", path: "C:\\code\\tools\\hangar" },
       { name: "hangar-demo", path: "c:/code/hangar-demo" },
     ];
     const s = sections("hangar", null, recent, found);
     expect(s.recent.map((r) => r.path)).toEqual(recent);
-    expect(s.found).toEqual([{ kind: "found", path: "C:\\code\\personal\\hangar", name: "hangar" }]);
+    expect(s.found).toEqual([{ kind: "found", path: "C:\\code\\tools\\hangar", name: "hangar" }]);
     expect(sections("C:\\code", null, recent, found).found, "never for a path").toEqual([]);
   });
 
