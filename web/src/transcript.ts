@@ -20,6 +20,20 @@ export function needsSignIn(text: string): boolean {
   return text.length < 200 && /\/login\b/.test(text) && /not logged in|invalid api key|please run/i.test(text);
 }
 
+/** How many of a session's newest rows are drawn when it opens, and how many more "Show more" adds. */
+export const PAGE = 300;
+
+/**
+ * What can still change about a row after it first appears: a tool's result and a request's
+ * outcome. Everything else about a row is fixed once written, so a row whose state is the same
+ * as before does not need drawing again.
+ */
+export function rowState(r: Row): string {
+  if (r.kind === "tool") return r.result ? `done ${r.result.isError} ${r.result.text.length}` : "running";
+  if (r.kind === "permission") return `${r.decision} ${r.superseded === true}`;
+  return "";
+}
+
 function resultText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {

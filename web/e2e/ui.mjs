@@ -437,12 +437,35 @@ try {
   execFileSync(hangar, ["stop"], { env });
   await page.waitForSelector("text=Lost the daemon", { timeout: 10000 });
   check("losing the daemon is visible", true);
+  // While hangar is stopped, one session's history grows by 400 turns, as a long-running one would.
+  const sessionsDir = path.join(home, "sessions");
+  const longId = fs.readdirSync(sessionsDir).find((id) => JSON.parse(fs.readFileSync(path.join(sessionsDir, id, "meta.json"), "utf8")).title.startsWith("Audit dependencies"));
+  const history = path.join(sessionsDir, longId, "events.jsonl");
+  const last = JSON.parse(fs.readFileSync(history, "utf8").trim().split("\n").pop());
+  const added = [];
+  for (let n = 1; n <= 400; n++) {
+    added.push({ seq: last.seq + n * 2 - 1, ts: last.ts + n * 1000, kind: "user", text: `Long question ${n}` });
+    added.push({ seq: last.seq + n * 2, ts: last.ts + n * 1000 + 500, kind: "claude", msg: { type: "assistant", message: { content: [{ type: "text", text: n === 400 ? "The very last answer" : `Long answer ${n}` }] } } });
+  }
+  fs.appendFileSync(history, added.map((e) => JSON.stringify(e)).join("\n") + "\n");
   const fresh = up();
   await page.waitForSelector("text=Open hangar from your terminal", { timeout: 20000 });
   check("a restarted daemon asks this window to sign in again", true);
   await page.goto(fresh); // same page, new hash
   await page.waitForSelector('nav[aria-label="Sessions"] >> text=Audit dependencies');
   check("the new link signs it back in, sessions intact", true);
+
+  // ---- a long session opens at its end, with the older part not drawn until asked for
+  await page.click('nav[aria-label="Sessions"] >> text=Audit dependencies');
+  await page.waitForSelector("text=The very last answer");
+  const questions = page.locator("main >> text=/^Long question \\d+$/");
+  const drawnFirst = await questions.count();
+  const notDrawn = page.locator("main >> text=/earlier entries are not drawn/");
+  check("a long session draws its newest entries only, and says so", drawnFirst > 100 && drawnFirst < 200 && (await notDrawn.count()) === 1, `${drawnFirst} of 400 questions drawn`);
+  await page.click("main >> text=Show all");
+  await page.waitForSelector("text=Long question 1", { timeout: 10000 });
+  await sleep(300);
+  check("…and all of it on request", (await questions.count()) === 400 && (await notDrawn.count()) === 0, `${await questions.count()} drawn`);
 } finally {
   for (const c of clients) c.kill();
   await browser.close();

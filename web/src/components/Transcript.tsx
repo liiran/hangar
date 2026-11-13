@@ -14,14 +14,14 @@ import {
   User,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session, SessionEvent } from "../api";
 import { api } from "../api";
 import { ago, duration, usd } from "../format";
 import { report } from "../store";
 import { useNow } from "../ui";
 import { hiddenParts, rightToLeft, sessionRules, visible } from "../safe";
-import { needsSignIn, relative, toRows, toolSummary, type Row } from "../transcript";
+import { needsSignIn, PAGE, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
 import { Markdown } from "./Markdown";
 import { Button, cx, Guard } from "./ui";
 
@@ -41,7 +41,29 @@ const TOOL_ICONS: Record<string, typeof Hammer> = {
 };
 
 export function Transcript({ session, events, header }: { session: Session; events: SessionEvent[] | undefined; header?: ReactNode }) {
-  const rows = useMemo(() => toRows(events ?? []), [events]);
+  // Each new event rebuilds the rows. A row that is the same as before keeps its identity, so
+  // only what changed is drawn again.
+  const kept = useRef(new Map<string, { state: string; row: Row }>());
+  const rows = useMemo(() => {
+    const next = new Map<string, { state: string; row: Row }>();
+    const out = toRows(events ?? []).map((r) => {
+      const state = rowState(r);
+      const old = kept.current.get(r.key);
+      const entry = old && old.state === state ? old : { state, row: r };
+      next.set(r.key, entry);
+      return entry.row;
+    });
+    kept.current = next;
+    return out;
+  }, [events]);
+  // A long session is drawn from its newest entries: thousands of them make every keystroke and
+  // every new message slow. Where the drawn part starts is settled when the session opens. It
+  // moves up on request and never down, so nothing on screen goes away while you read.
+  const opened = useRef<number | null>(null);
+  if (opened.current === null && events !== undefined) opened.current = Math.max(0, rows.length - PAGE);
+  const [earlier, setEarlier] = useState(0);
+  const from = Math.max(0, (opened.current ?? 0) - earlier);
+  const drawn = from > 0 ? rows.slice(from) : rows;
   const lastError = useMemo(() => {
     for (let i = rows.length - 1; i >= 0; i--) {
       const r = rows[i];
@@ -81,10 +103,28 @@ export function Transcript({ session, events, header }: { session: Session; even
         </div>
         <div className="space-y-3">
           {events === undefined && <p className="text-[12.5px] text-faint">Loading…</p>}
-          {rows.map((r) => (
-            <Guard key={r.key} fallback={<Unshown row={r} />}>
-              <RowView row={r} session={session} />
-            </Guard>
+          {from > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-line-strong px-4 py-2.5 text-[12.5px] text-muted">
+              <span className="mr-auto" title="A long session is drawn from its newest entries, so that typing and new messages stay fast.">
+                {from.toLocaleString()} earlier {from === 1 ? "entry is" : "entries are"} not drawn.
+              </span>
+              <Button size="sm" onClick={() => setEarlier((n) => n + PAGE)}>
+                Show {Math.min(PAGE, from)} more
+              </Button>
+              {from > PAGE && (
+                <Button size="sm" variant="ghost" onClick={() => setEarlier(Number.MAX_SAFE_INTEGER)}>
+                  Show all
+                </Button>
+              )}
+            </div>
+          )}
+          {drawn.map((r, i) => (
+            // Entries older than the newest page are skipped by the browser while they are off screen.
+            <div key={r.key} className={i < drawn.length - PAGE ? "[contain-intrinsic-size:auto_72px] [content-visibility:auto]" : undefined}>
+              <Guard fallback={<Unshown row={r} />}>
+                <DrawnRow row={r} session={session} />
+              </Guard>
+            </div>
           ))}
           {(session.status === "working" || session.status === "starting") && (
             <Activity icon={<Dots />}>
@@ -167,6 +207,22 @@ function Dots() {
     </span>
   );
 }
+
+/**
+ * A row, drawn again only when it changed. Of the session, a tool row uses its folder and
+ * whether it is running; a permission row uses all of it; the other rows use nothing.
+ */
+const DrawnRow = memo(
+  function DrawnRow(p: { row: Row; session: Session }) {
+    return <RowView row={p.row} session={p.session} />;
+  },
+  (a, b) => {
+    if (a.row !== b.row) return false;
+    if (a.row.kind === "permission") return a.session === b.session;
+    if (a.row.kind === "tool") return a.session.cwd === b.session.cwd && LIVE.has(a.session.status) === LIVE.has(b.session.status);
+    return true;
+  },
+);
 
 function RowView({ row, session }: { row: Row; session: Session }) {
   switch (row.kind) {

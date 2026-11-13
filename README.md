@@ -21,7 +21,7 @@
   - Nothing in a request can hide: long ones must be opened in full before Allow works, and invisible characters are written out.
   - *Allow for session* shows the rule it adds.
 - **Settings per session.** Each session gets a folder, a model (Opus, Sonnet or Haiku) and a permission level: ask first, accept edits, plan only or full access. Both the model and the permission level can be changed mid-session.
-- **A feed per session.** It shows messages, tool calls you can expand, and each turn's time and cost. A properties panel shows the session's status, model, memory, cost and MCP servers.
+- **A feed per session.** It shows messages, tool calls you can expand, and each turn's time and cost. A properties panel shows the session's status, model, memory, cost and MCP servers. A long session opens at its newest entries and stays fast; the earlier ones are drawn when you ask for them.
 - **History that lasts.** Sessions outlive restarts. A stopped or paused session carries on in the same conversation when you send your next message. The conversation is Claude Code's own, so `claude --resume <id>` in a terminal can continue it too.
 - **Light or dark.** hangar follows your system. To pin one, press `Ctrl K` and type *theme*.
 - **Keyboard first:**

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "./api";
-import { needsSignIn, relative, toRows, toolSummary } from "./transcript";
+import { needsSignIn, relative, rowState, toRows, toolSummary } from "./transcript";
 
 let seq = 0;
 const ev = (body: Record<string, unknown>): SessionEvent => ({ seq: ++seq, ts: 1000 + seq, ...body }) as SessionEvent;
@@ -14,6 +14,21 @@ describe("needsSignIn", () => {
     expect(needsSignIn("I added a /login route to the server.")).toBe(false);
     expect(needsSignIn("Please run npm test")).toBe(false);
     expect(needsSignIn("Not logged in. " + "x".repeat(300) + " /login")).toBe(false);
+  });
+});
+
+describe("rowState", () => {
+  it("changes when a tool gets its result or a request its answer, and not otherwise", () => {
+    const call = assistant([{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }]);
+    const before = toRows([call]);
+    const after = toRows([call, toolResults([{ type: "tool_result", tool_use_id: "t1", content: "a.txt" }])]);
+    expect(rowState(before[0])).not.toBe(rowState(after[0]));
+    const text = assistant([{ type: "text", text: "hello" }]);
+    expect(rowState(toRows([text])[0])).toBe(rowState(toRows([text, call])[0]));
+    const ask = ev({ kind: "permission", request_id: "p1", tool_name: "Bash", input: {} });
+    const asked = toRows([ask]);
+    const answered = toRows([ask, ev({ kind: "decision", request_id: "p1", behavior: "allow" })]);
+    expect(rowState(asked[0])).not.toBe(rowState(answered[0]));
   });
 });
 
