@@ -88,6 +88,19 @@ export function Transcript({ session, events, header }: { session: Session; even
     const el = scroller.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [session.id]);
+  // Earlier entries are added above what is on screen. The view moves down by as much as was
+  // added, so that the entry being read stays where it is.
+  const before = useRef<{ height: number; top: number } | null>(null);
+  const showEarlier = (count: number) => {
+    const el = scroller.current;
+    if (el) before.current = { height: el.scrollHeight, top: el.scrollTop };
+    setEarlier((n) => Math.min(Number.MAX_SAFE_INTEGER, n + count));
+  };
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el && before.current) el.scrollTop = before.current.top + (el.scrollHeight - before.current.height);
+    before.current = null;
+  }, [earlier]);
 
   return (
     <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
@@ -108,11 +121,11 @@ export function Transcript({ session, events, header }: { session: Session; even
               <span className="mr-auto" title="A long session is drawn from its newest entries, so that typing and new messages stay fast.">
                 {from.toLocaleString()} earlier {from === 1 ? "entry is" : "entries are"} not drawn.
               </span>
-              <Button size="sm" onClick={() => setEarlier((n) => n + PAGE)}>
+              <Button size="sm" onClick={() => showEarlier(PAGE)}>
                 Show {Math.min(PAGE, from)} more
               </Button>
               {from > PAGE && (
-                <Button size="sm" variant="ghost" onClick={() => setEarlier(Number.MAX_SAFE_INTEGER)}>
+                <Button size="sm" variant="ghost" onClick={() => showEarlier(Number.MAX_SAFE_INTEGER)}>
                   Show all
                 </Button>
               )}

@@ -462,7 +462,26 @@ try {
   const drawnFirst = await questions.count();
   const notDrawn = page.locator("main >> text=/earlier entries are not drawn/");
   check("a long session draws its newest entries only, and says so", drawnFirst > 100 && drawnFirst < 200 && (await notDrawn.count()) === 1, `${drawnFirst} of 400 questions drawn`);
-  await page.click("main >> text=Show all");
+  // Showing earlier entries must not move what is being read.
+  const toTop = () =>
+    page.evaluate(() => {
+      const el = [...document.querySelectorAll("main div")].find((d) => d.scrollHeight > d.clientHeight + 500 && getComputedStyle(d).overflowY === "auto");
+      el.scrollTop = 0;
+    });
+  await toTop();
+  await sleep(200);
+  const reading = await questions.first().innerText();
+  const placeBefore = (await questions.first().boundingBox()).y;
+  await page.click("main >> text=/Show \\d+ more/");
+  await sleep(400);
+  const placeAfter = (await page.locator("main").getByText(reading, { exact: true }).boundingBox()).y;
+  check("showing earlier entries keeps the place being read", (await questions.count()) > drawnFirst && Math.abs(placeAfter - placeBefore) < 80, `"${reading}" moved by ${Math.round(placeAfter - placeBefore)} px; ${await questions.count()} drawn`);
+  // The rest: "Show all" when much is left, otherwise the same button again.
+  for (let i = 0; i < 5 && (await notDrawn.count()) > 0; i++) {
+    const all = page.locator("main >> text=Show all");
+    await ((await all.count()) > 0 ? all : page.locator("main >> text=/Show \\d+ more/")).click();
+    await sleep(300);
+  }
   await page.waitForSelector("text=Long question 1", { timeout: 10000 });
   await sleep(300);
   check("…and all of it on request", (await questions.count()) === 400 && (await notDrawn.count()) === 0, `${await questions.count()} drawn`);
