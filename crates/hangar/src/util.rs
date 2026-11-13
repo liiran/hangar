@@ -79,7 +79,21 @@ const IDENTITY_NAMES: &[&str] = &[
     "dir",
     "home",
     "root",
+    "addr",
+    "address",
+    "port",
+    "subscription",
+    "context",
+    "namespace",
+    "cluster",
+    "server",
+    "instance",
+    "schema",
+    "bucket",
+    "vault",
 ];
+/// Identity words that also count at the end of a longer word: `PGHOST`, `PGUSER`, `DBURL`.
+const IDENTITY_ENDINGS: &[&str] = &["host", "user", "url", "uri", "database"];
 
 /// The words of a variable or flag name: `--api-key` and `API_KEY` are both `api`, `key`.
 fn name_words(name: &str) -> Vec<String> {
@@ -166,7 +180,7 @@ pub fn separates_sessions(name: &str) -> bool {
     if COMMON.contains(&name.to_ascii_uppercase().as_str()) {
         return false;
     }
-    looks_secret(name) || name_words(name).iter().any(|w| IDENTITY_NAMES.contains(&w.as_str()))
+    looks_secret(name) || name_words(name).iter().any(|w| IDENTITY_NAMES.contains(&w.as_str()) || IDENTITY_ENDINGS.iter().any(|e| w.ends_with(e)))
 }
 
 /// A URL for display: a password, a bare token before `@`, and the values
@@ -270,7 +284,25 @@ pub fn json_printable(json: &str) -> String {
 /// Invisible and text-direction characters (soft hyphen, zero-width,
 /// bidirectional controls, byte-order mark, tags).
 fn hidden(c: char) -> bool {
-    matches!(c as u32, 0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB | 0xE0000..=0xE007F)
+    matches!(
+        c as u32,
+        0xAD | 0x34F
+            | 0x61C
+            | 0x115F..=0x1160
+            | 0x17B4..=0x17B5
+            | 0x180E
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x206F
+            | 0x2800
+            | 0x3164
+            | 0xFE00..=0xFE0F
+            | 0xFEFF
+            | 0xFFA0
+            | 0xFFF9..=0xFFFB
+            | 0xE0000..=0xE007F
+            | 0xE0100..=0xE01EF
+    )
 }
 
 /// Writes a file only the current user can read (Unix: mode 0600 from
@@ -360,6 +392,14 @@ mod tests {
             "AZURE_CONFIG_DIR",
             "ANTHROPIC_BASE_URL",
             "ACME_TENANT",
+            "PGHOST",
+            "PGUSER",
+            "PGDATABASE",
+            "VAULT_ADDR",
+            "DOCKER_CONTEXT",
+            "AZURE_SUBSCRIPTION_ID",
+            "CLAUDE_CONFIG_DIR",
+            "REDIS_PORT",
         ] {
             assert!(separates_sessions(name), "{name}");
         }
@@ -378,6 +418,12 @@ mod tests {
             "PROCESSOR_ARCHITECTURE",
             "NVM_HOME",
             "ComSpec",
+            "WT_SESSION",
+            "TERM_PROGRAM",
+            "VSCODE_GIT_IPC_HANDLE",
+            "LOGONSERVER",
+            "COMPUTERNAME",
+            "NoDefaultCurrentDirectoryInExePath",
             // The known limit that SECURITY.md describes: nothing in this name says it picks a database.
             "APP_ENV",
         ] {
@@ -387,6 +433,7 @@ mod tests {
         assert_eq!(printable("ok\x1b[2Jgone\r\n\tx"), "ok[2Jgone\tx");
         let disguised = format!("exe.{}gpj{}{}]0;title{}", '\u{202e}', '\u{200b}', '\u{9d}', '\u{7}');
         assert_eq!(printable(&disguised), "exe.gpj]0;title", "no direction changes, invisible characters or 8-bit escapes");
+        assert_eq!(printable("do\u{3164}cs\u{fe0f}\u{2800}\u{e0100}"), "docs", "blank letters and selectors that would make two names look alike");
         let hostile = serde_json::json!({ "name": format!("a{}2J{}b{}", '\u{9b}', '\u{202e}', '\u{1b}') });
         let shown = json_printable(&serde_json::to_string_pretty(&hostile).unwrap());
         assert!(shown.contains(r"a\u009b2J\u202eb\u001b") && shown.contains('\n'), "escaped, and still laid out on lines: {shown}");

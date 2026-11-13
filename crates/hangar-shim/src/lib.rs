@@ -136,7 +136,7 @@ fn connect(opts: &Opts, home: &Path, resume: Option<&Value>) -> Result<Conn, Str
         }
         if !started {
             started = true;
-            if let Err(e) = start_daemon(home) {
+            if let Err(e) = start_daemon(home, opts) {
                 // On first connect, fall back to running the server directly
                 // right away. When reconnecting, someone else may bring a
                 // daemon back, so keep waiting.
@@ -407,7 +407,7 @@ pub fn keep_std_handles_private() {
 }
 
 /// Starts `hangar daemon` detached from the client's process tree.
-fn start_daemon(home: &Path) -> Result<(), String> {
+fn start_daemon(home: &Path, opts: &Opts) -> Result<(), String> {
     if std::env::var(ENV_NO_AUTOSTART).map(|v| v == "1").unwrap_or(false) {
         return Err("no daemon running and autostart is disabled".into());
     }
@@ -415,6 +415,17 @@ fn start_daemon(home: &Path) -> Result<(), String> {
     let bin = hangar_bin().ok_or("could not find the hangar binary")?;
     let mut cmd = Command::new(&bin);
     cmd.arg("daemon").arg("--quiet").env(hangar_proto::ENV_HOME, home).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // The daemon outlives this session, and sessions started in the app get
+    // its environment. It must not carry what belongs to this session, nor
+    // the settings (often a key) of this one server entry.
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(hangar_proto::session_private) {
+            cmd.env_remove(&name);
+        }
+    }
+    for key in &opts.env_keys {
+        cmd.env_remove(key);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -452,6 +463,12 @@ fn hangar_bin() -> Option<PathBuf> {
 
 /// Runs the real server with inherited stdio. Used when pooling is unavailable
 /// or disabled for this server.
+/// The Windows setting that stops `cmd.exe` and `CreateProcess` from looking in the current
+/// folder for a program named without a path. A server's folder is the session's project, which
+/// may be a repository from a stranger holding an `npx.cmd` of its own, and the usual Windows
+/// server entry is `cmd /c npx ...`. Claude Code sets this for the servers it starts.
+pub const NO_CURRENT_DIR_LOOKUP: &str = "NoDefaultCurrentDirectoryInExePath";
+
 fn run_direct(opts: &Opts) -> ExitCode {
     #[cfg(windows)]
     contain_children();
@@ -460,6 +477,7 @@ fn run_direct(opts: &Opts) -> ExitCode {
     cmd.args(&opts.args).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
     #[cfg(windows)]
     {
+        cmd.env(NO_CURRENT_DIR_LOOKUP, "1");
         // The shim has no console, so a console child would get a new,
         // visible one. Give it a hidden console instead.
         use std::os::windows::process::CommandExt;
@@ -499,6 +517,11 @@ pub fn resolve_command_in(command: &str, path_var: Option<&std::ffi::OsStr>, pat
     };
     let dirs = path_var?;
     for dir in std::env::split_paths(dirs) {
+        // An empty or relative entry means "the current folder", which here
+        // would be the daemon's, not the session's. Such entries are skipped.
+        if !dir.is_absolute() {
+            continue;
+        }
         for ext in &exts {
             let candidate = dir.join(format!("{command}{ext}"));
             if candidate.is_file() {

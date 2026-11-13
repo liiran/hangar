@@ -33,10 +33,13 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::sync::{mpsc, oneshot};
 
 const MAX_QUEUED: usize = 10_000;
+/// The longest single message (one line) taken from a server. Real ones are kilobytes;
+/// a page screenshot is a few megabytes.
+const MAX_MESSAGE: usize = 64 << 20;
 const CRASH_WINDOW: Duration = Duration::from_secs(60);
 const MAX_CRASHES: usize = 5;
 pub(crate) const FAILED_RETRY: Duration = Duration::from_secs(30);
@@ -781,7 +784,8 @@ impl Actor {
         self.init_upstream_id = None;
         self.init_deadline = None;
         let Some(result) = msg.get("result").cloned() else {
-            let err = msg.get("error").map(|e| e.to_string()).unwrap_or_else(|| "bad initialize response".into());
+            // The server's own words: cleaned like everything else it sends that hangar shows or logs.
+            let err = msg.get("error").map(|e| crate::util::printable(&e.to_string())).unwrap_or_else(|| "bad initialize response".into());
             self.fail_start(format!("initialize failed: {err}")).await;
             return;
         };
@@ -846,8 +850,13 @@ impl Actor {
             let mut buf = Vec::new();
             loop {
                 buf.clear();
-                match reader.read_until(b'\n', &mut buf).await {
+                match process::read_line_capped(&mut reader, &mut buf, MAX_MESSAGE).await {
                     Ok(0) | Err(_) => break,
+                    // Not a message any client could use. Treated as the server having stopped.
+                    Ok(n) if n > buf.len() => {
+                        tracing::warn!("a server sent one message of {n} bytes, over the {MAX_MESSAGE} byte limit; it is restarted");
+                        break;
+                    }
                     Ok(_) => {
                         let line = String::from_utf8_lossy(&buf).into_owned();
                         if tx.send(ProcEvent::Line(generation, line)).is_err() {

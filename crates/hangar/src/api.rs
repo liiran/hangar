@@ -99,15 +99,18 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState, mut shutd
 ///
 /// * Host must be exactly our loopback address and port (DNS rebinding).
 ///   `localhost` is not accepted: only 127.0.0.1 is bound, so another
-///   program could be the one answering on `localhost`.
+///   program could be the one answering on `localhost`. There must be one
+///   Host header, and a request line that names a site (`target`, from
+///   `GET http://site/path`) must name ours: a second name is one that
+///   some other reader of the request might believe instead.
 /// * An Origin, when sent, must be ours. One that cannot be read is refused.
 /// * `Sec-Fetch-Site`, which browsers set themselves: `same-origin` and
 ///   `none` (typed, bookmarked, opened by `hangar up`) pass. Another site,
 ///   or another port on this machine, may only open the page itself as a
 ///   top-level navigation; it gets no API, script, image or frame.
-fn request_allowed(headers: &HeaderMap, host: &str, is_api: bool) -> Result<(), &'static str> {
+fn request_allowed(headers: &HeaderMap, target: Option<&str>, host: &str, is_api: bool) -> Result<(), &'static str> {
     let text = |name: &header::HeaderName| headers.get(name).map(|v| v.to_str().ok());
-    if text(&header::HOST).flatten() != Some(host) {
+    if headers.get_all(header::HOST).iter().count() != 1 || text(&header::HOST).flatten() != Some(host) || target.is_some_and(|t| t != host) {
         return Err("wrong host");
     }
     match text(&header::ORIGIN) {
@@ -129,7 +132,7 @@ fn request_allowed(headers: &HeaderMap, host: &str, is_api: bool) -> Result<(), 
 async fn same_origin_only(State(st): State<AppState>, req: Request, next: Next) -> Response {
     let host = format!("127.0.0.1:{}", st.port);
     let is_api = req.uri().path().starts_with("/api/");
-    let mut res = match request_allowed(req.headers(), &host, is_api) {
+    let mut res = match request_allowed(req.headers(), req.uri().authority().map(|a| a.as_str()), &host, is_api) {
         Ok(()) => next.run(req).await,
         Err(why) => (StatusCode::FORBIDDEN, Json(json!({"error": format!("{why}; open hangar at http://{host} (run `hangar up`)")}))).into_response(),
     };

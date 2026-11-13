@@ -18,6 +18,7 @@ pub async fn run_daemon(home: PathBuf, quiet: bool, ui_port: Option<u16>) -> Res
         std::mem::forget(job);
     }
     let config = Config::load(&home)?;
+    let state_dir = home.clone();
     let daemon = match Daemon::start(DaemonOptions { home, config, ui_port }).await {
         Ok(d) => d,
         Err(e) if e.is::<AlreadyRunning>() => {
@@ -28,6 +29,12 @@ pub async fn run_daemon(home: PathBuf, quiet: bool, ui_port: Option<u16>) -> Res
         }
         Err(e) => return Err(e),
     };
+    // Leave the folder this was started from: a terminal's, or a project's when a shim started
+    // the daemon. Staying would keep that folder in use for as long as hangar runs, and any
+    // relative path would be looked up inside it.
+    if state_dir.is_absolute() {
+        let _ = std::env::set_current_dir(&state_dir);
+    }
     tokio::select! {
         _ = daemon.stopped() => {}
         _ = tokio::signal::ctrl_c() => {}
@@ -141,6 +148,10 @@ pub async fn up(home: &Path, no_open: bool) -> Result<()> {
     let paired = daemon::send_control(home, "pair", json!({})).await?;
     let code = paired["code"].as_str().context("the daemon did not issue a pairing code")?;
     let url = format!("http://127.0.0.1:{port}/#pair={code}");
+    // Said here, where a new user looks first. Sessions say it too.
+    if hangar::agent::find_claude().is_none() {
+        eprintln!("note: {}", hangar::agent::NOT_FOUND);
+    }
     if no_open {
         println!("{url}");
         return Ok(());
@@ -224,9 +235,13 @@ fn open_app(home: &Path, url: &str) {
     {
         // Other users can read a process's arguments here, so the browser
         // is given a private file that leads to the one-time link.
-        let target = launcher(home, url).map_or_else(|| url.to_string(), |p| p.display().to_string());
+        let Some(page) = launcher(home, url) else {
+            // Never as an argument: other users could read it there and use the link first.
+            println!("Open this link in your browser. It works once, for two minutes:\n{url}");
+            return;
+        };
         let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-        let _ = std::process::Command::new(opener).arg(target).spawn();
+        let _ = std::process::Command::new(opener).arg(page).spawn();
     }
 }
 

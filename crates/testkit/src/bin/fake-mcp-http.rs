@@ -23,6 +23,14 @@ struct State {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let port: u16 = args.iter().position(|a| a == "--port").and_then(|i| args.get(i + 1)).and_then(|p| p.parse().ok()).expect("--port N");
+    // `--fail-once <file>`: ends at once the first time, like a server that found its port taken.
+    if let Some(marker) = args.iter().position(|a| a == "--fail-once").and_then(|i| args.get(i + 1))
+        && !std::path::Path::new(marker).exists()
+    {
+        std::fs::write(marker, "").unwrap();
+        eprintln!("address already in use");
+        std::process::exit(1);
+    }
     let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
     let state = Arc::new(Mutex::new(State::default()));
     let next = Arc::new(AtomicU64::new(1));

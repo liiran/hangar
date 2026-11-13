@@ -30,6 +30,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 const MAX_CRASHES: usize = 5;
 const CRASH_WINDOW: Duration = Duration::from_secs(60);
+/// How often a start that ends before the port answers is tried again on another port.
+const START_TRIES: u8 = 2;
+/// How long a port must keep answering, with the server still running, before it counts as ready.
+const SETTLE: Duration = Duration::from_millis(150);
 
 /// Extra arguments that switch a known server into multi-client HTTP mode.
 /// `{port}` is replaced with a free loopback port.
@@ -95,6 +99,7 @@ pub fn start(spawn: HttpSpawn) -> Upstream {
         idle_since: None,
         started_at_ms: None,
         restarts: 0,
+        start_tries: 0,
         requests: 0,
         last_error: None,
         stderr: Arc::new(Mutex::new(VecDeque::new())),
@@ -157,6 +162,8 @@ struct HttpActor {
     idle_since: Option<Instant>,
     started_at_ms: Option<u64>,
     restarts: u64,
+    /// Starts that ended before the port answered, since the last good one.
+    start_tries: u8,
     requests: u64,
     last_error: Option<String>,
     stderr: Ring,
@@ -294,6 +301,7 @@ impl HttpActor {
         match ev {
             Event::PortReady(g) if g == self.generation => {
                 self.state = State::Ready;
+                self.start_tries = 0;
                 if self.launch.as_ref().is_some_and(|l| !l.fast) {
                     launch::note_npx_ran(self.s.opts.state_dir.as_deref(), &self.s.spec);
                 }
@@ -307,6 +315,15 @@ impl HttpActor {
                 self.generation += 1;
                 let reason = code.map(|c| format!("server exited with code {c}")).unwrap_or_else(|| "server exited".into());
                 if self.state == State::Starting {
+                    // The port was free when it was picked, but it is not held until the
+                    // server takes it. If another program got there first, the server
+                    // exits at once: try again on another port before giving up.
+                    if self.start_tries < START_TRIES {
+                        self.start_tries += 1;
+                        tracing::warn!(upstream = self.s.id, name = %self.s.name, "{reason} while starting; trying another port");
+                        self.spawn_process();
+                        return;
+                    }
                     self.fail(reason);
                     return;
                 }
@@ -407,8 +424,15 @@ impl HttpActor {
         tokio::spawn(async move {
             while Instant::now() < deadline {
                 if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
-                    let _ = ev.send(Event::PortReady(g));
-                    return;
+                    // Something accepts on the port. If it is not the server (another program
+                    // took the port first), the server fails to take it and exits within
+                    // moments, and that exit ends this start. So wait a moment and look again
+                    // before calling it ready.
+                    tokio::time::sleep(SETTLE).await;
+                    if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                        let _ = ev.send(Event::PortReady(g));
+                        return;
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(40)).await;
             }

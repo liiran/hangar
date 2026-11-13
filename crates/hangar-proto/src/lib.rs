@@ -20,6 +20,25 @@ pub const ENV_NO_AUTOSTART: &str = "HANGAR_NO_AUTOSTART";
 /// Set by the session manager so pooled servers know which session they serve.
 pub const ENV_SESSION: &str = "HANGAR_SESSION";
 
+/// Variables that Claude Code and hangar set for one session only: its
+/// folder, its id, and the private channel between Claude Code and the
+/// programs it starts. They belong to that session. A daemon or a shared
+/// server that kept them would hand one session's to the next.
+pub const SESSION_PRIVATE: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_PROJECT_DIR",
+    ENV_SESSION,
+];
+
+/// Whether `name` is one of [`SESSION_PRIVATE`] (names are case-insensitive on Windows).
+pub fn session_private(name: &str) -> bool {
+    SESSION_PRIVATE.iter().any(|v| v.eq_ignore_ascii_case(name))
+}
+
 /// How to start an MCP server: the same fields an MCP client config uses.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ServerSpec {
@@ -33,14 +52,20 @@ pub struct ServerSpec {
 }
 
 impl ServerSpec {
-    /// A stable fingerprint of the spec. Equal specs always share a fingerprint.
-    pub fn fingerprint(&self) -> String {
+    /// The whole spec as one text. Two specs are the same server exactly
+    /// when these are equal.
+    pub fn canonical(&self) -> String {
         let mut normalized = self.clone();
         if cfg!(windows) {
             normalized.command = normalized.command.to_ascii_lowercase();
         }
-        let text = serde_json::to_string(&normalized).unwrap_or_default();
-        format!("{:016x}", fnv1a64(text.as_bytes()))
+        serde_json::to_string(&normalized).unwrap_or_default()
+    }
+
+    /// A short, stable label for the spec, for names and logs. Not for
+    /// deciding whether two specs are the same: use [`Self::canonical`].
+    pub fn fingerprint(&self) -> String {
+        format!("{:016x}", fnv1a64(self.canonical().as_bytes()))
     }
 
     /// The command line as one human-readable string.

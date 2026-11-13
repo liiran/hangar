@@ -98,12 +98,16 @@ impl Driver {
 
     pub fn spawn(l: Launch, events: mpsc::UnboundedSender<DriverEvent>) -> Result<Driver> {
         let mut cmd = Command::new(&l.program);
+        // Started from inside a Claude Code session (by a shim, or from its
+        // terminal), the daemon inherits that session's own variables. A
+        // new claude would think it is nested, and would hold the other
+        // session's private channel.
+        for name in hangar_proto::SESSION_PRIVATE {
+            cmd.env_remove(name);
+        }
         cmd.args(Self::args(&l))
             .current_dir(&l.cwd)
             .env(hangar_proto::ENV_SESSION, &l.session_id)
-            // Started from inside a Claude Code session, the daemon inherits
-            // this marker; a child claude would think it is nested.
-            .env_remove("CLAUDECODE")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

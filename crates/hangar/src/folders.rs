@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn search_finds_folders_by_name_below_the_starting_folders() {
         let d = tree();
-        for sub in ["code/hangar", "code/personal/hangar-demo", "code/web/node_modules/hangar", "code/a/b/c/hangar-too-deep", ".cache/hangar"] {
+        for sub in ["code/hangar", "code/tools/hangar-demo", "code/web/node_modules/hangar", "code/a/b/c/hangar-too-deep", ".cache/hangar"] {
             std::fs::create_dir_all(d.join(sub)).unwrap();
         }
         let found = search("HANGAR", std::slice::from_ref(&d));
@@ -315,7 +315,7 @@ mod tests {
         let code = d.join("code");
         assert_eq!(
             paths,
-            [code.join("hangar").display().to_string(), code.join("personal").join("hangar-demo").display().to_string()],
+            [code.join("hangar").display().to_string(), code.join("tools").join("hangar-demo").display().to_string()],
             "exact names first; no dependencies, hidden folders or anything too deep"
         );
         assert_eq!(search("demo hang", std::slice::from_ref(&d))[0].name, "hangar-demo", "every word, in any order");

@@ -166,6 +166,13 @@ fn call_tool(server: &Arc<Server>, id: Value, msg: &Value) {
     match name.as_str() {
         "echo" => server.text(&id, args.get("text").and_then(Value::as_str).unwrap_or_default().to_string()),
         "pid" => server.text(&id, std::process::id().to_string()),
+        // Which of the named variables this process has, and the folder it runs in.
+        "env" => {
+            let names = args.get("names").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+            let vars: serde_json::Map<String, Value> = names.filter_map(|n| std::env::var(n).ok().map(|v| (n.to_string(), json!(v)))).collect();
+            let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+            server.text(&id, json!({"vars": vars, "cwd": cwd}).to_string())
+        }
         "counter" => server.text(&id, (server.counter.fetch_add(1, Ordering::SeqCst) + 1).to_string()),
         "slow" => {
             let ms = args.get("ms").and_then(Value::as_u64).unwrap_or(200);

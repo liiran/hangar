@@ -204,6 +204,9 @@ impl std::error::Error for NeedsTrust {}
 
 pub const PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "bypassPermissions"];
 
+/// Why a session does not start again in a folder whose settings are not the ones agreed to.
+pub const CONFIRM_FOLDER: &str = "This folder's Claude settings are not the ones you agreed to: they changed, or hangar has not shown them to you yet. Start a new session in this folder to see them. After that, this session can continue";
+
 /// The running Claude process of a session.
 struct Run {
     driver: claude::Driver,
@@ -426,19 +429,25 @@ impl Manager {
         let made = req.create_folder && !cwd.exists();
         if made {
             cwd = PathBuf::from(crate::folders::create(req.cwd.trim(), &crate::util::user_home())?);
-            trust::remember(&self.home, &cwd);
         } else if !cwd.is_dir() {
             bail!("{} is not a folder", cwd.display());
         }
         let info = self.trust(&cwd);
         if !info.trusted {
-            // Trust covers what the notice showed: if the folder's settings
-            // changed after the user read it, they are asked again.
-            let stale = req.trust_seen.as_ref().is_some_and(|seen| *seen != info.fingerprint);
-            if !req.trust || stale {
+            // A folder hangar has just made is empty. Unless a folder above
+            // it brings MCP servers along, there is nothing to confirm.
+            let nothing_to_confirm = made && info.lists_nothing();
+            // Trust covers what the notice showed. When the folder sets
+            // anything, the caller must name the notice it agreed to, and
+            // that must still be the current one.
+            let seen = match &req.trust_seen {
+                Some(seen) => *seen == info.fingerprint,
+                None => info.lists_nothing(),
+            };
+            if !nothing_to_confirm && !(req.trust && seen) {
                 bail!(NeedsTrust(info));
             }
-            trust::remember(&self.home, &cwd);
+            trust::remember(&self.home, &cwd, &info.fingerprint);
         }
         let id = new_id();
         let now = now_ms();
@@ -735,11 +744,22 @@ impl Manager {
         let Some(s) = inner.sessions.get_mut(id) else { return };
         let Some(claude) = claude else {
             s.meta.status = Status::Error;
-            s.meta.status_detail = Some("could not find the claude executable (set HANGAR_CLAUDE)".into());
+            s.meta.status_detail = Some(crate::agent::NOT_FOUND.into());
             self.save(inner, id);
             self.broadcast_session(inner, id);
             return;
         };
+        // The folder's settings may no longer be the ones the user agreed
+        // to (a pull, a branch switch, a file Claude wrote), and a new
+        // process would act on them unseen.
+        let folder = PathBuf::from(&s.meta.cwd);
+        if folder.is_dir() && !self.trust(&folder).trusted {
+            s.meta.status = Status::Error;
+            s.meta.status_detail = Some(CONFIRM_FOLDER.into());
+            self.save(inner, id);
+            self.broadcast_session(inner, id);
+            return;
+        }
         let resume = s.meta.claude_session_id.clone();
         let spec = claude::Launch {
             program: claude,

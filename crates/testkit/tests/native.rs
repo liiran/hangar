@@ -127,3 +127,19 @@ async fn sessions_reconnect_by_themselves_after_the_server_restarts() {
     assert_eq!(d.pool.stats().await[0].restarts, 1);
     d.shutdown().await;
 }
+
+/// The port is picked before the server takes it, so another program can get there first. The
+/// server then ends at once, and hangar starts it again on another port.
+#[tokio::test]
+async fn a_start_that_ends_before_the_port_answers_is_tried_again() {
+    let home = temp_home("native-retry");
+    let d = start_daemon(&home, native_config()).await;
+    let marker = home.join("failed-once");
+    let mut c = http_cmd(&home);
+    c.arg("--fail-once").arg(&marker);
+    let client = McpClient::spawn(c, vec![]).unwrap();
+    let init = client.initialize("t", T).await.unwrap();
+    assert_eq!(init["serverInfo"]["name"], "fake-mcp-http");
+    assert!(marker.exists(), "the first start did end early");
+    d.shutdown().await;
+}

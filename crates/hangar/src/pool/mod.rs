@@ -134,7 +134,40 @@ impl Pool {
             Share::Session | Share::Off => format!("session:{conn}"),
         };
         let protocol = req.init.pointer("/params/protocolVersion").and_then(Value::as_str).unwrap_or_default().to_string();
-        PoolKey { fingerprint: req.spec.fingerprint(), scope, protocol, credentials: credential_fingerprint(&req.env, &req.spec) }
+        // The whole entry (command, arguments, declared environment) under SHA-256: two
+        // entries share a process only when they are the same in full.
+        let fingerprint = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(req.spec.canonical().as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+        };
+        PoolKey { fingerprint, scope, protocol, credentials: credential_fingerprint(&req.env, &req.spec) }
+    }
+
+    /// The folder and environment a new server process gets. A process that
+    /// several sessions share must not belong to the session that happened
+    /// to start it: it gets none of that session's private variables, and
+    /// one shared by every folder starts in the user's home folder, not in
+    /// whichever project came first (where it might pick up that project's
+    /// `.env` and answer every other project with it).
+    fn start_in(req: &AttachRequest) -> (std::path::PathBuf, BTreeMap<String, String>) {
+        let mut env = req.env.clone();
+        let named = |k: &str, names: &[&str]| names.iter().any(|n| n.eq_ignore_ascii_case(k));
+        match req.share {
+            Share::Session | Share::Off => (req.cwd.clone(), env),
+            // Its folder is the one thing these sessions have in common.
+            Share::Project => {
+                env.retain(|k, _| !hangar_proto::session_private(k) || named(k, &["CLAUDE_PROJECT_DIR"]));
+                (req.cwd.clone(), env)
+            }
+            Share::Native => {
+                env.retain(|k, _| !hangar_proto::session_private(k));
+                (req.cwd.clone(), env)
+            }
+            Share::Global => {
+                env.retain(|k, _| !hangar_proto::session_private(k) && !named(k, &["PWD", "OLDPWD"]));
+                (crate::util::user_home(), env)
+            }
+        }
     }
 
     /// Attaches a session, starting the server if no suitable one is running.
@@ -155,6 +188,7 @@ impl Pool {
                     _ => {
                         let id = self.next_upstream.fetch_add(1, Ordering::SeqCst);
                         let native = if req.share == Share::Native { req.http_args.clone() } else { None };
+                        let (cwd, env) = Self::start_in(&req);
                         let u = if let Some(extra_args) = native {
                             http::start(http::HttpSpawn {
                                 id,
@@ -162,8 +196,8 @@ impl Pool {
                                 name: req.name.clone(),
                                 spec: req.spec.clone(),
                                 extra_args,
-                                cwd: req.cwd.clone(),
-                                env: req.env.clone(),
+                                cwd,
+                                env,
                                 opts: self.opts.clone(),
                                 on_exit: Arc::downgrade(&self.on_exit),
                                 served: self.served_counter(&req.name),
@@ -175,8 +209,8 @@ impl Pool {
                                 name: req.name.clone(),
                                 share: req.share,
                                 spec: req.spec.clone(),
-                                cwd: req.cwd.clone(),
-                                env: req.env.clone(),
+                                cwd,
+                                env,
                                 client_init: client_init.clone(),
                                 opts: self.opts.clone(),
                                 on_exit: Arc::downgrade(&self.on_exit),
@@ -285,7 +319,14 @@ fn credential_fingerprint(env: &BTreeMap<String, String>, spec: &ServerSpec) -> 
         // Variables that Claude Code and hangar set for each session say nothing about an
         // account. `CLAUDE_PROJECT_DIR` is the session's folder: counting it would give every
         // folder its own copy of every server. (Folder-bound servers use the `project` level.)
-        let is_ours = k.starts_with("HANGAR_") || k.starts_with("CLAUDE_") || k == "CLAUDECODE";
+        // Claude Code's `CLAUDE_CODE_*` names are skipped as a family, so that a per-session
+        // one added in a later version does not silently end all sharing. The exception names
+        // an account. Other `CLAUDE_*` names (`CLAUDE_CONFIG_DIR`) are judged like any name.
+        let name = k.to_ascii_uppercase();
+        let is_ours = name.starts_with("HANGAR_")
+            || name == "CLAUDECODE"
+            || name == "CLAUDE_PROJECT_DIR"
+            || (name.starts_with("CLAUDE_CODE_") && name != "CLAUDE_CODE_OAUTH_TOKEN");
         if crate::util::separates_sessions(k) && !is_ours && !spec.env.contains_key(k) {
             h.update((k.len() as u64).to_le_bytes());
             h.update(k.as_bytes());

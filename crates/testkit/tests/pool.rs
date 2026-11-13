@@ -523,18 +523,33 @@ async fn sessions_with_different_credentials_never_share() {
     let d = start_daemon(&home, config(&[("fake", Share::Global)])).await;
     // What Claude Code itself sets for each session (its folder, its session id) differs
     // between sessions in two projects, and must not keep them apart.
-    let with_key = |key: &str, folder: &str| {
+    let with = |key: &str, folder: &str, account: &str| {
         let mut c = shim_cmd(&home, "fake", &[]);
         c.env("SERVICE_API_KEY", key).env("CLAUDE_PROJECT_DIR", folder).env("CLAUDE_CODE_SESSION_ID", folder).env("PWD", folder);
+        // The private channel Claude Code gives each session: different every time.
+        c.env("CLAUDE_CODE_MESSAGING_TOKEN", format!("token-of-{folder}")).env("CLAUDE_CODE_MESSAGING_SOCKET", format!("pipe-of-{folder}"));
+        // Which Claude account the terminal uses.
+        c.env("CLAUDE_CONFIG_DIR", account);
         McpClient::spawn(c, vec![]).unwrap()
     };
-    let (a, b, c) = (with_key("alice", "C:/code/site"), with_key("alice", "C:/code/notes"), with_key("bob", "C:/code/site"));
-    for x in [&a, &b, &c] {
+    let (a, b, c, e) = (
+        with("alice", "C:/code/site", "home"),
+        with("alice", "C:/code/notes", "home"),
+        with("bob", "C:/code/site", "home"),
+        with("alice", "C:/code/site", "work"),
+    );
+    for x in [&a, &b, &c, &e] {
         x.initialize("t", T).await.unwrap();
     }
     let pa = tool(&a, "pid", json!({})).await.unwrap();
     assert_eq!(pa, tool(&b, "pid", json!({})).await.unwrap(), "same credentials share, also from another project folder");
     assert_ne!(pa, tool(&c, "pid", json!({})).await.unwrap(), "other credentials get their own server");
+    assert_ne!(pa, tool(&e, "pid", json!({})).await.unwrap(), "so does another Claude account");
+    // The shared process belongs to no session: it holds neither the first session's private
+    // channel nor its folder, and it runs in the user's home folder, not in a project.
+    let seen: Value = serde_json::from_str(&tool(&b, "env", json!({"names": ["CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "PWD", "SERVICE_API_KEY"]})).await.unwrap()).unwrap();
+    assert_eq!(seen["vars"], json!({"SERVICE_API_KEY": "alice"}), "{seen}");
+    assert_eq!(std::path::Path::new(seen["cwd"].as_str().unwrap()), hangar::util::user_home(), "{seen}");
     d.shutdown().await;
 }
 
@@ -562,5 +577,29 @@ async fn junk_from_a_server_neither_stalls_it_nor_reaches_a_terminal() {
     assert!(lines.iter().all(|l| !l.chars().any(char::is_control)), "and no control character is");
     let names: Vec<String> = d.pool.stats().await.into_iter().map(|s| s.name).collect();
     assert!(names.contains(&"ev[2Jil".to_string()), "{names:?}");
+    d.shutdown().await;
+}
+
+/// A session's folder is not searched for programs. A cloned repository can hold a file named
+/// like a tool (`npx.cmd`), and `cmd /c npx`, the usual Windows server entry, would run it.
+/// Claude Code switches that lookup off for the servers it starts; hangar must too.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_program_planted_in_the_session_folder_is_not_run() {
+    let home = temp_home("pool-planted");
+    let repo = home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let marker = home.join("ran.txt");
+    std::fs::write(repo.join("planted-tool.cmd"), format!("@echo off\r\necho ran > \"{}\"\r\n", marker.display())).unwrap();
+    let d = start_daemon(&home, hangar::config::Config::default()).await;
+    // The shim's folder is the repository, and its environment lacks what Claude Code would add.
+    let mut c = tokio::process::Command::new(shim());
+    c.arg("--name").arg("planted").arg("--").args(["cmd", "/c", "planted-tool"]);
+    c.env(hangar::proto::ENV_HOME, &home).env(hangar::proto::ENV_NO_AUTOSTART, "1").env_remove("NoDefaultCurrentDirectoryInExePath");
+    c.current_dir(&repo).stderr(std::process::Stdio::null());
+    let client = McpClient::spawn(c, vec![]).expect("spawn shim");
+    let _ = client.initialize("test", Duration::from_secs(5)).await; // no real server answers
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(!marker.exists(), "cmd ran a file from the session's folder");
     d.shutdown().await;
 }
