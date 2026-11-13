@@ -1306,7 +1306,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "hangar",
- "hangar-proto",
  "hangar-shim",
  "reqwest",
  "serde_json",

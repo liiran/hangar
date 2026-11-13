@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
-pub const INTERNAL_ERROR: i64 = -32603;
 /// The pooled server is starting, restarting or has failed.
 pub const SERVER_UNAVAILABLE: i64 = -32000;
 

@@ -217,12 +217,6 @@ impl McpClient {
             let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
         }
     }
-
-    pub async fn wait_exit(&self, timeout: Duration) -> Option<std::process::ExitStatus> {
-        let child = self.child.locked().take();
-        let mut child = child?;
-        tokio::time::timeout(timeout, child.wait()).await.ok().and_then(Result::ok)
-    }
 }
 
 pub fn file_uri(path: &str) -> String {

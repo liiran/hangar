@@ -238,6 +238,7 @@ hangar saves memory in two separate ways. This table switches them on one at a t
 
 - **Sharing.** Context7 and Memory run once for every session, instead of five times each. That alone takes 3.95 GB down to 2.72 GB.
 - **The fast path.** Playwright, Sequential Thinking and Filesystem keep state per session, so they still run five times each. `npx` starts each of them through launcher programs that stay in memory. hangar starts a package that is already downloaded with `node` directly, without the launchers. That takes 2.72 GB down to 1.11 GB, and it is why hangar helps even with a single session.
+- **With a page open in every browser** the split is the same. Three sessions take 3.20 GB directly, 2.57 GB with sharing alone ([sim-browse-no-fast-npx.md](results/sim-browse-no-fast-npx.md)) and 1.51 GB with the fast path as well ([sim-browse.md](results/sim-browse.md)).
 
 **When the fast path applies.** For a package with a tag (`@latest`, or no version), hangar uses the fast path only if real `npx` checked for a newer version within the last day. The benchmark's warm-up pass is such a check, as it would be on a machine that used these servers earlier today. On the first start of a day, expect the "sharing only" row.
 

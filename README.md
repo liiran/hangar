@@ -134,7 +134,7 @@ cargo build --release
 `wrap` is the switch that turns sharing on. The **Turn on sharing** button on the app's MCP pool page runs the same thing. Until then, every session starts its own servers, exactly as without hangar.
 
 - **What it changes.** It rewrites each local (stdio) server in `~/.claude.json`, the file where `claude mcp add` keeps your servers, to start through `hangar-shim`.
-- **What it leaves alone.** Remote servers, servers that are already wrapped, and a project's own `.mcp.json` file, which is usually shared with a team.
+- **What it leaves alone.** Remote servers, and a project's own `.mcp.json` file, which is usually shared with a team. A server that is already wrapped stays as it is. If you changed its `env` block since, running `wrap` again brings hangar's note of those settings up to date.
 - **It is safe to undo.** It makes a backup first, and `hangar unwrap` restores the original entries.
 - **It applies everywhere.** Sessions started in hangar and `claude` in a terminal read the same file, so both use the pool.
 
@@ -193,7 +193,7 @@ hangar has two parts:
 Each session is the real `claude` program, started in the session's folder in headless mode:
 
 ```
-claude --input-format stream-json --output-format stream-json --permission-prompt-tool stdio --permission-mode <mode> [--model <name>] [--resume=<conversation id>]
+claude --output-format stream-json --verbose --input-format stream-json --permission-prompt-tool stdio --permission-mode <mode> [--model <name>] [--resume=<conversation id>]
 ```
 
 - **Your message** is written to that process as one line of JSON.

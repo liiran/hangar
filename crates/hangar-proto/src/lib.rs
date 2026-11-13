@@ -62,12 +62,6 @@ impl ServerSpec {
         serde_json::to_string(&normalized).unwrap_or_default()
     }
 
-    /// A short, stable label for the spec, for names and logs. Not for
-    /// deciding whether two specs are the same: use [`Self::canonical`].
-    pub fn fingerprint(&self) -> String {
-        format!("{:016x}", fnv1a64(self.canonical().as_bytes()))
-    }
-
     /// The command line as one human-readable string.
     pub fn display(&self) -> String {
         let mut out = self.command.clone();
@@ -192,38 +186,6 @@ pub fn read_daemon_info(home: &Path) -> Option<DaemonInfo> {
     serde_json::from_str(&text).ok()
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut h = Fnv::new();
-    h.write(bytes);
-    h.finish()
-}
-
-/// FNV-1a: a fast, stable, non-cryptographic hash for fingerprints.
-pub struct Fnv(u64);
-
-impl Fnv {
-    pub fn new() -> Fnv {
-        Fnv(0xcbf2_9ce4_8422_2325)
-    }
-
-    pub fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 ^= u64::from(*b);
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-
-    pub fn finish(&self) -> u64 {
-        self.0
-    }
-}
-
-impl Default for Fnv {
-    fn default() -> Self {
-        Fnv::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,13 +195,13 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_is_stable_and_discriminating() {
+    fn the_whole_entry_decides_whether_two_servers_are_the_same() {
         let a = spec("npx", &["-y", "@playwright/mcp@latest"]);
-        assert_eq!(a.fingerprint(), a.clone().fingerprint());
-        assert_ne!(a.fingerprint(), spec("npx", &["-y", "@playwright/mcp@0.0.1"]).fingerprint());
+        assert_eq!(a.canonical(), a.clone().canonical());
+        assert_ne!(a.canonical(), spec("npx", &["-y", "@playwright/mcp@0.0.1"]).canonical());
         let mut with_env = a.clone();
         with_env.env.insert("TOKEN".into(), "x".into());
-        assert_ne!(a.fingerprint(), with_env.fingerprint());
+        assert_ne!(a.canonical(), with_env.canonical());
     }
 
     #[test]
