@@ -281,7 +281,7 @@ Playwright is not the only server that runs once per session: Sequential Thinkin
 
 In the example the two tokens differ, so each session gets its own GitHub server. This applies at every share level.
 
-*The limit.* The second check goes by the variable's name, so a variable with a plain name can be missed. [SECURITY.md](SECURITY.md#what-hangar-does-not-protect-you-from) walks through that case. To rule it out for a server, write the setting into the server's `env` block, or mark the server `share = "session"`.
+*The limit.* The second check goes by the variable's name, so a variable with a plain name can be missed. [SECURITY.md](SECURITY.md#what-hangar-does-not-protect-you-from) walks through that case. To rule it out for a server, mark the server `share = "session"`, or write the setting into the server's `env` block and run `hangar wrap` again. SECURITY.md shows both.
 
 **The daemon also:**
 - counts resource subscriptions, so a server is unsubscribed only when the last session leaves;

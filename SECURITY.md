@@ -144,7 +144,19 @@ In the GitHub example the two tokens differ and the name contains `TOKEN`, so ea
 3. hangar sees the same server, set up the same way, and no difference it recognizes, because nothing in the name `APP_ENV` says "this picks a database". Session 2 joins the server from step 1.
 4. In session 2 you ask Claude to look something up in production. It gets its answer from the test database.
 
-*The sure way.* Write such a setting into the server's own entry (its `env` block), where every difference counts. Or set `share = "session"` for that server in `~/.hangar/config.toml`.
+*The sure way.* Most people have nothing to do here: a server that hangar does not know is never shared, unless you mark it shareable yourself. For a server that is shared, do one of these:
+
+- **Tell hangar never to share it.** This is the simplest. In `~/.hangar/config.toml`, with the server's name from your Claude Code settings:
+  ```toml
+  [servers.my-app]
+  share = "session"
+  ```
+  Then run `hangar stop` and `hangar up`.
+- **Or write the setting into the server's own entry,** where every difference counts. Run this in each project folder, with that folder's value:
+  ```
+  claude mcp add my-app -e APP_ENV=staging -- node server.js
+  ```
+  Then turn sharing on for the new entry: the button on the MCP pool page, or `hangar wrap`. If you later change the `env` block of an entry that is already shared, run `hangar wrap` again. hangar compares exactly only the settings it listed when it last wrapped the entry, and it does not notice a later edit by itself.
 
 Sessions started in the hangar app are all started by hangar, from the same environment. So this mostly concerns `claude` started in different terminals.
 

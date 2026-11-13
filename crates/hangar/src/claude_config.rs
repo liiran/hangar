@@ -99,21 +99,56 @@ fn unwrapped_parts(server: &Value) -> Option<(Value, Vec<Value>)> {
     Some((command, args[i + 2..].to_vec()))
 }
 
+/// The names in a server's `env` block, as `--env-keys` takes them.
+fn env_keys(server: &Value) -> Option<String> {
+    let keys = server.get("env").and_then(Value::as_object).filter(|e| !e.is_empty())?;
+    Some(keys.keys().cloned().collect::<Vec<_>>().join(","))
+}
+
+/// Brings the `--env-keys` of an already wrapped entry in line with its `env`
+/// block, which may have been edited since. The shim compares exactly only
+/// the variables listed there. Returns whether anything changed.
+fn refresh_env_keys(server: &mut Value) -> bool {
+    let Some((command, rest)) = unwrapped_parts(server) else { return false };
+    let Some(name) = server["args"].get(1).cloned() else { return false };
+    let mut args = vec![json!("--name"), name];
+    if let Some(keys) = env_keys(server) {
+        args.push(json!("--env-keys"));
+        args.push(json!(keys));
+    }
+    args.push(json!("--"));
+    args.push(command);
+    args.extend(rest);
+    let args = Value::Array(args);
+    if server["args"] == args {
+        return false;
+    }
+    server["args"] = args;
+    true
+}
+
 /// Rewrites `doc` in place, recording each original in `originals`.
 pub fn wrap_doc(doc: &mut Value, shim: &Path, originals: &mut Originals) -> Vec<Change> {
     let mut changes = Vec::new();
     for (scope, ptr) in server_tables(doc) {
         let Some(table) = doc.pointer_mut(&ptr).and_then(Value::as_object_mut) else { continue };
         for (name, server) in table.iter_mut() {
-            if !is_stdio(server) || is_shim(server["command"].as_str().unwrap_or_default()) {
+            if !is_stdio(server) {
+                continue;
+            }
+            if is_shim(server["command"].as_str().unwrap_or_default()) {
+                let before = describe(server);
+                if refresh_env_keys(server) {
+                    changes.push(Change { scope: scope.clone(), name: name.clone(), before, after: describe(server) });
+                }
                 continue;
             }
             let before = describe(server);
             originals.insert(format!("{ptr}/{name}"), server.clone());
             let mut args = vec![json!("--name"), json!(name)];
-            if let Some(keys) = server.get("env").and_then(Value::as_object).filter(|e| !e.is_empty()) {
+            if let Some(keys) = env_keys(server) {
                 args.push(json!("--env-keys"));
-                args.push(json!(keys.keys().cloned().collect::<Vec<_>>().join(",")));
+                args.push(json!(keys));
             }
             args.push(json!("--"));
             args.push(server["command"].clone());
@@ -302,6 +337,41 @@ mod tests {
         assert_eq!(unwrap_doc(&mut d, &mut originals).len(), 4);
         assert_eq!(d, original, "unwrap restores the exact original, even entries without args");
         assert!(originals.is_empty());
+    }
+
+    #[test]
+    fn wrapping_again_picks_up_settings_added_to_a_wrapped_entry() {
+        let shim = Path::new("C:/hangar/hangar-shim.exe");
+        let mut d = doc();
+        let mut originals = Originals::new();
+        wrap_doc(&mut d, shim, &mut originals);
+
+        // A setting written into two wrapped entries by hand: one that had settings, one that had none.
+        d["mcpServers"]["keyed"]["env"]["APP_ENV"] = json!("staging");
+        d["mcpServers"]["playwright"]["env"] = json!({"APP_ENV": "staging"});
+        let changes = wrap_doc(&mut d, shim, &mut originals);
+        let mut names: Vec<&str> = changes.iter().map(|c| c.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["keyed", "playwright"]);
+        let keyed = d["mcpServers"]["keyed"]["args"].as_array().unwrap();
+        assert_eq!(keyed[2], "--env-keys");
+        assert!(keyed[3].as_str().unwrap().split(',').any(|k| k == "APP_ENV"), "{keyed:?}");
+        assert!(keyed[3].as_str().unwrap().split(',').any(|k| k == "TAVILY_API_KEY"), "{keyed:?}");
+        let pw = d["mcpServers"]["playwright"]["args"].as_array().unwrap();
+        assert_eq!((&pw[2], &pw[3], &pw[4], &pw[5]), (&json!("--env-keys"), &json!("APP_ENV"), &json!("--"), &json!("cmd")));
+        assert!(!changes.iter().any(|c| c.after.contains("staging")), "values are never printed");
+        assert_eq!(wrap_doc(&mut d, shim, &mut originals).len(), 0, "and then it is settled");
+
+        // Taking the setting out again drops it from the list.
+        d["mcpServers"]["playwright"]["env"] = json!({});
+        assert_eq!(wrap_doc(&mut d, shim, &mut originals).len(), 1);
+        assert_eq!(d["mcpServers"]["playwright"]["args"][2], "--");
+
+        // Unwrap still gives back the original command line, and keeps the hand-written setting.
+        unwrap_doc(&mut d, &mut originals);
+        assert_eq!(d["mcpServers"]["playwright"], doc()["mcpServers"]["playwright"]);
+        assert_eq!(d["mcpServers"]["keyed"]["command"], doc()["mcpServers"]["keyed"]["command"]);
+        assert_eq!(d["mcpServers"]["keyed"]["env"]["APP_ENV"], "staging");
     }
 
     #[test]
