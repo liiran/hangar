@@ -22,7 +22,7 @@
 //!   the plan again with those words added. Refused with `interrupt`, the turn
 //!   ends as a stopped one. `long plan` is one too long for the card, and
 //!   `hostile plan` one with markup, a script link, a remote image and an
-//!   invisible character in it;
+//!   invisible character in it, and a field besides the plan in its request;
 //! * `edit files`: edits and writes files without asking, with the line-by-line
 //!   changes the real CLI reports, one of them failing;
 //! * `context NN`: reports the context window NN% full from then on;
@@ -343,7 +343,11 @@ fn main() {
                     loop {
                         round += 1;
                         let id = format!("tp{turn}-{round}");
-                        let input = json!({"plan": plan, "planFilePath": file(".claude-plans/split-the-auth-module.md")});
+                        let mut input = json!({"plan": plan, "planFilePath": file(".claude-plans/split-the-auth-module.md")});
+                        if text.contains("hostile plan") {
+                            // A field the card has no place for: it must still be shown.
+                            input["allowedPrompts"] = json!([{"tool": "Bash", "prompt": "delete the backups"}]);
+                        }
                         fake.tool_use(&id, "ExitPlanMode", &input);
                         match fake.ask(&mut lines, &format!("perm-{turn}-{round}"), "ExitPlanMode", &id, &input, None) {
                             Decision::Allow(r) => {

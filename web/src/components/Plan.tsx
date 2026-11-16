@@ -5,7 +5,7 @@ import { AFTER_PLAN } from "../ask";
 import { hiddenParts, rightToLeft } from "../safe";
 import { report } from "../store";
 import { relative } from "../transcript";
-import { ApprovalBox, ChoiceKey, countLines, Shown } from "./approval";
+import { ApprovalBox, ChoiceKey, countLines, OtherFields, Shown } from "./approval";
 import { Markdown } from "./Markdown";
 import { cx, Kbd } from "./ui";
 
@@ -22,7 +22,7 @@ const PLAN_HEIGHT = 900;
  * takes what to change on the same line; with nothing typed it stops the turn, so the change
  * can be said in a message.
  */
-export function PlanCard({ session, requestId, plan, file, armed }: { session: Session; requestId: string; plan: string; file: string | null; armed: boolean }) {
+export function PlanCard({ session, requestId, plan, file, input, armed }: { session: Session; requestId: string; plan: string; file: string | null; input: unknown; armed: boolean }) {
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [plain, setPlain] = useState(false);
@@ -91,6 +91,8 @@ export function PlanCard({ session, requestId, plan, file, armed }: { session: S
           </span>
         </p>
       )}
+      {/* Approving sends the whole request back to Claude Code, so whatever else it carries is shown too. */}
+      <OtherFields input={input} shown={["plan", "planFilePath"]} />
       <p className="mt-3.5 text-[12.5px] font-medium">Would you like to proceed?</p>
       <div role="group" aria-label="What to do with the plan" onKeyDown={onKey} className="mt-1.5 divide-y divide-line overflow-hidden rounded-md bg-panel ring-1 ring-inset ring-line-strong" data-plan-choices>
         {AFTER_PLAN.map((choice, i) => (

@@ -127,3 +127,21 @@ export function ApprovalBox({
     </div>
   );
 }
+
+/** Input fields the preview did not already show, so none of them is silent. */
+export function OtherFields({ input, shown }: { input: unknown; shown: string[] }) {
+  if (!input || typeof input !== "object") return null;
+  const rest = Object.entries(input).filter(([k, v]) => !shown.includes(k) && v !== undefined && v !== null && v !== false && v !== "");
+  if (rest.length === 0) return null;
+  return (
+    <p className="mt-2 text-[12px] [overflow-wrap:anywhere] text-muted">
+      <span className="text-faint">Also set: </span>
+      {rest.map(([k, v], i) => (
+        <span key={k} className="font-mono text-[11.5px]">
+          {i > 0 && " · "}
+          <Shown text={`${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`} />
+        </span>
+      ))}
+    </p>
+  );
+}

@@ -304,6 +304,7 @@ try {
   await plan.waitFor();
   check("a plan cannot load an image, run a script or link to one", (await planBox.locator("img, script").count()) === 0 && (await planBox.locator('a[href^="javascript"]').count()) === 0 && (await pwned()) === undefined && external.length === 0, external.join(" "));
   check("a plan with invisible characters in it says so", (await plan.innerText()).includes("This plan has invisible characters in it."));
+  check("a field of the request that the card has no place for is still shown", (await plan.innerText()).includes('Also set: allowedPrompts: [{"tool":"Bash","prompt":"delete the backups"}]'));
   await plan.locator("button", { hasText: "Show it as plain text" }).click();
   check("…and shows them written out on request", (await planBox.locator("mark").first().innerText()) === "⟨U+202E⟩" && (await planBox.innerText()).includes("[Approve here](javascript:window.pwned=3)"));
   await shot(plan, "plan-card-hostile");

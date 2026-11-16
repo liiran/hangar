@@ -27,7 +27,7 @@ import { report } from "../store";
 import { useNow } from "../ui";
 import { rightToLeft, sessionRules, visible } from "../safe";
 import { needsSignIn, PAGE, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
-import { ApprovalBox, countLines, Shown, useArmed } from "./approval";
+import { ApprovalBox, countLines, OtherFields, Shown, useArmed } from "./approval";
 import { DiffStat, DiffView } from "./Diff";
 import { Markdown } from "./Markdown";
 import { PlanCard, PlanOutcome } from "./Plan";
@@ -320,24 +320,6 @@ function UserMessage({ text, ts }: { text: string; ts: number }) {
   );
 }
 
-/** Input fields the preview did not already show, so none of them is silent. */
-function OtherFields({ input, shown }: { input: any; shown: string[] }) {
-  if (!input || typeof input !== "object") return null;
-  const rest = Object.entries(input).filter(([k, v]) => !shown.includes(k) && v !== undefined && v !== null && v !== false && v !== "");
-  if (rest.length === 0) return null;
-  return (
-    <p className="mt-2 text-[12px] [overflow-wrap:anywhere] text-muted">
-      <span className="text-faint">Also set: </span>
-      {rest.map(([k, v], i) => (
-        <span key={k} className="font-mono text-[11.5px]">
-          {i > 0 && " · "}
-          <Shown text={`${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`} />
-        </span>
-      ))}
-    </p>
-  );
-}
-
 /** Claude's own words about a request, marked as such: they are not hangar's. */
 function ClaudeSays({ text }: { text: unknown }) {
   if (typeof text !== "string" || !text.trim()) return null;
@@ -524,7 +506,7 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
       </Activity>
     );
   }
-  if (pending && plan) return <PlanCard session={session} requestId={row.requestId} plan={plan.plan} file={plan.file} armed={armed} />;
+  if (pending && plan) return <PlanCard session={session} requestId={row.requestId} plan={plan.plan} file={plan.file} input={row.input} armed={armed} />;
   if (!pending && row.tool === ASK_TOOL) {
     return (
       <Activity icon={<CircleHelp className="size-3" />}>
