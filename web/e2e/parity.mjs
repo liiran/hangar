@@ -351,6 +351,63 @@ try {
   check("a used-up window says so", /^5-hour limit reached resets/.test(await limitsText()));
   await shot(page, "limits-reached");
 
+  // ================================================================ stopping hangar
+  const other = await ctx.newPage(); // a second window on the same daemon
+  watch(other);
+  await other.goto(up());
+  await other.waitForSelector(`${sessions} >> text=edit files in the auth module`);
+  await start("use tool and wait for me");
+  await main.locator("text=Claude wants to use Bash").waitFor();
+  await page.keyboard.press("Control+k");
+  await page.fill('input[aria-label="Command or session"]', "stop hangar");
+  const item = page.locator('[role="option"]', { hasText: "Stop hangar" });
+  check("“Stop hangar” is in the command palette", (await item.count()) === 1);
+  await shot(page, "stop-in-palette");
+  await page.keyboard.press("Enter");
+  const confirm = page.locator('[role="dialog"]', { hasText: "Stop hangar?" });
+  await confirm.waitFor();
+  const confirmText = (await confirm.innerText()).replace(/\s+/g, " ");
+  check("it asks first, and says what stopping does", confirmText.includes("1 session is in the middle of a turn") && confirmText.includes("keeps its history") && confirmText.includes("hangar up"), confirmText);
+  await shot(page, "stop-confirm");
+  await page.keyboard.press("Escape");
+  await confirm.waitFor({ state: "detached" });
+  check("Escape cancels, and hangar keeps running", (await api("GET", "/state")).status === 200);
+  await page.keyboard.press("Control+k");
+  await page.fill('input[aria-label="Command or session"]', "stop hangar");
+  await page.keyboard.press("Enter");
+  await confirm.waitFor();
+  stopping = true;
+  await confirm.locator("button", { hasText: "Stop hangar" }).click();
+  await page.waitForSelector("[data-stopped]");
+  check("the window says hangar is stopped, and how to start it again", (await page.locator("[data-stopped]").innerText()).includes("hangar is stopped") && (await page.locator("[data-stopped]").innerText()).includes("hangar up"));
+  await shot(page, "stopped");
+  await other.waitForSelector("[data-stopped]", { timeout: 8000 });
+  check("every other open window is told too, instead of “lost the daemon”", (await other.locator("text=Lost the daemon").count()) === 0);
+  for (let i = 0; i < 50 && fs.existsSync(path.join(home, "daemon.json")); i++) await sleep(100);
+  check("the daemon really stopped", !fs.existsSync(path.join(home, "daemon.json")));
+
+  // Starting again: the same sessions, paused, with what was answered and measured still there.
+  const again = up();
+  await page.waitForSelector("text=Open hangar from your terminal", { timeout: 20000 });
+  await page.goto(again);
+  await page.waitForSelector(`${sessions} >> text=ask question about signing in`);
+  const back = (await api("GET", "/state")).data;
+  const paused = back.sessions.find((s) => s.id === editId);
+  check("after `hangar up` the sessions are back, paused", ["hibernated", "stopped"].includes(paused.status), paused.status);
+  check("…with the context figure and the limits Claude last reported", paused.context.percent === 95 && back.limits.windows[0].used === 1);
+  await page.click(`${sessions} >> text=ask question about signing in`);
+  await main.locator("[data-answered]").first().waitFor();
+  check("…and the answers given before", (await main.locator("[data-answered]").first().innerText()).includes("Dashboard, Billing, the admin page"));
+  await page.click(`${sessions} >> text=use tool and wait for me`);
+  await main.locator("text=/^(Expired|Withdrawn) Bash/").waitFor();
+  check("a request that was waiting when hangar stopped is over, not left answerable", (await main.locator("button", { hasText: /^\s*Allow$/ }).count()) === 0);
+  await shot(page, "after-restart");
+
+  // A daemon that dies without saying so is still "lost", not "stopped".
+  const pid = JSON.parse(fs.readFileSync(path.join(home, "daemon.json"), "utf8")).pid;
+  process.kill(pid);
+  await page.waitForSelector("text=Lost the daemon", { timeout: 15000 });
+  check("a daemon that dies by itself still shows as lost, not as stopped", (await page.locator("[data-stopped]").count()) === 0);
 } finally {
   await browser.close();
   try {

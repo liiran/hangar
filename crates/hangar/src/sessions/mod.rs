@@ -275,9 +275,18 @@ pub struct SessionView {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiEvent {
-    Session { session: SessionView },
-    Event { session_id: String, event: Event },
-    Removed { session_id: String },
+    Session {
+        session: SessionView,
+    },
+    Event {
+        session_id: String,
+        event: Event,
+    },
+    Removed {
+        session_id: String,
+    },
+    /// The daemon is about to stop on purpose (`hangar stop`, or "Stop hangar" in the app).
+    Stopping,
 }
 
 /// How the user answered a permission request.
@@ -617,6 +626,11 @@ impl Manager {
     /// The plan's usage limits as Claude Code last reported them, if it has.
     pub fn limits(&self) -> Option<Limits> {
         self.limits.locked().clone()
+    }
+
+    /// Tells every open window that the daemon is stopping on purpose.
+    pub fn announce_stop(&self) {
+        let _ = self.tx.send(UiEvent::Stopping);
     }
 
     /// Events after `after`, oldest first.

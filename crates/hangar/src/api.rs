@@ -44,11 +44,20 @@ pub struct AppState {
     pairing: Arc<Pairing>,
     pub port: u16,
     snapshot: Arc<tokio::sync::Mutex<Option<(Instant, Value)>>>,
+    /// Stops the whole daemon, as `hangar stop` does.
+    shutdown: tokio::sync::watch::Sender<bool>,
 }
 
 impl AppState {
-    pub fn new(manager: Arc<Manager>, pool: Arc<Pool>, token: String, pairing: Arc<Pairing>, port: u16) -> AppState {
-        AppState { manager, pool, token: token.into(), pairing, port, snapshot: Default::default() }
+    pub fn new(
+        manager: Arc<Manager>,
+        pool: Arc<Pool>,
+        token: String,
+        pairing: Arc<Pairing>,
+        port: u16,
+        shutdown: tokio::sync::watch::Sender<bool>,
+    ) -> AppState {
+        AppState { manager, pool, token: token.into(), pairing, port, snapshot: Default::default(), shutdown }
     }
 }
 
@@ -73,6 +82,7 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState, mut shutd
         .route("/sessions/{id}/start", post(start_now))
         .route("/servers/{id}/stop", post(stop_server))
         .route("/sharing", post(set_sharing))
+        .route("/shutdown", post(stop_daemon))
         .route("/ws", get(ws))
         // An unknown API path is an error, not the app's page.
         .fallback(|| async { err(StatusCode::NOT_FOUND, "no such API path") })
@@ -477,6 +487,15 @@ async fn set_sharing(State(st): State<AppState>, Json(body): Json<SharingBody>) 
     }
 }
 
+/// What `hangar stop` does, from the app: every session is stopped (it
+/// comes back paused, with its history) and the daemon exits. Open windows
+/// are told first, so they can say so instead of "lost the daemon".
+async fn stop_daemon(State(st): State<AppState>) -> Response {
+    st.manager.announce_stop();
+    let _ = st.shutdown.send(true);
+    Json(json!({"ok": true})).into_response()
+}
+
 fn result(r: anyhow::Result<()>) -> Response {
     match r {
         Ok(()) => Json(json!({"ok": true})).into_response(),
@@ -495,13 +514,17 @@ async fn live(mut socket: WebSocket, st: AppState) {
     loop {
         tokio::select! {
             ev = rx.recv() => {
+                let last = matches!(ev, Ok(crate::sessions::UiEvent::Stopping));
                 let text = match ev {
                     Ok(ev) => serde_json::to_string(&ev).unwrap_or_default(),
                     // Fell behind: tell the client to refetch everything.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => json!({"type": "resync"}).to_string(),
                     Err(_) => break,
                 };
-                if socket.send(Message::Text(text.into())).await.is_err() {
+                if socket.send(Message::Text(text.into())).await.is_err() || last {
+                    // After "stopping" there is nothing more to say; closing
+                    // lets the server finish at once.
+                    let _ = socket.send(Message::Close(None)).await;
                     break;
                 }
             }

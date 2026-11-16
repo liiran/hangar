@@ -1,4 +1,4 @@
-import { Check, Copy, Download, Inbox, Layers, Monitor, Moon, PanelLeft, PanelRight, Play, Search, Server, Square, SquarePen, Sun } from "lucide-react";
+import { Check, Copy, Download, Inbox, Layers, Monitor, Moon, PanelLeft, PanelRight, Play, Power, Search, Server, Square, SquarePen, Sun } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { basename } from "../format";
@@ -38,6 +38,8 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       { id: "nav", group: "Actions", label: "Toggle sidebar", icon: <PanelLeft className="size-4" />, shortcut: "Ctrl \\", run: ui.toggleNav },
       { id: "props", group: "Actions", label: "Toggle properties panel", icon: <PanelRight className="size-4" />, run: ui.toggleProps },
     ];
+    // Only after a confirmation: it ends every running turn.
+    const power: Item[] = [{ id: "shutdown", group: "hangar", label: "Stop hangar", detail: "pauses every session; hangar up starts it again", icon: <Power className="size-4" />, run: () => ui.open("stop") }];
     // After the sessions, so the list still opens on what is used most.
     const themeIcons = { system: Monitor, light: Sun, dark: Moon };
     const appearance: Item[] = THEMES.map((t) => {
@@ -60,7 +62,10 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       .filter((s) => matches(query, s.title, s.cwd, s.preview))
       .slice(0, query ? 12 : 6)
       .map((s) => ({ id: s.id, group: query ? "Sessions" : "Recent sessions", label: s.title, detail: basename(s.cwd), icon: <StatusIcon status={s.status} />, run: () => openSession(s.id) }));
-    return [...actions.filter((a) => matches(query, a.label, a.detail)), ...found, ...appearance.filter((a) => matches(query, a.label, a.detail))];
+    const shown = (list: Item[]) => list.filter((a) => matches(query, a.label, a.detail));
+    // Unasked, it is the last thing in the list. Searched for, it comes before any session
+    // that happens to match the same words (a session in a folder named "hangar", say).
+    return query.trim() ? [...shown([...actions, ...power]), ...found, ...shown(appearance)] : [...actions, ...found, ...appearance, ...power];
   }, [query, sessions, selected, ui, theme, install]);
 
   useEffect(() => setActive(0), [query]);

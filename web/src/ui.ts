@@ -6,7 +6,7 @@ import { create } from "zustand";
 import { saved, useStore } from "./store";
 import { type View, visible } from "./views";
 
-type Overlay = null | "new" | "palette";
+type Overlay = null | "new" | "palette" | "stop";
 
 interface UI {
   view: View;

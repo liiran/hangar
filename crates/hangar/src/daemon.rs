@@ -147,7 +147,7 @@ impl Daemon {
         let ui = ui_listener.map(|l| {
             // The UI has its own token, which the daemon never writes to disk
             // (the page keeps it in its own storage until the daemon restarts).
-            let state = crate::api::AppState::new(sessions.clone(), pool.clone(), random_hex(24), pairing.clone(), ui_port.unwrap_or(0));
+            let state = crate::api::AppState::new(sessions.clone(), pool.clone(), random_hex(24), pairing.clone(), ui_port.unwrap_or(0), shutdown_tx.clone());
             tokio::spawn(crate::api::serve(l, state, shutdown_tx.subscribe()))
         });
         let shared =
@@ -190,6 +190,8 @@ impl Daemon {
     }
 
     pub async fn shutdown(self) {
+        // Open windows hear that this is on purpose before their connection goes.
+        self.sessions.announce_stop();
         let _ = self.shutdown_tx.send(true);
         let _ = self.accept.await;
         if let Some(ui) = self.ui {

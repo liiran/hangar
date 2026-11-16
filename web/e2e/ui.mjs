@@ -435,8 +435,8 @@ try {
   // ---- a restarted daemon has a new token: the window asks to sign in again
   restarting = true;
   execFileSync(hangar, ["stop"], { env });
-  await page.waitForSelector("text=Lost the daemon", { timeout: 10000 });
-  check("losing the daemon is visible", true);
+  await page.waitForSelector("text=hangar is stopped", { timeout: 10000 });
+  check("a stopped daemon says so in the window, with how to start it again", (await page.locator("[data-stopped]").innerText()).includes("hangar up"));
   // While hangar is stopped, one session's history grows by 400 turns, as a long-running one would.
   const sessionsDir = path.join(home, "sessions");
   const longId = fs.readdirSync(sessionsDir).find((id) => JSON.parse(fs.readFileSync(path.join(sessionsDir, id, "meta.json"), "utf8")).title.startsWith("Audit dependencies"));

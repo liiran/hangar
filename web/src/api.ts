@@ -239,6 +239,8 @@ export const api = {
   stopServer: (id: number) => call("POST", `/servers/${id}/stop`),
   /** What `hangar wrap` (on) and `hangar unwrap` do. */
   setSharing: (on: boolean) => call<{ ok: boolean; changed: number }>("POST", "/sharing", { on }),
+  /** What `hangar stop` does: every session is paused and the daemon exits. */
+  shutdown: () => call("POST", "/shutdown"),
 };
 
 export function socketUrl() {

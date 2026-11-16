@@ -831,6 +831,67 @@ async fn sessions_run_end_to_end_through_the_api() {
 }
 
 #[tokio::test]
+async fn the_app_answers_questions_shows_limits_and_can_stop_the_daemon() {
+    let ui = ui_daemon("api-answers").await;
+    let token = ui.token().await;
+    let repo = temp_home("api-answers-repo");
+    let post = |path: &str, body: Value| ui.http.post(format!("{}{path}", ui.base)).header("x-hangar-token", &token).json(&body).send();
+    let state =
+        || async { ui.http.get(format!("{}/api/state", ui.base)).header("x-hangar-token", &token).send().await.unwrap().json::<Value>().await.unwrap() };
+    let created = post("/api/sessions", json!({"cwd": repo.display().to_string(), "prompt": "ask question, limits 93 20", "trust": true})).await.unwrap();
+    let id = created.json::<Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+    let mut v = state().await;
+    for _ in 0..200 {
+        if v["sessions"][0]["status"] == "needs_you" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        v = state().await;
+    }
+    let request = v["sessions"][0]["pending"][0]["request_id"].as_str().expect("a question is waiting").to_string();
+    let decide = format!("/api/sessions/{id}/permissions/{request}");
+    let empty = post(&decide, json!({"behavior": "allow"})).await.unwrap();
+    assert_eq!(empty.status(), 400);
+    assert_eq!(empty.json::<Value>().await.unwrap()["error"], "choose an answer first");
+    let answered = post(&decide, json!({"behavior": "allow", "answers": {"Which sign-in method should the app use?": "Both"}})).await.unwrap();
+    assert_eq!(answered.status(), 200);
+    for _ in 0..200 {
+        if v["sessions"][0]["status"] == "idle" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        v = state().await;
+    }
+    let events: Value =
+        ui.http.get(format!("{}/api/sessions/{id}/events", ui.base)).header("x-hangar-token", &token).send().await.unwrap().json().await.unwrap();
+    let decision = events.as_array().unwrap().iter().find(|e| e["kind"] == "decision").expect("the answer is in the history");
+    assert_eq!(decision["detail"]["answers"]["Which sign-in method should the app use?"], "Both");
+    // The snapshot is rebuilt every 1.5 s at most.
+    let mut limits = Value::Null;
+    for _ in 0..100 {
+        limits = state().await["limits"].clone();
+        if !limits.is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        limits["windows"][0],
+        json!({"name": "five_hour", "used": 0.93, "resets_at": limits["windows"][0]["resets_at"], "status": "allowed_warning"}),
+        "{limits}"
+    );
+
+    // Stopping needs the same proof as everything else, and comes from this page only.
+    let url = format!("{}/api/shutdown", ui.base);
+    assert_eq!(ui.http.post(&url).send().await.unwrap().status(), 401);
+    assert_eq!(ui.http.post(&url).header("x-hangar-token", &token).header("sec-fetch-site", "cross-site").send().await.unwrap().status(), 403);
+    assert!(tokio::time::timeout(Duration::from_millis(150), ui.d.stopped()).await.is_err(), "still running");
+    assert_eq!(ui.http.post(&url).header("x-hangar-token", &token).send().await.unwrap().status(), 200);
+    tokio::time::timeout(Duration::from_secs(2), ui.d.stopped()).await.expect("the daemon was told to stop");
+    ui.d.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_app_is_told_which_local_servers_are_not_shared_yet() {
     let ui = ui_daemon("api-sharing").await;
     let config = temp_home("api-sharing-claude").join("claude.json");

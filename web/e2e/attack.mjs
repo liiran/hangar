@@ -162,6 +162,7 @@ try {
     ["POST", "/api/sessions/s000000000000/start"],
     ["POST", "/api/servers/1/stop"],
     ["POST", "/api/sharing"],
+    ["POST", "/api/shutdown"],
     ["GET", "/api/ws"],
     ["GET", "/api/nothing-here"],
   ];
@@ -424,6 +425,12 @@ try {
     await sleep(600);
     const kept = (json(await req("GET", `/api/sessions/${asking.id}/events`, { token: T })) ?? []).find((e) => e.kind === "decision")?.detail?.answers ?? {};
     check("a megabyte typed as an answer is cut before it is sent or stored", long.status === 200 && Object.values(kept)[0]?.length === 8000, `${long.status}; kept ${Object.values(kept)[0]?.length} characters`);
+
+    // Stopping the daemon is the page's alone.
+    const offSite = await req("POST", "/api/shutdown", { token: T, body: {}, headers: { "Sec-Fetch-Site": "cross-site" } });
+    const otherOrigin = await req("POST", "/api/shutdown", { token: T, body: {}, headers: { Origin: "http://evil.example" } });
+    const byGet = await req("GET", "/api/shutdown", { token: T });
+    check("another site cannot stop hangar, and neither can a link", offSite.status === 403 && otherOrigin.status === 403 && byGet.status >= 400 && (await alive()), `${offSite.status} ${otherOrigin.status} ${byGet.status}`);
 
     await req("POST", `/api/sessions/${s1.id}/stop`, { token: T, body: {} });
     await sleep(800);

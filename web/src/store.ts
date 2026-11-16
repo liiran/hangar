@@ -4,7 +4,8 @@ import { ASK_TOOL, PLAN_TOOL } from "./ask";
 import { visible } from "./safe";
 import { isNewer, mergeEvents, notice, pairCode } from "./sync";
 
-type Conn = "connecting" | "live" | "offline" | "unauthorized";
+/** `stopped`: the daemon was stopped on purpose (from the app, or with `hangar stop`). */
+type Conn = "connecting" | "live" | "offline" | "unauthorized" | "stopped";
 
 interface Toast {
   id: number;
@@ -163,7 +164,7 @@ function connect() {
   ws.onclose = () => {
     if (socket !== ws) return;
     socket = null;
-    useStore.setState((s) => (s.conn === "unauthorized" ? {} : { conn: "offline" }));
+    useStore.setState((s) => (s.conn === "unauthorized" || s.conn === "stopped" ? {} : { conn: "offline" }));
     // A refused handshake looks like any other close: ask the API why.
     api
       .state()
@@ -265,7 +266,17 @@ function handle(msg: any) {
       useStore.setState({ system });
       break;
     }
+    // The daemon says goodbye before it goes, so this is not "lost the daemon".
+    case "stopping":
+      useStore.setState({ conn: "stopped" });
+      break;
   }
+}
+
+/** Stops the daemon, as `hangar stop` does. The window then says so and waits for `hangar up`. */
+export async function stopHangar() {
+  await api.shutdown();
+  useStore.setState({ conn: "stopped" });
 }
 
 // ------------------------------------------------------------ notifications

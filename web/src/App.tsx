@@ -7,6 +7,7 @@ import { PoolView } from "./components/PoolView";
 import { SessionList } from "./components/SessionList";
 import { SessionPane } from "./components/SessionPane";
 import { Sidebar } from "./components/Sidebar";
+import { StopHangar, StoppedScreen } from "./components/StopHangar";
 import { Button, cx, Kbd, Logo, useDialog } from "./components/ui";
 import { report, useStore } from "./store";
 import { attentionCount, ignoreShortcut } from "./sync";
@@ -34,6 +35,11 @@ export function App() {
   const closeDrawer = useUI((s) => s.closeDrawer);
   const list = useVisible();
   const session = selected ? sessions[selected] : undefined;
+
+  // A dialog left open when the daemon stops must not still be there when it is back.
+  useEffect(() => {
+    if (conn === "stopped") open(null);
+  }, [conn, open]);
 
   // Sessions asking for permission or stopped by an error.
   const waiting = attentionCount(Object.values(sessions));
@@ -88,6 +94,7 @@ export function App() {
       </Centered>
     );
   }
+  if (conn === "stopped") return <StoppedScreen />;
   if (conn === "connecting") {
     return (
       <Centered>
@@ -125,6 +132,7 @@ export function App() {
 
       {overlay === "new" && <NewSession onClose={() => open(null)} />}
       {overlay === "palette" && <CommandPalette onClose={() => open(null)} />}
+      {overlay === "stop" && <StopHangar onClose={() => open(null)} />}
       {conn === "offline" && (
         <div className="fixed top-3 left-1/2 z-50 -translate-x-1/2 rounded-full bg-panel px-3 py-1 text-[12px] text-s-needs shadow-pop" role="status">
           Lost the daemon. Reconnecting…
