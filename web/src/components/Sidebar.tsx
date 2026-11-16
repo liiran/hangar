@@ -1,7 +1,7 @@
 import { ChevronDown, CircleHelp, Folder, Inbox, Layers, Search, Server, SquarePen } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import type { Limits } from "../api";
-import { bytes, clock, limitName, resetTime } from "../format";
+import { bytes, clock, fillColor, limitName, resetTime } from "../format";
 import { useStore } from "../store";
 import { useNow, useUI } from "../ui";
 import { needsYou, projects, samePath } from "../views";
@@ -146,20 +146,22 @@ function PlanLimits({ limits }: { limits: Limits }) {
   const now = useNow();
   const note = `Your Claude plan's usage, as Claude Code last reported it (${clock(limits.at_ms)}). It updates whenever a session talks to Claude.`;
   return (
-    <div className="space-y-2.5" title={note} data-plan-limits>
+    <div className="space-y-2" title={note} data-plan-limits>
       {limits.windows.slice(0, 3).map((w) => {
         // Past its reset time, the window has started over and the old figure is no longer true.
         const over = w.resets_at != null && w.resets_at * 1000 <= now;
-        const percent = Math.round(w.used * 100);
-        const hit = !over && (w.status === "rejected" || percent >= 100);
+        // A window Claude Code says is used up is full, whatever the rounding says.
+        const percent = over ? 0 : Math.max(Math.round(w.used * 100), w.status === "rejected" ? 100 : 0);
         return (
           <div key={w.name}>
-            <div className="mb-1.5 flex items-baseline justify-between gap-2 text-[11.5px]">
-              <span className="truncate text-muted">{limitName(w.name)}</span>
-              <span className={cx("shrink-0 tabular-nums", hit ? "text-s-error" : "text-faint")}>{over ? "started over" : hit ? "reached" : `${percent}%`}</span>
+            <div className="mb-1 flex items-baseline gap-1.5 text-[11.5px]">
+              <span className="shrink-0 text-muted">{limitName(w.name)}</span>
+              {!over && w.resets_at != null && <span className="min-w-0 truncate text-[10.5px] text-faint">resets {resetTime(w.resets_at, now)}</span>}
+              <span className="ml-auto shrink-0 text-faint tabular-nums" style={percent >= 50 ? { color: fillColor(percent) } : undefined}>
+                {over ? "started over" : `${percent}%`}
+              </span>
             </div>
-            <Meter used={over ? 0 : Math.min(100, percent)} total={100} />
-            {!over && w.resets_at != null && <div className="mt-1.5 truncate text-[11px] text-faint">resets {resetTime(w.resets_at, now)}</div>}
+            <Meter used={Math.min(100, percent)} total={100} scale thick />
           </div>
         );
       })}

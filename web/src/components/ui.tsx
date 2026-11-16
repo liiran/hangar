@@ -1,6 +1,6 @@
 import { Component, forwardRef, useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import type { Status } from "../api";
-import { STATUS } from "../format";
+import { fillColor, STATUS } from "../format";
 
 export function cx(...parts: (string | false | null | undefined)[]) {
   return parts.filter(Boolean).join(" ");
@@ -143,13 +143,18 @@ export function Kbd({ children, className }: { children: ReactNode; className?: 
   );
 }
 
-export function Meter({ used, total, reserve }: { used: number; total: number; reserve?: number }) {
+/**
+ * A bar that fills. `scale` colors it by how full it is, in the steps the context wheel uses
+ * (see fillColor); without it the bar turns orange above 75% and red above 90%, which suits
+ * memory. `thick` is a slightly taller bar.
+ */
+export function Meter({ used, total, reserve, scale, thick }: { used: number; total: number; reserve?: number; scale?: boolean; thick?: boolean }) {
   const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
   const reservePct = reserve && total > 0 ? Math.min(100, (reserve / total) * 100) : 0;
-  const tone = pct > 90 ? "bg-s-error" : pct > 75 ? "bg-s-needs" : "bg-accent";
+  const tone = scale ? "" : pct > 90 ? "bg-s-error" : pct > 75 ? "bg-s-needs" : "bg-accent";
   return (
-    <div className="relative h-1 w-full overflow-hidden rounded-full bg-raised" role="meter" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
-      <div className={cx("h-full rounded-full transition-[width] duration-700", tone)} style={{ width: `${pct}%` }} />
+    <div className={cx("relative w-full overflow-hidden rounded-full bg-raised", thick ? "h-1.5" : "h-1")} role="meter" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
+      <div className={cx("h-full rounded-full transition-[width,background-color] duration-700", tone)} style={{ width: `${pct}%`, background: scale ? fillColor(pct) : undefined }} />
       {reservePct > 0 && <div className="absolute inset-y-0 right-0 border-l border-faint/60" style={{ width: `${reservePct}%` }} title="Memory hangar keeps free" />}
     </div>
   );

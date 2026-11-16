@@ -356,13 +356,17 @@ try {
   await shot(page, "context-details");
   await page.mouse.move(400, 300);
   await details.waitFor({ state: "detached" });
+  await say("context 55 now");
+  await wheel.locator("text=55%").waitFor();
+  check("the ring turns yellow once the window is half full", (await arc()).stroke === "var(--fill-1)");
+  await shot(page.locator("textarea[data-composer]").locator("xpath=ancestor::div[contains(@class,'max-w')]"), "context-wheel-55");
   await say("context 82 now");
   await wheel.locator("text=82%").waitFor();
-  check("it follows Claude as the window fills, turning orange from 75%", (await arc()).stroke === "var(--s-needs)" && (await session(editId)).context.used_tokens === 164000);
+  check("it follows Claude as the window fills: orange from 70%", (await arc()).stroke === "var(--fill-2)" && (await session(editId)).context.used_tokens === 164000);
   await shot(page.locator("textarea[data-composer]").locator("xpath=ancestor::div[contains(@class,'max-w')]"), "context-wheel-82");
   await say("context 95 now");
   await wheel.locator("text=95%").waitFor();
-  check("…and red from 90%", (await arc()).stroke === "var(--s-error)");
+  check("…and red at the end, from 95%", (await arc()).stroke === "var(--fill-4)");
   await shot(page.locator("textarea[data-composer]").locator("xpath=ancestor::div[contains(@class,'max-w')]"), "context-wheel-95");
   check("the properties panel shows the same figures", (await page.locator('aside[aria-label="Properties"]').innerText()).replace(/\s+/g, " ").includes("95% of context · 190k / 200k"));
 
@@ -372,17 +376,17 @@ try {
   await say("limits 46 10 please");
   await footer.waitFor({ timeout: 8000 });
   const limitsText = async () => (await footer.innerText()).replace(/\s+/g, " ");
-  check("both windows appear in the sidebar once a session reports them", /^5-hour limit 46% resets \S.* 7-day limit 10% resets \S/.test(await limitsText()), await limitsText());
+  check("both windows appear in the sidebar once a session reports them, each on one line above its bar", /^5-hour limit resets \S.* 46% 7-day limit resets \S.* 10%$/.test(await limitsText()) && (await footer.boundingBox()).height < 64, `${await limitsText()} (${Math.round((await footer.boundingBox()).height)} px tall)`);
   await shot(page.locator('aside[aria-label="Sidebar"]'), "limits-sidebar");
   await shot(footer, "limits");
   await say("limits 93 71 please");
   await footer.locator("text=93%").waitFor({ timeout: 8000 });
-  const bars = () => footer.locator('[role="meter"] > div:first-child').evaluateAll((els) => els.map((el) => el.className));
-  check("they update while the app is open, and a nearly used window turns red", (await bars())[0].includes("bg-s-error") && (await bars())[1].includes("bg-accent"), (await bars()).join(" | "));
+  const bars = () => footer.locator('[role="meter"] > div:first-child').evaluateAll((els) => els.map((el) => el.style.background));
+  check("they update while the app is open, and warm as they fill, in the wheel's steps", (await bars())[0] === "var(--fill-3)" && (await bars())[1] === "var(--fill-2)", (await bars()).join(" | "));
   await shot(footer, "limits-high");
   await say("limits 100 71 please");
-  await footer.locator("text=reached").waitFor({ timeout: 8000 });
-  check("a used-up window says so", /^5-hour limit reached resets/.test(await limitsText()));
+  await footer.locator("text=100%").waitFor({ timeout: 8000 });
+  check("a used-up window reads 100%, in red", /^5-hour limit resets \S.* 100% /.test(await limitsText()) && (await bars())[0] === "var(--fill-4)");
   await shot(page, "limits-reached");
 
   // ================================================================ stopping hangar

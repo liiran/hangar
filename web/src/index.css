@@ -46,6 +46,13 @@
   --s-done: #5e6ad2;
   --s-idle: light-dark(#8f9097, #8a8f98);
   --s-error: light-dark(#d93f3f, #eb5757);
+  /* How full something is (the context window, a plan limit): the accent while there is
+     plenty of room, then yellow from half, orange from 70%, a deeper orange from 85% and
+     red from 95%. See fillColor in format.ts. */
+  --fill-1: light-dark(#b98900, #f2cc60);
+  --fill-2: light-dark(#d9720f, #ffa657);
+  --fill-3: light-dark(#d4502a, #ff7b54);
+  --fill-4: light-dark(#cf222e, #f85149);
 }
 :root[data-theme="light"] {
   color-scheme: light;

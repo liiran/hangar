@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { basename, bytes, duration, GROUP_ORDER, limitName, modelChoice, resetTime, STATUS, tokens } from "./format";
+import { basename, bytes, duration, fillColor, GROUP_ORDER, limitName, modelChoice, resetTime, STATUS, tokens } from "./format";
 
 describe("format", () => {
   it("formats bytes", () => {
@@ -33,6 +33,11 @@ describe("format", () => {
   it("writes token counts the way Claude Code does", () => {
     expect([0, 950, 1000, 28_884, 84_000, 200_000, 967_000].map(tokens)).toEqual(["0", "950", "1k", "28.9k", "84k", "200k", "967k"]);
     expect([999_949, 999_950, 1_000_000, 1_250_000].map(tokens)).toEqual(["999.9k", "1M", "1M", "1.3M"]);
+  });
+
+  it("warms the fill color in steps: calm, yellow from half, orange from 70%, deeper from 85%, red from 95%", () => {
+    const steps = [0, 49, 50, 69, 70, 84, 85, 94, 95, 100, 140].map(fillColor);
+    expect(steps).toEqual(["var(--accent)", "var(--accent)", "var(--fill-1)", "var(--fill-1)", "var(--fill-2)", "var(--fill-2)", "var(--fill-3)", "var(--fill-3)", "var(--fill-4)", "var(--fill-4)", "var(--fill-4)"]);
   });
 
   it("names the usage windows and says when they start over", () => {

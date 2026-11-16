@@ -1,18 +1,14 @@
 import { useRef, useState } from "react";
 import type { ContextUsage } from "../api";
-import { clock, tokens } from "../format";
-import { cx, Meter, useDismiss } from "./ui";
+import { clock, fillColor, tokens } from "../format";
+import { Meter, useDismiss } from "./ui";
 
 const R = 6;
 const AROUND = 2 * Math.PI * R;
 
-/** The color of a fill level: the accent, then orange from 75%, then red from 90% (as the memory bar). */
-function tone(percent: number) {
-  return percent >= 90 ? "var(--s-error)" : percent >= 75 ? "var(--s-needs)" : "var(--accent)";
-}
-
 /**
- * How full Claude's context window is: a ring that fills up, and the percentage. Every number
+ * How full Claude's context window is: a ring that fills up, and the percentage. The ring warms
+ * as it fills: yellow from half, orange from 70%, red at the end (see fillColor). Every number
  * is Claude Code's own (what `/context` shows in a terminal), as of its last reply; hangar adds
  * nothing up. Hovering or clicking opens what the window is filled with.
  */
@@ -39,11 +35,11 @@ export function ContextWheel({ context }: { context: ContextUsage }) {
               cy="8"
               r={R}
               fill="none"
-              stroke={tone(percent)}
+              stroke={fillColor(percent)}
               strokeWidth="2.5"
               strokeLinecap={percent >= 100 ? "butt" : "round"}
               strokeDasharray={`${(AROUND * percent) / 100} ${AROUND}`}
-              className="transition-[stroke-dasharray] duration-700"
+              className="transition-[stroke-dasharray,stroke] duration-700"
             />
           )}
         </svg>
@@ -55,10 +51,12 @@ export function ContextWheel({ context }: { context: ContextUsage }) {
           <div role="group" aria-label="Context window" className="animate-pop w-64 rounded-lg bg-panel p-3 text-[12px] shadow-pop">
             <div className="flex items-baseline justify-between gap-2">
               <span className="font-medium text-fg">Context window</span>
-              <span className={cx("tabular-nums", percent >= 90 ? "text-s-error" : percent >= 75 ? "text-s-needs" : "text-muted")}>{percent}% full</span>
+              <span className="text-muted tabular-nums" style={percent >= 50 ? { color: fillColor(percent) } : undefined}>
+                {percent}% full
+              </span>
             </div>
             <div className="mt-0.5 mb-2 text-muted tabular-nums">{summary}</div>
-            <Meter used={percent} total={100} />
+            <Meter used={percent} total={100} scale />
             {context.parts.length > 0 && (
               <dl className="mt-2.5 space-y-0.5">
                 {context.parts.map((p) => (

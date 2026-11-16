@@ -36,6 +36,18 @@ export function tokens(n: number): string {
   return String(Math.max(0, Math.round(n)));
 }
 
+/**
+ * The color for how full something is, as a CSS color: calm below half, then warmer in steps
+ * (yellow from 50%, orange from 70%, deeper from 85%) to red from 95%.
+ */
+export function fillColor(percent: number): string {
+  if (percent >= 95) return "var(--fill-4)";
+  if (percent >= 85) return "var(--fill-3)";
+  if (percent >= 70) return "var(--fill-2)";
+  if (percent >= 50) return "var(--fill-1)";
+  return "var(--accent)";
+}
+
 /** `3:40 pm`-style time of day, in the user's own format. */
 export function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
