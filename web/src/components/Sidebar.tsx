@@ -148,7 +148,8 @@ function PlanLimits({ limits }: { limits: Limits }) {
   return (
     <div className="space-y-2" title={note} data-plan-limits>
       {limits.windows.slice(0, 3).map((w) => {
-        // Past its reset time, the window has started over and the old figure is no longer true.
+        // Past its reset time the window has started over: nothing of the new one is used yet, so
+        // it reads 0% until Claude Code reports again.
         const over = w.resets_at != null && w.resets_at * 1000 <= now;
         // A window Claude Code says is used up is full, whatever the rounding says.
         const percent = over ? 0 : Math.max(Math.round(w.used * 100), w.status === "rejected" ? 100 : 0);
@@ -158,7 +159,7 @@ function PlanLimits({ limits }: { limits: Limits }) {
               <span className="shrink-0 text-muted">{limitName(w.name)}</span>
               {!over && w.resets_at != null && <span className="min-w-0 truncate text-[10.5px] text-faint">resets {resetTime(w.resets_at, now)}</span>}
               <span className="ml-auto shrink-0 text-faint tabular-nums" style={percent >= 50 ? { color: fillColor(percent) } : undefined}>
-                {over ? "started over" : `${percent}%`}
+                {percent}%
               </span>
             </div>
             <Meter used={Math.min(100, percent)} total={100} scale thick />
