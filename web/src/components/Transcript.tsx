@@ -27,7 +27,7 @@ import { report } from "../store";
 import { useNow } from "../ui";
 import { rightToLeft, sessionRules, visible } from "../safe";
 import { needsSignIn, PAGE, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
-import { ApprovalBox, countLines, OtherFields, Shown, useArmed } from "./approval";
+import { ApprovalBox, countLines, OtherFields, Shown } from "./approval";
 import { DiffStat, DiffView } from "./Diff";
 import { Markdown } from "./Markdown";
 import { PlanCard, PlanOutcome } from "./Plan";
@@ -478,7 +478,6 @@ const DECISIONS: Record<string, string> = {
 
 function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission" }>; session: Session }) {
   const [busy, setBusy] = useState(false);
-  const armed = useArmed(session);
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
   const pending = row.decision == null && !row.superseded ? session.pending.find((p) => p.request_id === row.requestId) : undefined;
@@ -493,9 +492,9 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
   };
   const summary = toolSummary(row.tool, row.input, session.cwd);
   const rules = pending ? sessionRules(pending.suggestions) : [];
-  // Allow waits until the request has been on screen a moment and all of it is showing.
+  // Allow waits until all of the request is showing.
   const unread = clipped && !expanded;
-  const hold = busy || !armed || unread;
+  const hold = busy || unread;
   // A question or a plan in a shape hangar does not know falls through to the plain request below.
   const questions = row.tool === ASK_TOOL ? questionsOf(row.input) : null;
   const plan = row.tool === PLAN_TOOL ? planOf(row.input) : null;
@@ -507,7 +506,7 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
       </Activity>
     );
   }
-  if (pending && plan) return <PlanCard session={session} requestId={row.requestId} plan={plan.plan} file={plan.file} input={row.input} armed={armed} />;
+  if (pending && plan) return <PlanCard session={session} requestId={row.requestId} plan={plan.plan} file={plan.file} input={row.input} />;
   if (!pending && row.tool === ASK_TOOL) {
     return (
       <Activity icon={<CircleHelp className="size-3" />}>

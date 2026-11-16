@@ -250,7 +250,6 @@ try {
   // ---- a long command with a disguised ending cannot be approved unread
   await newSession("Deploy the site, then long tool");
   await page.waitForSelector("text=Claude wants to use Bash");
-  await sleep(900); // past the moment a new request ignores clicks
   const card = page.locator("main div:has(> div:has-text('Claude wants to use Bash'))").last();
   const allowBtn = card.getByRole("button", { name: "Allow", exact: true });
   check("Allow waits until all of a long request is showing", (await allowBtn.isDisabled()) && (await card.innerText()).includes("Show all of it to allow it"));

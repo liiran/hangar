@@ -25,7 +25,7 @@ const PLAN_HEIGHT = 900;
  * "Yes" Claude reads it as a note with the approval. With nothing typed, "No, keep planning"
  * does nothing but put the cursor in the box. Stopping is the Stop button, or Esc.
  */
-export function PlanCard({ session, requestId, plan, file, input, armed }: { session: Session; requestId: string; plan: string; file: string | null; input: unknown; armed: boolean }) {
+export function PlanCard({ session, requestId, plan, file, input }: { session: Session; requestId: string; plan: string; file: string | null; input: unknown }) {
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [plain, setPlain] = useState(false);
@@ -41,9 +41,9 @@ export function PlanCard({ session, requestId, plan, file, input, armed }: { ses
       setBusy(false);
     }
   };
-  // Approving waits only until the plan has been on screen a moment. A plan longer than the card
-  // can be answered without opening the rest: it is the user's to read as much of as they like.
-  const hold = busy || !armed;
+  // A plan longer than the card can be answered without opening the rest: it is the user's to
+  // read as much of as they like.
+  const hold = busy;
   const typed = feedback.trim();
   const approve = (mode: string) => send("allow", typed ? { mode, feedback: typed } : { mode });
   const keep = () => {

@@ -106,11 +106,6 @@ try {
   // ================================================================ a question
   const askId = await start("ask question about signing in");
   const card = page.locator("[data-question-panel]");
-  // A request ignores clicks for its first moment on screen, and its buttons are dimmed
-  // meanwhile. The test waits for the request itself to say it takes clicks, not for a fixed time.
-  const awake = () => page.locator('[data-question-panel][data-armed="true"]').waitFor();
-  // Only when pictures are being saved: a request should be past that moment in its picture.
-  const lit = () => (shots ? sleep(700) : null);
   await card.waitFor();
   const option = (text) => card.locator("[data-option]", { hasText: text });
   const onward = card.locator("[data-onward]");
@@ -127,7 +122,6 @@ try {
   check("…with lettered options, what each means, and a row for an own answer", /^A\s+Email and password\s+Simple to build/.test(await option("Email and password").innerText()) && (await card.locator("[data-option]").count()) === 3 && (await own.getAttribute("placeholder")) === "Something else…");
   check("nothing can be sent before the question has an answer", await onward.isDisabled());
   check("the session waits under Needs you", (await session(askId)).status === "needs_you" && (await page.locator('nav[aria-label="Main"] button', { hasText: "Needs you" }).innerText()).includes("1"));
-  await awake();
   await shot(page, "question-asked");
   await shot(card, "question-panel-first");
 
@@ -157,7 +151,6 @@ try {
   // Out of order, by keyboard: the second question first, then an own answer to the first.
   await say("ask question once more");
   await card.waitFor();
-  await awake();
   await card.locator('button[aria-label="Next question"]').click();
   await card.getByText("2 of 2").waitFor();
   await page.keyboard.press("b");
@@ -193,7 +186,6 @@ try {
   check("an option's preview shows beside the options: the first one's to begin with", (await seen()).includes("| Profile |"));
   await option("Tabs").hover();
   check("…and the one under the pointer while it is there, without the panel changing size", (await seen()).includes("[ Profile ][ Billing ][ Team ]") && (await card.boundingBox()).height === heightBefore);
-  await awake();
   await shot(card, "question-panel-preview");
   await option("Tabs").click();
   await main.getByText("Which layout should the settings page use? Tabs").waitFor();
@@ -219,7 +211,6 @@ try {
   const [modeAt, messageBox] = [await mode("Plan only").boundingBox(), await boxOf()];
   check("the mode shows under the message box, bottom left", modeAt && modeAt.y >= messageBox.bottom && Math.abs(modeAt.x - messageBox.left) < 4, JSON.stringify(modeAt));
   check("…and the Enter and Shift+Enter hints are gone", (await page.locator("text=new line").count()) === 0);
-  await lit();
   await shot(page, "plan-presented");
   await shot(plan, "plan-card");
 
@@ -241,7 +232,6 @@ try {
   await planBox.locator("text=Changed after your feedback").waitFor();
   check("“No, keep planning” with words sends them to Claude, which presents the plan again", (await planBox.innerText()).includes("Keep the old file until the tests pass") && (await main.locator("[data-plan-outcome]").first().innerText()).includes("“Keep the old file until the tests pass”"));
   check("…and the session is still planning", (await session(planId)).permission_mode === "plan");
-  await lit();
   await shot(page, "plan-sent-back");
 
   await plan.locator("button", { hasText: "Yes, auto-accept edits" }).click();
@@ -256,12 +246,10 @@ try {
   const manualId = await start("make plan and approve each edit", "plan");
   await plan.waitFor();
   // By keyboard, as in Claude Code's terminal: 2 is the second choice.
-  await enabled(plan.locator("button", { hasText: "Yes, manually approve edits" }));
   await plan.locator("button", { hasText: "Yes, auto-accept edits" }).focus();
   await page.keyboard.press("2");
   await main.locator("text=Claude wants to use Edit").waitFor();
   check("approving with “manually approve edits” continues in ask-first mode, and the next edit asks", (await session(manualId)).permission_mode === "default" && (await main.locator("[data-plan-outcome]").innerText()).includes("asking before each edit"));
-  await lit();
   await shot(page, "plan-approved-manual");
   await main.locator("button", { hasText: /^\s*Allow$/ }).click();
   await main.locator("text=plan approved (mode default), edit made").waitFor();
@@ -277,7 +265,6 @@ try {
   // Approved with a note. In the box, Shift+Tab approves with what was typed (auto-accept edits).
   const noteId = await start("make plan and approve with a note", "plan");
   await plan.waitFor();
-  await enabled(plan.locator("button", { hasText: "Yes, auto-accept edits" }));
   await plan.locator("input").fill("Skip step 4");
   await plan.locator("input").press("Shift+Tab");
   await main.locator("text=plan approved (mode acceptEdits), edit made, with your note: Skip step 4").waitFor();
@@ -290,11 +277,9 @@ try {
   // What is typed goes with whichever "Yes" is chosen, as in the terminal.
   const note2Id = await start("make plan and approve each edit with a note", "plan");
   await plan.waitFor();
-  await enabled(plan.locator("button", { hasText: "Yes, manually approve edits" }));
   await plan.locator("input").fill("Use pnpm, not npm");
   await plan.locator("button", { hasText: "Yes, manually approve edits" }).click();
   await main.locator("text=Claude wants to use Edit").waitFor();
-  await enabled(main.locator("button", { hasText: /^\s*Allow$/ }));
   await main.locator("button", { hasText: /^\s*Allow$/ }).click();
   await main.locator("text=plan approved (mode default), edit made, with your note: Use pnpm, not npm").waitFor();
   check("a “Yes” chosen with something typed carries it along too", (await session(note2Id)).permission_mode === "default" && (await main.locator("[data-plan-outcome]").innerText()).includes("asking before each edit, with your note"));
@@ -315,7 +300,6 @@ try {
   await start("long plan for every file", "plan");
   await plan.waitFor();
   const yes = plan.locator("button", { hasText: "Yes, auto-accept edits" });
-  await enabled(yes);
   const cut = () => planBox.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
   check("a plan longer than a screen is cut at a visible line, with a button to show the rest", (await cut()) && (await plan.locator("button", { hasText: "There is more below" }).count()) === 1);
   check("…and can be answered without opening the rest: the choices are live", (await enabled(yes)) && !(await plan.innerText()).includes("to approve it"));
@@ -327,7 +311,6 @@ try {
 
   await start("long plan, approved unread", "plan");
   await plan.waitFor();
-  await enabled(plan.locator("button", { hasText: "Yes, auto-accept edits" }));
   await plan.locator("button", { hasText: "Yes, auto-accept edits" }).focus();
   await page.keyboard.press("1");
   await main.locator("text=plan approved (mode acceptEdits), edit made").waitFor();
@@ -340,7 +323,6 @@ try {
   check("markup in a question is shown as text and never runs", (await card.locator("b, img, script, a").count()) === 0 && (await card.innerText()).includes("<b>backup</b>") && (await card.innerText()).includes("<script>window.pwned = 1</script>") && (await pwned()) === undefined);
   const written = await card.locator("mark").allInnerTexts();
   check("invisible characters in a question and its options are written out", written.includes("⟨U+202E⟩") && written.includes("⟨U+200B⟩"), written.join(" "));
-  await awake();
   await shot(card, "question-panel-hostile");
   await option("No").click();
   await main.getByText("Answer: No").waitFor();
@@ -365,7 +347,6 @@ try {
   const entered = main.getByText("Entered plan mode", { exact: true });
   check("Claude entering plan mode by itself shows in the feed in Claude Code's words, and is not asked about", (await entered.count()) === 1 && (await main.locator("text=Claude wants to use").count()) === 0);
   check("…and the session's mode follows", (await session(enterId)).permission_mode === "plan" && (await mode("Plan only").count()) === 1);
-  await lit();
   await shot(page, "plan-entered");
   await page.keyboard.press("Escape");
   await main.locator("text=/^Stopped/").waitFor();

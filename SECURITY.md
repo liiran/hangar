@@ -59,7 +59,6 @@ Text that Claude reads can try to steer it, for example a web page that says "no
 - **Invisible characters are written out,** for example `⟨U+202E⟩`. Some characters are invisible or reverse the direction of text, so that a command reads differently from what it does.
 - **Right-to-left letters are pointed out.** Hebrew and Arabic letters are ordinary text, but the screen can show what stands next to them in a different order than it is written. A request that contains them says so.
 - **"Allow for session" shows the rule it adds.** It can only add "allow" rules for that one session. It cannot change the permission mode or write to your settings files.
-- **A request ignores clicks for a moment** after it appears, and after another request of the same session is answered. Answering one request moves the next one up, so a click meant for the first, or the second half of a double-click, cannot land on it.
 - **A request ends with its process.** Once the Claude process that asked has stopped, the request cannot be approved.
 - **An answer fits its request, or is refused.** Two requests take more than Allow or Deny, and the daemon checks what comes with each:
   - *A question from Claude* is allowed only with an answer to at least one of the questions Claude asked. For example, answers attached to a `Bash` request are refused: they would replace the command.

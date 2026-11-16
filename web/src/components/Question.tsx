@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api, type DecisionDetail, type Session } from "../api";
 import { answerOf, answersOf, NOTHING, pick, toggleOther, type, type Picked, type Question } from "../ask";
 import { report } from "../store";
-import { ChoiceKey, Shown, useArmed } from "./approval";
+import { ChoiceKey, Shown } from "./approval";
 import { Button, cx, Kbd } from "./ui";
 
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -24,7 +24,6 @@ const ROW = "flex min-h-12 items-start gap-2.5 rounded-md px-2 py-1.5";
  * exactly as Claude Code's terminal sends them: one per question, several choices joined ", ".
  */
 export function QuestionPanel({ session, requestId, questions }: { session: Session; requestId: string; questions: Question[] }) {
-  const armed = useArmed(session);
   const [picked, setPicked] = useState<Picked[]>(() => questions.map(() => NOTHING));
   const [at, setAt] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -56,7 +55,7 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
       if (still[next]) return go(next);
     }
     const answers = answersOf(questions, all);
-    if (answers && armed && !busy) send("allow", { answers });
+    if (answers && !busy) send("allow", { answers });
   };
   const go = (i: number) => {
     setAt(i);
@@ -70,7 +69,7 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
     return all;
   };
   const choose = (label: string) => {
-    if (!armed || busy) return; // a request ignores clicks for its first moment on screen
+    if (busy) return;
     const all = set(pick(q, p, label));
     // One choice answers the question. The mark shows for a moment before the panel moves on.
     if (!q.multi) setTimeout(() => alive.current && onward(all), 160);
@@ -124,7 +123,6 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
       role="group"
       aria-label={questions.length === 1 ? "Claude's question" : `Claude's questions: ${at + 1} of ${questions.length}`}
       data-question-panel
-      data-armed={armed}
       onKeyDown={onKey}
       className="animate-rise mb-1.5 overflow-hidden rounded-lg bg-panel shadow-pop"
     >
@@ -265,7 +263,7 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
             </>
           )}
         </span>
-        <Button variant="primary" size="sm" className="ml-auto sm:ml-0" disabled={!answeredHere || !armed || busy} onClick={() => onward(picked)} data-onward>
+        <Button variant="primary" size="sm" className="ml-auto sm:ml-0" disabled={!answeredHere || busy} onClick={() => onward(picked)} data-onward>
           {left === 0 ? (
             <>
               <Check className="size-3.5" /> {questions.length === 1 ? "Send answer" : "Send answers"}

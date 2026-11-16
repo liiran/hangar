@@ -2,8 +2,7 @@
 // visible line with a way to open the rest.
 
 import { Check, ChevronRight } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import type { Session } from "../api";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { hiddenParts } from "../safe";
 import { cx } from "./ui";
 
@@ -30,25 +29,6 @@ export function Shown({ text }: { text: string }) {
 
 /** How much of a request shows before "Show all" is needed, in px. */
 export const PREVIEW_HEIGHT = 288;
-
-/**
- * A request ignores clicks for this long after it appears, and after any request of its session
- * is answered. Answering one moves the next one up, under the cursor: a click meant for the
- * first, or the second half of a double-click, must not land on it.
- */
-export const ARM_MS = 600;
-
-/** Whether the session's requests take clicks yet (see [`ARM_MS`]). */
-export function useArmed(session: Session): boolean {
-  const [armed, setArmed] = useState(false);
-  const waiting = session.pending.map((p) => p.request_id).join(" ");
-  useEffect(() => {
-    setArmed(false);
-    const t = setTimeout(() => setArmed(true), ARM_MS);
-    return () => clearTimeout(t);
-  }, [waiting]);
-  return armed;
-}
 
 /** The key of a choice in a list of choices: its letter or number, or a tick once it is chosen. */
 export function ChoiceKey({ on, children }: { on?: boolean; children: ReactNode }) {
