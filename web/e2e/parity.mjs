@@ -304,6 +304,34 @@ try {
   const stored = (await api("GET", `/sessions/${editId}/events`)).data.filter((e) => e.kind === "claude" && e.msg.type === "user").map((e) => e.msg.tool_use_result);
   check("the daemon keeps the changed lines only, never the whole file", stored.length === 6 && stored.every((r) => r === undefined || (!("originalFile" in r) && !("content" in r) && !("filePath" in r))));
 
+  // ================================================================ the context wheel
+  const wheel = page.locator("[data-context-wheel]");
+  await wheel.waitFor();
+  const reported = (await session(editId)).context;
+  check("the wheel shows Claude Code's own percentage", (await wheel.innerText()).trim() === `${reported.percent}%` && reported.percent === 14, `${await wheel.innerText()} / ${JSON.stringify(reported).slice(0, 90)}`);
+  const [wheelBox, inputBox] = [await wheel.boundingBox(), await page.locator("textarea[data-composer]").evaluate((el) => el.parentElement.getBoundingClientRect().toJSON())];
+  check("it sits at the bottom right, under the message box", wheelBox.y >= inputBox.bottom && Math.abs(wheelBox.x + wheelBox.width - inputBox.right) < 12, `wheel right ${Math.round(wheelBox.x + wheelBox.width)} box right ${Math.round(inputBox.right)}`);
+  const arc = () => wheel.locator("circle").nth(1).evaluate((el) => ({ stroke: el.getAttribute("stroke"), filled: parseFloat(el.getAttribute("stroke-dasharray")) / (2 * Math.PI * 6) }));
+  check("the ring is filled as far as the percentage", Math.abs((await arc()).filled - 0.14) < 0.005 && (await arc()).stroke === "var(--accent)");
+  await shot(page.locator("textarea[data-composer]").locator("xpath=ancestor::div[contains(@class,'max-w')]"), "context-wheel");
+  await wheel.hover();
+  const details = wheel.locator('[role="group"]');
+  await details.waitFor();
+  const detailsText = (await details.innerText()).replace(/\s+/g, " ");
+  check("hovering shows the tokens, what fills the window, and where the numbers come from", ["14% full", "28k of 200k tokens", "System prompt 3.4k", "Messages 10k", "summarizes the conversation by itself at 167k", "Claude Code's own figures"].every((t) => detailsText.includes(t)), detailsText);
+  await shot(page, "context-details");
+  await page.mouse.move(400, 300);
+  await details.waitFor({ state: "detached" });
+  await say("context 82 now");
+  await wheel.locator("text=82%").waitFor();
+  check("it follows Claude as the window fills, turning orange from 75%", (await arc()).stroke === "var(--s-needs)" && (await session(editId)).context.used_tokens === 164000);
+  await shot(page.locator("textarea[data-composer]").locator("xpath=ancestor::div[contains(@class,'max-w')]"), "context-wheel-82");
+  await say("context 95 now");
+  await wheel.locator("text=95%").waitFor();
+  check("…and red from 90%", (await arc()).stroke === "var(--s-error)");
+  await shot(page.locator("textarea[data-composer]").locator("xpath=ancestor::div[contains(@class,'max-w')]"), "context-wheel-95");
+  check("the properties panel shows the same figures", (await page.locator('aside[aria-label="Properties"]').innerText()).replace(/\s+/g, " ").includes("95% of context · 190k / 200k"));
+
 } finally {
   await browser.close();
   try {

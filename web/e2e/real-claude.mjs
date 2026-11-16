@@ -164,6 +164,17 @@ const patchLines = patch?.structuredPatch[0].lines ?? [];
 check("an edit's changed lines are kept, with the line they start at", patch?.structuredPatch[0].oldStart === 1 && patchLines.includes("-hi") && patchLines.includes("+hello there"), JSON.stringify(patch).slice(0, 160));
 check("…and nothing else of the file", patch && Object.keys(patch).every((k) => ["structuredPatch", "type", "truncated"].includes(k)), patch && Object.keys(patch).join(","));
 
+// The context figure is Claude Code's own: it must equal the size of the prompt Claude last read.
+const own = editEvents.filter((e) => e.kind === "claude" && e.msg.type === "assistant" && !e.msg.parent_tool_use_id && e.msg.message?.usage).at(-1).msg.message.usage;
+const read = own.input_tokens + (own.cache_read_input_tokens ?? 0) + (own.cache_creation_input_tokens ?? 0);
+let context;
+for (const end = Date.now() + 10000; Date.now() < end; await sleep(250)) {
+  context = (await session(planned.id)).context;
+  if (context?.used_tokens === read) break;
+}
+check("the context figure is the size of the prompt Claude last read, to the token", context?.used_tokens === read, `hangar shows ${context?.used_tokens}; Claude's last reply read ${read}`);
+check("…with Claude Code's own percentage and window", context?.max_tokens > 0 && Math.abs(context.percent - (100 * context.used_tokens) / context.max_tokens) <= 1 && context.parts.length > 0, `${context?.percent}% of ${context?.max_tokens}; ${context?.parts.map((p) => p.name).join(", ")}`);
+
 await api("DELETE", `/sessions/${planned.id}`);
 
 await api("DELETE", `/sessions/${id}`);

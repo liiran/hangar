@@ -1,7 +1,7 @@
-import { Check, CircleDollarSign, Clock, Copy, Cpu, Folder, MemoryStick, Shield } from "lucide-react";
+import { Check, CircleDollarSign, Clock, Copy, Cpu, Folder, Gauge, MemoryStick, Shield } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api, type Session } from "../api";
-import { ago, basename, bytes, MODELS, modelChoice, PERMISSION_MODES, STATUS, usd } from "../format";
+import { ago, basename, bytes, MODELS, modelChoice, PERMISSION_MODES, STATUS, tokens, usd } from "../format";
 import { report } from "../store";
 import { useNow } from "../ui";
 import { Select } from "./Select";
@@ -38,6 +38,15 @@ export function Properties({ session: s }: { session: Session }) {
           {s.memory_bytes != null ? bytes(s.memory_bytes) : "Not running"}
           {s.peak_bytes > 0 && <span className="text-faint"> · peak {bytes(s.peak_bytes)}</span>}
         </Row>
+        {s.context && (
+          <Row icon={<Gauge className="size-3.5" />} title="How full Claude's context window is, in Claude Code's own figures as of its last reply">
+            {s.context.percent}% of context
+            <span className="text-faint">
+              {" "}
+              · {tokens(s.context.used_tokens)} / {tokens(s.context.max_tokens)}
+            </span>
+          </Row>
+        )}
         <Row icon={<CircleDollarSign className="size-3.5" />}>
           {usd(s.cost_usd)}
           <span className="text-faint">

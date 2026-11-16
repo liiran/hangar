@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { basename, bytes, duration, GROUP_ORDER, modelChoice, STATUS } from "./format";
+import { tokens } from "./format";
 
 describe("format", () => {
   it("formats bytes", () => {
@@ -28,6 +29,11 @@ describe("format", () => {
     expect(modelChoice("claude-sonnet-5-5")).toBe("sonnet");
     expect(modelChoice("claude-opus-5-5[1m]")).toBe("opus");
     expect(modelChoice("some-other-model")).toBe("");
+  });
+
+  it("writes token counts the way Claude Code does", () => {
+    expect([0, 950, 1000, 28_884, 84_000, 200_000, 967_000].map(tokens)).toEqual(["0", "950", "1k", "28.9k", "84k", "200k", "967k"]);
+    expect([999_949, 999_950, 1_000_000, 1_250_000].map(tokens)).toEqual(["999.9k", "1M", "1M", "1.3M"]);
   });
 
   it("puts every status in a known group", () => {

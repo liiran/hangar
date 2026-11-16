@@ -6,7 +6,8 @@
 //! ```
 //!
 //! Stdin carries user messages and control requests (initialize, interrupt,
-//! set_permission_mode, mcp_status) plus our answers to `can_use_tool`.
+//! set_permission_mode, mcp_status, get_context_usage) plus our answers to
+//! `can_use_tool`.
 //! Stdout carries assistant/user/result/system messages and control traffic.
 //! Every event is tagged with the process id, and `Exited` is sent only after
 //! the last line of output, so the manager never mixes up two processes.
@@ -63,6 +64,12 @@ pub enum DriverEvent {
         session_id: String,
         pid: u32,
         servers: Vec<Value>,
+    },
+    /// Claude's answer to `get_context_usage`; `Null` when it refused.
+    Context {
+        session_id: String,
+        pid: u32,
+        usage: Value,
     },
     Exited {
         session_id: String,
@@ -306,10 +313,15 @@ fn route(id: &str, pid: u32, msg: Value, ev: &mpsc::UnboundedSender<DriverEvent>
         }
         "control_response" => {
             let r = &msg["response"];
-            if r["request_id"].as_str().is_some_and(|s| s.starts_with("mcp-")) {
+            let request = r["request_id"].as_str().unwrap_or_default();
+            if request.starts_with("mcp-") {
                 let servers = r["response"]["mcpServers"].as_array().cloned().unwrap_or_default();
                 let servers = servers.into_iter().map(|s| json!({"name": s["name"], "status": s["status"]})).collect();
                 let _ = ev.send(DriverEvent::McpStatus { session_id, pid, servers });
+            } else if request.starts_with("ctx-") {
+                // An older Claude Code answers with an error: that still ends the wait.
+                let usage = if r["subtype"] == "success" { r["response"].clone() } else { Value::Null };
+                let _ = ev.send(DriverEvent::Context { session_id, pid, usage });
             }
         }
         "control_cancel_request" => {
@@ -385,6 +397,16 @@ mod tests {
             &reply_tx,
         );
         assert!(matches!(ev_rx.try_recv().unwrap(), DriverEvent::McpStatus { servers, .. } if servers.len() == 1));
+        route(
+            "s",
+            42,
+            json!({"type":"control_response","response":{"request_id":"ctx-1","subtype":"success","response":{"totalTokens":5}}}),
+            &ev_tx,
+            &reply_tx,
+        );
+        assert!(matches!(ev_rx.try_recv().unwrap(), DriverEvent::Context { usage, .. } if usage["totalTokens"] == 5));
+        route("s", 42, json!({"type":"control_response","response":{"request_id":"ctx-2","subtype":"error","error":"unknown request"}}), &ev_tx, &reply_tx);
+        assert!(matches!(ev_rx.try_recv().unwrap(), DriverEvent::Context { usage: Value::Null, .. }), "a refusal still ends the wait");
         route("s", 42, json!({"type":"assistant","message":{}}), &ev_tx, &reply_tx);
         assert!(matches!(ev_rx.try_recv().unwrap(), DriverEvent::Message { pid: 42, .. }));
     }

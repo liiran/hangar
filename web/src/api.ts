@@ -33,6 +33,21 @@ export interface Session {
   pending: Pending[];
   queue_position: number | null;
   mcp: { name: string; status: string }[];
+  /** How full the context window was when Claude last said; absent until it has. */
+  context?: ContextUsage | null;
+}
+
+/** Claude Code's own figures for its context window (what `/context` shows in a terminal). */
+export interface ContextUsage {
+  used_tokens: number;
+  max_tokens: number;
+  /** Claude Code's own whole-number percentage. */
+  percent: number;
+  model: string | null;
+  /** Where Claude Code summarizes the conversation by itself, when it does. */
+  auto_compact_at: number | null;
+  parts: { name: string; tokens: number }[];
+  at_ms: number;
 }
 
 export type Decision = "allow" | "allow_always" | "deny" | "cancelled";

@@ -28,6 +28,19 @@ export function usd(v: number): string {
   return `$${v.toFixed(v < 0.1 ? 3 : 2)}`;
 }
 
+/** A token count the way Claude Code writes it: `28.9k`, `200k`, `1M`. */
+export function tokens(n: number): string {
+  const short = (v: number) => String(Math.round(v * 10) / 10);
+  if (n >= 999_950) return `${short(n / 1_000_000)}M`;
+  if (n >= 1000) return `${short(n / 1000)}k`;
+  return String(Math.max(0, Math.round(n)));
+}
+
+/** `3:40 pm`-style time of day, in the user's own format. */
+export function clock(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 export function basename(path: string): string {
   const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/);
   return parts[parts.length - 1] || path;

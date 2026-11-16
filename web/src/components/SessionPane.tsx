@@ -4,6 +4,7 @@ import { api, type Session } from "../api";
 import { basename, bytes, PERMISSION_MODES, usd } from "../format";
 import { report, useStore } from "../store";
 import { intent, useUI } from "../ui";
+import { ContextWheel } from "./ContextWheel";
 import { Properties } from "./Properties";
 import { Transcript } from "./Transcript";
 import { Button, cx, IconButton, Kbd, StatusIcon, StatusLabel, useDismiss } from "./ui";
@@ -261,16 +262,19 @@ function Composer({ session }: { session: Session }) {
             <ArrowUp className="size-4" />
           </button>
         </div>
-        <div className="mt-1.5 hidden justify-between px-1 text-[11px] text-faint sm:flex">
-          <span className="flex items-center gap-1">
+        <div className="mt-1.5 flex min-h-5 items-center justify-between gap-3 px-1 text-[11px] text-faint">
+          <span className="hidden items-center gap-1 sm:flex">
             <Kbd>Enter</Kbd> send <span className="mx-1">·</span> <Kbd>Shift</Kbd>
             <Kbd>Enter</Kbd> new line
           </span>
-          {session.status === "working" && (
-            <span className="flex items-center gap-1">
-              <Kbd>Esc</Kbd> stop the turn
-            </span>
-          )}
+          <span className="ml-auto flex items-center gap-3">
+            {session.status === "working" && (
+              <span className="hidden items-center gap-1 sm:flex">
+                <Kbd>Esc</Kbd> stop the turn
+              </span>
+            )}
+            {session.context && <ContextWheel context={session.context} />}
+          </span>
         </div>
       </div>
     </div>

@@ -85,6 +85,70 @@ pub struct SessionMeta {
     /// Messages Claude has not received yet (queued, paused, restarting).
     #[serde(default)]
     pub outbox: Vec<String>,
+    /// How full the context window was when Claude last said.
+    #[serde(default)]
+    pub context: Option<ContextUsage>,
+}
+
+/// How full Claude's context window is, in Claude Code's own numbers (the
+/// ones its `/context` command shows). Nothing here is worked out by hangar.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextUsage {
+    pub used_tokens: u64,
+    pub max_tokens: u64,
+    /// Claude Code's own whole-number percentage.
+    pub percent: u8,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Where Claude Code summarizes the conversation by itself, when it does.
+    #[serde(default)]
+    pub auto_compact_at: Option<u64>,
+    /// What the used part is made of.
+    #[serde(default)]
+    pub parts: Vec<ContextPart>,
+    pub at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextPart {
+    pub name: String,
+    pub tokens: u64,
+}
+
+impl ContextUsage {
+    /// Reads Claude Code's answer to `get_context_usage`. Without its own
+    /// percentage there is nothing to show: hangar does not make one up.
+    fn read(v: &Value, at_ms: u64) -> Option<ContextUsage> {
+        let max_tokens = v["maxTokens"].as_u64().filter(|m| *m > 0)?;
+        let used_tokens = v["totalTokens"].as_u64()?;
+        let percent = v["percentage"].as_f64().filter(|p| p.is_finite())?.clamp(0.0, 100.0).round() as u8;
+        let parts = v["categories"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter(|c| c["kind"] == "used")
+                    .filter_map(|c| Some(ContextPart { name: label(c["name"].as_str()?, 48)?, tokens: c["tokens"].as_u64().filter(|t| *t > 0)? }))
+                    .take(16)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(ContextUsage {
+            used_tokens,
+            max_tokens,
+            percent,
+            model: v["model"].as_str().and_then(|m| label(m, 100)),
+            auto_compact_at: v["autoCompactThreshold"].as_u64().filter(|_| v["isAutoCompactEnabled"] == true),
+            parts,
+            at_ms,
+        })
+    }
+}
+
+/// A short name from Claude Code, safe to show: no control or invisible
+/// characters, and not longer than `max`.
+fn label(text: &str, max: usize) -> Option<String> {
+    let clean: String = crate::util::printable(text).trim().chars().take(max).collect();
+    (!clean.is_empty()).then_some(clean)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,6 +426,26 @@ struct Run {
     cost_seen: f64,
     completed_turns: u64,
     resumed: bool,
+    /// When Claude was last asked how full its context is, while unanswered.
+    context_asked: Option<Instant>,
+    /// Something changed since that question: ask again once it is answered.
+    context_stale: bool,
+}
+
+impl Run {
+    /// Asks Claude how full its context is. One question is out at a time:
+    /// while it is unanswered, a change is only noted, and asked about when
+    /// the answer comes (see `on_context`). An answer that never comes
+    /// stops counting after 10 s.
+    fn ask_context(&mut self) {
+        if self.context_asked.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
+            self.context_stale = true;
+            return;
+        }
+        self.driver.context_usage();
+        self.context_asked = Some(Instant::now());
+        self.context_stale = false;
+    }
 }
 
 struct Session {
@@ -612,6 +696,7 @@ impl Manager {
             preview: String::new(),
             peak_bytes: 0,
             outbox: vec![prompt.clone()],
+            context: None,
         };
         if let Err(e) = self.store.create(&id) {
             if made {
@@ -925,7 +1010,16 @@ impl Manager {
                 for text in &outbox {
                     driver.send_user(text);
                 }
-                s.run = Some(Run { driver, initialized: false, unconfirmed: outbox, cost_seen: 0.0, completed_turns: 0, resumed: resume.is_some() });
+                s.run = Some(Run {
+                    driver,
+                    initialized: false,
+                    unconfirmed: outbox,
+                    cost_seen: 0.0,
+                    completed_turns: 0,
+                    resumed: resume.is_some(),
+                    context_asked: None,
+                    context_stale: false,
+                });
                 s.stopping = None;
                 s.idle_since = None;
                 set_status(inner, id, Status::Starting, None);
@@ -952,6 +1046,7 @@ impl Manager {
                         self.broadcast_session(&inner, &session_id);
                     }
                 }
+                E::Context { session_id, pid, usage } => self.on_context(&session_id, pid, &usage),
                 E::Exited { session_id, pid, code, stderr } => {
                     self.on_exit(&session_id, pid, code, stderr);
                     self.pump_queue();
@@ -994,6 +1089,7 @@ impl Manager {
                 if s.meta.status == Status::Starting {
                     status = Some(Status::Working);
                 }
+                run.ask_context();
             }
             // Claude Code says so when the mode changes inside it: a plan
             // was approved, or it left plan mode some other way.
@@ -1002,12 +1098,18 @@ impl Manager {
                     s.meta.permission_mode = mode.to_string();
                 }
             }
+            ("system", "compact_boundary") => run.ask_context(),
             ("assistant", _) => {
-                if let Some(text) = first_text(&msg) {
+                // A subagent's messages are about its own context, not this one.
+                let own = msg["parent_tool_use_id"].is_null();
+                if own && let Some(text) = first_text(&msg) {
                     s.meta.preview = truncate(&text, 160);
                 }
                 if matches!(s.meta.status, Status::Starting | Status::Idle) {
                     status = Some(Status::Working);
+                }
+                if own {
+                    run.ask_context();
                 }
             }
             ("result", _) => {
@@ -1029,6 +1131,7 @@ impl Manager {
                 }
                 s.idle_since = Some(Instant::now());
                 status = Some(Status::Idle);
+                run.ask_context();
             }
             _ => {}
         }
@@ -1044,6 +1147,29 @@ impl Manager {
             let pending = inner.sessions.get(id).is_some_and(|s| !s.pending.is_empty());
             set_status(&mut inner, id, if pending { Status::NeedsYou } else { st }, None);
         }
+        self.save(&inner, id);
+        self.broadcast_session(&inner, id);
+    }
+
+    fn on_context(&self, id: &str, pid: u32, usage: &Value) {
+        let mut inner = self.inner.locked();
+        let Some(s) = Self::current(&mut inner, id, pid) else { return };
+        let run = s.run.as_mut().expect("current session has a run");
+        run.context_asked = None;
+        if run.context_stale {
+            run.ask_context();
+        }
+        let Some(mut now) = ContextUsage::read(usage, now_ms()) else { return };
+        // The same numbers as before change nothing worth saving or sending.
+        if let Some(before) = &s.meta.context {
+            let at = now.at_ms;
+            now.at_ms = before.at_ms;
+            if *before == now {
+                return;
+            }
+            now.at_ms = at;
+        }
+        s.meta.context = Some(now);
         self.save(&inner, id);
         self.broadcast_session(&inner, id);
     }
