@@ -32,6 +32,22 @@ describe("rowState", () => {
   });
 });
 
+describe("questions, plans and edits", () => {
+  it("keeps what the user chose with the request it answered", () => {
+    const rows = toRows([
+      ev({ kind: "permission", request_id: "q1", tool_name: "AskUserQuestion", input: { questions: [] } }),
+      ev({ kind: "decision", request_id: "q1", behavior: "allow", detail: { answers: { "Which colour?": "Green" } } }),
+      ev({ kind: "permission", request_id: "p1", tool_name: "ExitPlanMode", input: { plan: "# Plan" } }),
+    ]);
+    expect(rows[0]).toMatchObject({ kind: "permission", decision: "allow", detail: { answers: { "Which colour?": "Green" } } });
+    expect(rows[1]).toMatchObject({ kind: "permission", decision: null });
+    // Events written before answers were kept have no detail.
+    const old = toRows([ev({ kind: "permission", request_id: "o", tool_name: "Bash", input: {} }), ev({ kind: "decision", request_id: "o", behavior: "deny" })]);
+    expect(old[0]).toMatchObject({ decision: "deny", detail: null });
+  });
+
+});
+
 describe("toRows", () => {
   it("renders a full turn in order and attaches tool results to their calls", () => {
     const rows = toRows([

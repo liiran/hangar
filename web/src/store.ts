@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, ApiError, setToken, socketProtocols, socketUrl, type Session, type SessionEvent, type System } from "./api";
+import { ASK_TOOL, PLAN_TOOL } from "./ask";
 import { visible } from "./safe";
 import { isNewer, mergeEvents, notice, pairCode } from "./sync";
 
@@ -278,7 +279,9 @@ function notify(prev: Session | undefined, next: Session) {
   const title = kind === "needs_you" ? `${name} needs you` : kind === "failed" ? `${name} failed` : `${name} is done`;
   // Only what hangar itself knows: the model's words and error text stay
   // in the app, not in the notification center or on a lock screen.
-  const body = kind === "needs_you" ? `Wants to use ${visible(next.pending[0]?.tool_name ?? "a tool").slice(0, 60)}` : kind === "failed" ? "Stopped with an error" : "Finished its turn";
+  const tool = next.pending[0]?.tool_name;
+  const wants = tool === ASK_TOOL ? "Has a question for you" : tool === PLAN_TOOL ? "Has a plan ready for you" : `Wants to use ${visible(tool ?? "a tool").slice(0, 60)}`;
+  const body = kind === "needs_you" ? wants : kind === "failed" ? "Stopped with an error" : "Finished its turn";
   const n = new Notification(title, { body, tag: next.id });
   n.onclick = () => {
     window.focus();

@@ -1,6 +1,7 @@
 // Turns a session's event log into rows to render.
 
-import type { SessionEvent } from "./api";
+import type { DecisionDetail, SessionEvent } from "./api";
+import { ASK_TOOL } from "./ask";
 import { visible } from "./safe";
 
 export type Row =
@@ -8,7 +9,7 @@ export type Row =
   | { kind: "text"; key: string; text: string }
   | { kind: "thinking"; key: string; text: string }
   | { kind: "tool"; key: string; id: string; name: string; input: any; result?: { text: string; isError: boolean } }
-  | { kind: "permission"; key: string; requestId: string; tool: string; input: any; decision: string | null; description?: string | null; superseded?: boolean }
+  | { kind: "permission"; key: string; requestId: string; tool: string; input: any; decision: string | null; detail?: DecisionDetail | null; description?: string | null; superseded?: boolean }
   | { kind: "result"; key: string; cost: number | null; durationMs: number | null; turns: number | null; isError: boolean; text: string | null }
   | { kind: "error"; key: string; message: string };
 
@@ -30,7 +31,7 @@ export const PAGE = 300;
  */
 export function rowState(r: Row): string {
   if (r.kind === "tool") return r.result ? `done ${r.result.isError} ${r.result.text.length}` : "running";
-  if (r.kind === "permission") return `${r.decision} ${r.superseded === true}`;
+  if (r.kind === "permission") return `${r.decision} ${r.superseded === true} ${r.detail != null}`;
   return "";
 }
 
@@ -106,7 +107,10 @@ export function toRows(events: SessionEvent[]): Row[] {
       }
       case "decision": {
         const p = perms.get(e.request_id);
-        if (p) p.decision = e.behavior;
+        if (p) {
+          p.decision = e.behavior;
+          p.detail = e.detail ?? null;
+        }
         break;
       }
       case "error":
@@ -160,6 +164,10 @@ function summarize(name: string, input: any, cwd?: string): string {
       return pick("description", "prompt") ?? "";
     case "TodoWrite":
       return Array.isArray(input.todos) ? `${input.todos.length} items` : "";
+    case ASK_TOOL: {
+      const asked = Array.isArray(input.questions) ? input.questions.filter((q: any) => typeof q?.question === "string") : [];
+      return asked.length > 0 ? `${asked[0].question}${asked.length > 1 ? `  +${asked.length - 1} more` : ""}` : "";
+    }
     default: {
       const first = Object.values(input).find((v) => typeof v === "string") as string | undefined;
       return first ?? "";

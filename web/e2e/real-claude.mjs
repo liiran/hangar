@@ -1,6 +1,8 @@
-// A real Claude Code session (Haiku) driven through hangar's HTTP API:
+// Real Claude Code sessions (Haiku) driven through hangar's HTTP API:
 // permission prompt, approval, per-turn cost, stop, resume with the
-// conversation intact, delete. Costs well under a cent.
+// conversation intact; then a question answered, a plan sent back and
+// approved, an edit's changed lines, and the context and limit figures
+// checked against Claude's own. Costs a few cents.
 //
 //   cargo build --release && cd web && npm run e2e:claude
 import { execFileSync } from "node:child_process";
@@ -90,6 +92,42 @@ check("a resumed session remembers the earlier turn", (last?.result ?? "").inclu
 check("the resumed turn is billed on its own", last?.turn_cost_usd > 0 && last.turn_cost_usd < last.total_cost_usd + 1e-9, `$${last?.turn_cost_usd} of $${last?.total_cost_usd} process total`);
 const final = await session(id);
 check("the session total adds the turns up", Math.abs(final.cost_usd - results2.reduce((n, r) => n + r.msg.turn_cost_usd, 0)) < 1e-9, `$${final.cost_usd.toFixed(4)}`);
+
+// ---------------------------------------------------------------- a question
+const decide = (sid, request, body) => api("POST", `/sessions/${sid}/permissions/${encodeURIComponent(request)}`, body);
+const eventsOf = (sid) => api("GET", `/sessions/${sid}/events`);
+/** What Claude was told about its tool calls, oldest first. */
+const toolResults = (events) =>
+  events
+    .filter((e) => e.kind === "claude" && e.msg.type === "user" && Array.isArray(e.msg.message?.content))
+    .flatMap((e) => e.msg.message.content.filter((b) => b.type === "tool_result").map((b) => (typeof b.content === "string" ? b.content : JSON.stringify(b.content))));
+const lastResult = (events) => events.filter((e) => e.kind === "claude" && e.msg.type === "result").at(-1)?.msg;
+
+const asked = await api("POST", "/sessions", {
+  cwd: proj,
+  prompt:
+    "Use the AskUserQuestion tool once, with two questions. Question 1 (single choice, header 'Colour'): 'Which colour do you prefer?' with options Red, Green, Blue. " +
+    "Question 2 (multiSelect true, header 'Fruit'): 'Which fruits do you like?' with options Apple, Banana, Cherry. Do not ask anything in plain text. " +
+    "After I answer, reply with one line: ANSWERS: followed by exactly what the tool told you I answered.",
+  model: "haiku",
+  trust: true,
+});
+const question = await waitFor(asked.id, (s) => s.status === "needs_you" && s.pending[0]?.tool_name === "AskUserQuestion", "Claude's question");
+const qs = question.pending[0].input.questions;
+check("Claude's question arrives as a request with its questions and options", qs.length === 2 && qs[0].options.length === 3 && qs[1].multiSelect === true, JSON.stringify(qs.map((q) => q.question)));
+const unanswered = await fetch(`${base}/api/sessions/${asked.id}/permissions/${encodeURIComponent(question.pending[0].request_id)}`, {
+  method: "POST",
+  headers: { "x-hangar-token": token, "content-type": "application/json" },
+  body: JSON.stringify({ behavior: "allow" }),
+});
+check("hangar will not send a question on unanswered", unanswered.status === 400);
+await decide(asked.id, question.pending[0].request_id, { behavior: "allow", answers: { [qs[0].question]: "Green", [qs[1].question]: "Apple, Cherry, and a mango I typed" } });
+await waitFor(asked.id, (s) => s.status === "idle", "the answer to be used");
+const askedEvents = await eventsOf(asked.id);
+check("Claude is told the answers, the typed one word for word", toolResults(askedEvents).some((t) => t.includes('="Green"') && t.includes("and a mango I typed")), toolResults(askedEvents).at(-1)?.slice(0, 160));
+check("…and goes on with them", /Green/.test(lastResult(askedEvents)?.result ?? "") && /mango I typed/.test(lastResult(askedEvents)?.result ?? ""), (lastResult(askedEvents)?.result ?? "").slice(0, 140));
+check("the answers are kept in the session's history", askedEvents.find((e) => e.kind === "decision")?.detail?.answers?.[qs[0].question] === "Green");
+await api("DELETE", `/sessions/${asked.id}`);
 
 await api("DELETE", `/sessions/${id}`);
 check("deleted", !(await session(id)));

@@ -1,3 +1,4 @@
+import { ASK_TOOL, PLAN_TOOL } from "../ask";
 import { Folder, Inbox, Layers, PanelLeft, Plus } from "lucide-react";
 import type { Session, Status } from "../api";
 import { ago, basename, bytes } from "../format";
@@ -69,7 +70,7 @@ function Row({ session: s, showProject, now }: { session: Session; showProject: 
   }, [selected]);
   const sub =
     s.status === "needs_you" && s.pending[0] ? (
-      <span className="text-s-needs">Wants to use {s.pending[0].tool_name}</span>
+      <span className="text-s-needs">{s.pending[0].tool_name === ASK_TOOL ? "Has a question for you" : s.pending[0].tool_name === PLAN_TOOL ? "Has a plan ready for you" : `Wants to use ${s.pending[0].tool_name}`}</span>
     ) : s.status === "queued" ? (
       s.queue_position != null ? `#${s.queue_position} in line for memory` : "Waiting for memory"
     ) : s.status === "error" ? (

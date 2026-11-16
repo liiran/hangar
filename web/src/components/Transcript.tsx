@@ -3,6 +3,7 @@ import {
   Brain,
   Check,
   ChevronRight,
+  CircleHelp,
   FileText,
   Globe,
   Hammer,
@@ -17,12 +18,15 @@ import {
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session, SessionEvent } from "../api";
 import { api } from "../api";
+import { ASK_TOOL, PLAN_TOOL, questionsOf } from "../ask";
 import { ago, duration, usd } from "../format";
 import { report } from "../store";
 import { useNow } from "../ui";
-import { hiddenParts, rightToLeft, sessionRules, visible } from "../safe";
+import { rightToLeft, sessionRules, visible } from "../safe";
 import { needsSignIn, PAGE, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
+import { ApprovalBox, ARM_MS, countLines, Shown } from "./approval";
 import { Markdown } from "./Markdown";
+import { Answered, QuestionCard } from "./Question";
 import { Button, cx, Guard } from "./ui";
 
 /** Statuses in which a tool call without a result is still running. */
@@ -38,7 +42,11 @@ const TOOL_ICONS: Record<string, typeof Hammer> = {
   Glob: Search,
   WebFetch: Globe,
   WebSearch: Globe,
+  [ASK_TOOL]: CircleHelp,
 };
+
+/** Claude Code's two dialogs, by what they are instead of by their tool names. */
+const TOOL_NAMES: Record<string, string> = { [ASK_TOOL]: "Question", [PLAN_TOOL]: "Plan" };
 
 export function Transcript({ session, events, header }: { session: Session; events: SessionEvent[] | undefined; header?: ReactNode }) {
   // Each new event rebuilds the rows. A row that is the same as before keeps its identity, so
@@ -299,67 +307,6 @@ function UserMessage({ text, ts }: { text: string; ts: number }) {
   );
 }
 
-/**
- * Text the user is asked to approve. Invisible and direction-changing
- * characters are written out and marked, so it cannot read differently
- * from what would run.
- */
-function Shown({ text }: { text: string }) {
-  return (
-    <>
-      {hiddenParts(text).map((p, i) =>
-        p.hidden ? (
-          <mark key={i} className="rounded-sm bg-s-error/20 px-0.5 text-s-error" title="An invisible character in this text">
-            {p.text}
-          </mark>
-        ) : (
-          p.text
-        ),
-      )}
-    </>
-  );
-}
-
-/** How much of a request shows before "Show all" is needed, in px. */
-const PREVIEW_HEIGHT = 288;
-
-/**
- * The exact content being approved. It never scrolls and never runs off to
- * the side: long content is cut at a visible line, and `onClipped` tells the
- * row to hold Allow back until the user has opened all of it.
- */
-function ApprovalBox({ children, lines, expanded, onExpand, onClipped }: { children: ReactNode; lines: number; expanded: boolean; onExpand: () => void; onClipped: (clipped: boolean) => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [clipped, setClipped] = useState(false);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const measure = () => {
-      const now = el.scrollHeight > PREVIEW_HEIGHT + 1;
-      setClipped(now);
-      onClipped(now);
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [children]);
-  return (
-    <div className="mt-2.5 overflow-hidden rounded-md bg-code ring-1 ring-inset ring-line">
-      <div ref={ref} dir="ltr" data-approval-content className="overflow-hidden p-3 font-mono text-[12px] [overflow-wrap:anywhere] whitespace-pre-wrap" style={expanded ? undefined : { maxHeight: PREVIEW_HEIGHT }}>
-        {children}
-      </div>
-      {clipped && !expanded && (
-        <button onClick={onExpand} className="flex w-full items-center justify-center gap-1.5 border-t border-line-strong bg-s-needs/10 px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-s-needs/20">
-          <ChevronRight className="size-3 rotate-90" />
-          There is more below. Show all {lines} lines
-        </button>
-      )}
-    </div>
-  );
-}
-
 /** Input fields the preview did not already show, so none of them is silent. */
 function OtherFields({ input, shown }: { input: any; shown: string[] }) {
   if (!input || typeof input !== "object") return null;
@@ -388,8 +335,6 @@ function ClaudeSays({ text }: { text: unknown }) {
     </p>
   );
 }
-
-const countLines = (...texts: string[]) => texts.reduce((n, t) => n + t.split("\n").length, 0);
 
 /** Shows what the user is approving in the most readable form for the tool. */
 function PermissionPreview({ tool, input, cwd, description, ...box }: { tool: string; input: any; cwd: string; description?: string | null; expanded: boolean; onExpand: () => void; onClipped: (clipped: boolean) => void }) {
@@ -480,11 +425,13 @@ function ToolRow({ row, cwd, live }: { row: Extract<Row, { kind: "tool" }>; cwd:
   const [open, setOpen] = useState(false);
   const Icon = TOOL_ICONS[row.name] ?? Hammer;
   const summary = toolSummary(row.name, row.input, cwd);
-  const failed = row.result?.isError;
+  // A question or a plan that was turned down is not a tool that broke: the row under it says what happened.
+  const dialog = row.name === ASK_TOOL || row.name === PLAN_TOOL;
+  const failed = row.result?.isError && !dialog;
   return (
     <Activity icon={<Icon className="size-3" />} tone={failed ? "error" : undefined}>
       <button onClick={() => setOpen(!open)} aria-expanded={open} className="group flex w-full min-w-0 items-center gap-2 text-left">
-        <span className="shrink-0 font-medium text-fg">{row.name.replace(/^mcp__/, "").replace(/__/g, " · ")}</span>
+        <span className="shrink-0 font-medium text-fg">{TOOL_NAMES[row.name] ?? row.name.replace(/^mcp__/, "").replace(/__/g, " · ")}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint group-hover:text-muted">{summary}</span>
         {!row.result && live && <span className="size-1.5 shrink-0 animate-soft-pulse rounded-full bg-s-working" title="Running" />}
         {!row.result && !live && <span className="shrink-0 text-[11px] text-faint">no result</span>}
@@ -519,13 +466,6 @@ const DECISIONS: Record<string, string> = {
   cancelled: "Withdrawn",
 };
 
-/**
- * A request ignores clicks for this long after it appears, and after any request of its session
- * is answered. Answering one moves the next one up, under the cursor: a click meant for the
- * first, or the second half of a double-click, must not land on it.
- */
-const ARM_MS = 600;
-
 function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission" }>; session: Session }) {
   const [busy, setBusy] = useState(false);
   const [armed, setArmed] = useState(false);
@@ -552,6 +492,16 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
   // Allow waits until the request has been on screen a moment and all of it is showing.
   const unread = clipped && !expanded;
   const hold = busy || !armed || unread;
+  // A question or a plan in a shape hangar does not know falls through to the plain request below.
+  const questions = row.tool === ASK_TOOL ? questionsOf(row.input) : null;
+  if (pending && questions) return <QuestionCard session={session} requestId={row.requestId} questions={questions} armed={armed} />;
+  if (!pending && row.tool === ASK_TOOL) {
+    return (
+      <Activity icon={<CircleHelp className="size-3" />}>
+        <Answered questions={questions} decision={row.superseded ? null : row.decision} detail={row.detail} />
+      </Activity>
+    );
+  }
   if (!pending) {
     const label = DECISIONS[row.decision ?? ""] ?? "Expired";
     return (

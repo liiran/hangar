@@ -37,11 +37,34 @@ export interface Session {
 
 export type Decision = "allow" | "allow_always" | "deny" | "cancelled";
 
+/** What the user chose beyond allow or deny. */
+export interface DecisionDetail {
+  /** A question: the answer to each, by question text. */
+  answers?: Record<string, string>;
+  /** A plan, approved: the mode the session went on in. */
+  mode?: string;
+  /** A plan, sent back: what the user asked to change. */
+  feedback?: string;
+  /** A plan, not approved, with nothing said: the turn was stopped. */
+  stopped?: boolean;
+  /** A question the user wanted to talk over first. */
+  clarify?: boolean;
+}
+
+/** What goes with a decision: each field fits one kind of request (the daemon refuses the rest). */
+export interface DecisionExtra {
+  answers?: Record<string, string>;
+  mode?: string;
+  feedback?: string;
+  stop?: boolean;
+  clarify?: boolean;
+}
+
 export type EventBody =
   | { kind: "user"; text: string }
   | { kind: "claude"; msg: any }
   | { kind: "permission"; request_id: string; tool_name: string; input: any; suggestions?: unknown; description?: string | null }
-  | { kind: "decision"; request_id: string; behavior: Decision }
+  | { kind: "decision"; request_id: string; behavior: Decision; detail?: DecisionDetail | null }
   | { kind: "status"; status: Status; detail?: string | null }
   | { kind: "error"; message: string };
 
@@ -172,7 +195,8 @@ export const api = {
   create: (b: { cwd: string; prompt: string; model?: string; permission_mode?: string; trust?: boolean; trust_seen?: string; create_folder?: boolean }) =>
     call<Session>("POST", "/sessions", b),
   send: (id: string, text: string) => call("POST", `/sessions/${id}/messages`, { text }),
-  decide: (id: string, requestId: string, behavior: "allow" | "allow_always" | "deny") => call("POST", `/sessions/${id}/permissions/${q(requestId)}`, { behavior }),
+  decide: (id: string, requestId: string, behavior: "allow" | "allow_always" | "deny", extra: DecisionExtra = {}) =>
+    call("POST", `/sessions/${id}/permissions/${q(requestId)}`, { behavior, ...extra }),
   interrupt: (id: string) => call("POST", `/sessions/${id}/interrupt`),
   stop: (id: string) => call("POST", `/sessions/${id}/stop`),
   startNow: (id: string) => call("POST", `/sessions/${id}/start`),
