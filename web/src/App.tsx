@@ -228,7 +228,7 @@ function Placeholder({ empty }: { empty: boolean }) {
         </ul>
         <div className="mt-7 flex items-center gap-2">
           <Button variant="primary" size="sm" onClick={() => open("new")}>
-            New session <Kbd className="ml-1 border-white/25 bg-white/10 text-white/85">C</Kbd>
+            New session <Kbd className="ml-1 border-accent-fg/25 bg-accent-fg/10 text-accent-fg/85">C</Kbd>
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setView({ kind: "pool" })}>
             View MCP pool

@@ -136,7 +136,7 @@ export function NewSession({ onClose }: { onClose: () => void }) {
           </span>
           <Button variant="primary" size="sm" onClick={start} disabled={!ready}>
             {willQueue ? "Queue session" : "Start session"}
-            <Kbd className="ml-1 border-white/25 bg-white/10 text-white/85">Ctrl ⏎</Kbd>
+            <Kbd className="ml-1 border-accent-fg/25 bg-accent-fg/10 text-accent-fg/85">Ctrl ⏎</Kbd>
           </Button>
         </div>
       </div>

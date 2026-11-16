@@ -36,14 +36,19 @@
   --fg: light-dark(#18181b, #f7f8f8);
   --muted: light-dark(#5d5e66, #8a8f98);
   --faint: light-dark(#8f9097, #62666d);
-  --accent: #5e6ad2;
-  --accent-fg: #ffffff;
-  --accent-soft: light-dark(rgba(94, 106, 210, 0.1), rgba(94, 106, 210, 0.18));
+  /* The blue and the orange are a pair: on the dark theme both are light, soft colors of
+     about the same lightness, so neither glares against near-black. A button filled with
+     that light blue carries dark text. On the light theme they stay deep enough to read as
+     text on white. The logo keeps its own blue (--brand), the one the app icon is drawn in. */
+  --accent: light-dark(#5a66d6, #8c98ff);
+  --accent-fg: light-dark(#ffffff, #0d0e14);
+  --accent-soft: light-dark(rgba(90, 102, 214, 0.1), rgba(140, 152, 255, 0.16));
+  --brand: #5e6ad2;
   --code: light-dark(#f5f5f7, #0b0c0d);
   --shadow: 0 16px 48px light-dark(rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0.6)), 0 0 0 1px light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.08));
-  --s-needs: light-dark(#e07b1f, #fc7840);
+  --s-needs: light-dark(#e3822a, #ffb86c);
   --s-working: light-dark(#c99a06, #f0bf00);
-  --s-done: #5e6ad2;
+  --s-done: var(--accent);
   --s-idle: light-dark(#8f9097, #8a8f98);
   --s-error: light-dark(#d93f3f, #eb5757);
   /* How full something is (the context window, a plan limit): the accent while there is
