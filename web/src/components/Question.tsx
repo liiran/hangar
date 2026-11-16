@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api, type DecisionDetail, type Session } from "../api";
 import { answerOf, answersOf, NOTHING, pick, toggleOther, type, type Picked, type Question } from "../ask";
 import { report } from "../store";
-import { Shown, useArmed } from "./approval";
+import { ChoiceKey, Shown, useArmed } from "./approval";
 import { Button, cx, Kbd } from "./ui";
 
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -190,7 +190,7 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
                   onFocus={() => setPeek(o.label)}
                   className={cx("flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-panel-2", on && "bg-accent-soft hover:bg-accent-soft")}
                 >
-                  <Letter on={on}>{LETTERS[i]}</Letter>
+                  <ChoiceKey on={on}>{LETTERS[i]}</ChoiceKey>
                   <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
                     <span className="block text-[13px] leading-5 text-fg">
                       <Shown text={o.label} />
@@ -214,7 +214,7 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
                 onClick={() => (p.other.trim() ? set(toggleOther(q, p)) : own.current?.focus())}
                 className="shrink-0 rounded"
               >
-                <Letter on={p.otherOn}>{LETTERS[q.options.length]}</Letter>
+                <ChoiceKey on={p.otherOn}>{LETTERS[q.options.length]}</ChoiceKey>
               </button>
               <input
                 ref={own}
@@ -279,21 +279,6 @@ function PagerButton({ label, onClick, children }: { label: string; onClick: () 
     <button type="button" aria-label={label} title={label} onClick={onClick} className="grid size-6 place-items-center rounded text-muted hover:bg-panel-2 hover:text-fg">
       {children}
     </button>
-  );
-}
-
-/** An option's key: its letter, or a tick once it is chosen. */
-function Letter({ on, children }: { on: boolean; children: React.ReactNode }) {
-  return (
-    <span
-      aria-hidden
-      className={cx(
-        "mt-px grid size-[18px] shrink-0 place-items-center rounded text-[10.5px] font-medium ring-1 ring-inset transition-colors",
-        on ? "bg-accent text-accent-fg ring-accent" : "bg-panel-2 text-muted ring-line-strong",
-      )}
-    >
-      {on ? <Check className="size-3" strokeWidth={3} /> : children}
-    </span>
   );
 }
 

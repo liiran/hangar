@@ -1,13 +1,13 @@
-import { Check, ChevronRight, ClipboardList } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ChevronRight, ClipboardList } from "lucide-react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, type DecisionDetail, type Session } from "../api";
 import { AFTER_PLAN } from "../ask";
 import { hiddenParts, rightToLeft } from "../safe";
 import { report } from "../store";
 import { relative } from "../transcript";
-import { ApprovalBox, countLines, Shown } from "./approval";
+import { ApprovalBox, ChoiceKey, countLines, Shown } from "./approval";
 import { Markdown } from "./Markdown";
-import { Button, cx } from "./ui";
+import { cx, Kbd } from "./ui";
 
 /**
  * How much of a plan shows before "Show all" is needed, in px: about a screenful, so that a plan
@@ -16,9 +16,11 @@ import { Button, cx } from "./ui";
 const PLAN_HEIGHT = 900;
 
 /**
- * Claude's finished plan, to approve or send back. The choices and their words are Claude
- * Code's own: go on with edits accepted, go on approving each edit, or keep planning (with what
- * to change, or with nothing, which stops the turn so the user can say it in a message).
+ * Claude's finished plan, to approve or send back. Under the plan is the question Claude Code's
+ * terminal asks, "Would you like to proceed?", with its choices as a numbered list in its own
+ * words: go on with edits accepted, go on approving each edit, or keep planning. The last one
+ * takes what to change on the same line; with nothing typed it stops the turn, so the change
+ * can be said in a message.
  */
 export function PlanCard({ session, requestId, plan, file, armed }: { session: Session; requestId: string; plan: string; file: string | null; armed: boolean }) {
   const [busy, setBusy] = useState(false);
@@ -26,6 +28,7 @@ export function PlanCard({ session, requestId, plan, file, armed }: { session: S
   const [clipped, setClipped] = useState(false);
   const [plain, setPlain] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const changeBox = useRef<HTMLInputElement>(null);
   const invisible = useMemo(() => hiddenParts(plan).some((p) => p.hidden), [plan]);
   const send = async (behavior: "allow" | "deny", extra: Parameters<typeof api.decide>[3]) => {
     setBusy(true);
@@ -41,6 +44,25 @@ export function PlanCard({ session, requestId, plan, file, armed }: { session: S
   const hold = busy || !armed || unread;
   const change = feedback.trim();
   const keep = () => send("deny", change ? { feedback: change } : { stop: true });
+  // The number keys choose, as in Claude Code's terminal; Enter in the box sends what was typed.
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.nativeEvent.isComposing) return;
+    if (e.target === changeBox.current) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (!busy) keep();
+      }
+      return;
+    }
+    const n = Number(e.key);
+    if (n >= 1 && n <= AFTER_PLAN.length && !hold) {
+      e.preventDefault();
+      send("allow", { mode: AFTER_PLAN[n - 1].mode });
+    } else if (n === AFTER_PLAN.length + 1) {
+      e.preventDefault();
+      changeBox.current?.focus();
+    }
+  };
   return (
     <div className="rounded-lg bg-s-needs/[0.06] p-4 ring-1 ring-inset ring-s-needs/35" data-plan-card>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] font-medium">
@@ -70,35 +92,46 @@ export function PlanCard({ session, requestId, plan, file, armed }: { session: S
           </span>
         </p>
       )}
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <p className="mt-3.5 text-[12.5px] font-medium">Would you like to proceed?</p>
+      <div role="group" aria-label="What to do with the plan" onKeyDown={onKey} className="mt-1.5 divide-y divide-line overflow-hidden rounded-md bg-panel ring-1 ring-inset ring-line-strong" data-plan-choices>
         {AFTER_PLAN.map((choice, i) => (
-          <Button key={choice.mode} variant={i === 0 ? "primary" : "secondary"} size="sm" disabled={hold} onClick={() => send("allow", { mode: choice.mode })}>
-            {i === 0 && <Check className="size-3.5" />} {choice.label}
-          </Button>
+          <button
+            key={choice.mode}
+            type="button"
+            disabled={hold}
+            onClick={() => send("allow", { mode: choice.mode })}
+            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-fg transition-colors hover:bg-panel-2 disabled:pointer-events-none disabled:opacity-45"
+          >
+            <ChoiceKey>{i + 1}</ChoiceKey>
+            {choice.label}
+          </button>
         ))}
-        {unread && <span className="text-[12px] text-s-needs">Show all of it to approve it.</span>}
+        <div className="flex items-center gap-2.5 px-3 py-1 focus-within:bg-panel-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={keep}
+            title={change ? "Claude gets this and plans again" : "Stops here, still in plan mode, so you can say what to change in a message"}
+            className="flex shrink-0 items-center gap-2.5 py-1 text-left text-[13px] text-fg disabled:pointer-events-none disabled:opacity-45"
+          >
+            <ChoiceKey>{AFTER_PLAN.length + 1}</ChoiceKey>
+            No, keep planning
+          </button>
+          <input
+            ref={changeBox}
+            type="text"
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            disabled={busy}
+            maxLength={8000}
+            placeholder="Tell Claude what to change"
+            aria-label="What to change in the plan"
+            className="h-7 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-faint"
+          />
+          {change && <Kbd>⏎</Kbd>}
+        </div>
       </div>
-      <div className="mt-2 flex items-end gap-2">
-        <textarea
-          rows={1}
-          value={feedback}
-          onChange={(e) => setFeedback(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && change) {
-              e.preventDefault();
-              keep();
-            }
-          }}
-          disabled={busy}
-          maxLength={8000}
-          placeholder="Tell Claude what to change"
-          aria-label="What to change in the plan"
-          className="max-h-32 min-h-7 min-w-0 flex-1 resize-none rounded-md bg-panel px-2.5 py-1 text-[12.5px] leading-relaxed outline-none ring-1 ring-inset ring-line-strong placeholder:text-faint focus-visible:ring-faint/60"
-        />
-        <Button variant="ghost" size="sm" disabled={busy} onClick={keep} title={change ? "Claude gets this and plans again" : "Stops here, still in plan mode, so you can say what to change in a message"}>
-          No, keep planning
-        </Button>
-      </div>
+      {unread && <p className="mt-2 text-[12px] text-s-needs">Show all of it to approve it.</p>}
     </div>
   );
 }

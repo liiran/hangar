@@ -1,7 +1,7 @@
 // What every card that waits for the user shares: text shown honestly, and content that cannot
 // be approved before all of it has been on screen.
 
-import { ChevronRight } from "lucide-react";
+import { Check, ChevronRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Session } from "../api";
 import { hiddenParts } from "../safe";
@@ -48,6 +48,21 @@ export function useArmed(session: Session): boolean {
     return () => clearTimeout(t);
   }, [waiting]);
   return armed;
+}
+
+/** The key of a choice in a list of choices: its letter or number, or a tick once it is chosen. */
+export function ChoiceKey({ on, children }: { on?: boolean; children: ReactNode }) {
+  return (
+    <span
+      aria-hidden
+      className={cx(
+        "mt-px grid size-[18px] shrink-0 place-items-center rounded text-[10.5px] font-medium ring-1 ring-inset transition-colors",
+        on ? "bg-accent text-accent-fg ring-accent" : "bg-panel-2 text-muted ring-line-strong",
+      )}
+    >
+      {on ? <Check className="size-3" strokeWidth={3} /> : children}
+    </span>
+  );
 }
 
 export const countLines = (...texts: string[]) => texts.reduce((n, t) => n + t.split("\n").length, 0);

@@ -179,6 +179,7 @@ try {
   await card.waitFor();
   check("one question reads as one, with no pager", (await card.innerText()).includes("Claude has a question") && (await card.locator('[role="tab"]').count()) === 0);
   const seen = () => card.locator("[data-preview] pre:not(.invisible)").innerText();
+  await sleep(300); // it slides up into place
   const heightBefore = (await card.boundingBox()).height;
   check("an option's preview shows beside the options: the first one's to begin with", (await seen()).includes("| Profile |"));
   await option("Tabs").hover();
@@ -195,8 +196,10 @@ try {
   await plan.waitFor();
   const planBox = plan.locator("[data-approval-content]");
   check("a plan shows as a card of its own, formatted", (await plan.innerText()).includes("Claude's plan") && (await planBox.locator("h1").innerText()) === "Plan: split the auth module" && (await planBox.locator("ol > li").count()) === 4 && (await planBox.locator("table tr").count()) === 4);
-  const choices = (await plan.locator("button").allInnerTexts()).map((t) => t.trim());
-  check("…with Claude Code's own three choices, and all of the plan showing", JSON.stringify(choices) === JSON.stringify(["Yes, auto-accept edits", "Yes, manually approve edits", "No, keep planning"]), choices.join(" | "));
+  const choices = (await plan.locator("button").allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim());
+  check("…and under it Claude Code's own question and three numbered choices, with all of the plan showing", (await plan.innerText()).includes("Would you like to proceed?") && JSON.stringify(choices) === JSON.stringify(["1 Yes, auto-accept edits", "2 Yes, manually approve edits", "3 No, keep planning"]), choices.join(" | "));
+  const rows = await plan.locator("[data-plan-choices] > *").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().width)));
+  check("the choices are one list of equal rows, the last with room to say what to change", new Set(rows).size === 1 && (await plan.locator("input").getAttribute("placeholder")) === "Tell Claude what to change", rows.join(" "));
   check("…and where Claude saved it", (await plan.innerText()).includes("Saved to .claude-plans") && (await plan.innerText()).includes("split-the-auth-module.md"));
   check("the session is in plan mode", (await session(planId)).permission_mode === "plan");
   // The mode sits under the message box, bottom left, where the key hints used to be.
@@ -209,9 +212,9 @@ try {
   await shot(page, "plan-presented");
   await shot(plan, "plan-card");
 
-  await plan.locator("textarea").fill("Keep the old file until the tests pass");
+  await plan.locator("input").fill("Keep the old file until the tests pass");
   await shot(plan, "plan-card-feedback");
-  await plan.locator("button", { hasText: "No, keep planning" }).click();
+  await plan.locator("input").press("Enter");
   await main.locator("[data-plan-outcome]", { hasText: "Plan sent back" }).waitFor();
   await planBox.locator("text=Changed after your feedback").waitFor();
   check("“No, keep planning” with words sends them to Claude, which presents the plan again", (await planBox.innerText()).includes("Keep the old file until the tests pass") && (await main.locator("[data-plan-outcome]").first().innerText()).includes("“Keep the old file until the tests pass”"));
@@ -230,7 +233,10 @@ try {
 
   const manualId = await start("make plan and approve each edit", "plan");
   await plan.waitFor();
-  await plan.locator("button", { hasText: "Yes, manually approve edits" }).click();
+  // By keyboard, as in Claude Code's terminal: 2 is the second choice.
+  await enabled(plan.locator("button", { hasText: "Yes, manually approve edits" }));
+  await plan.locator("button", { hasText: "Yes, auto-accept edits" }).focus();
+  await page.keyboard.press("2");
   await main.locator("text=Claude wants to use Edit").waitFor();
   check("approving with “manually approve edits” continues in ask-first mode, and the next edit asks", (await session(manualId)).permission_mode === "default" && (await main.locator("[data-plan-outcome]").innerText()).includes("asking before each edit"));
   await shot(page, "plan-approved-manual");
