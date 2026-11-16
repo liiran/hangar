@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "hangar"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "hangar-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "getrandom",
  "serde",
@@ -460,7 +460,7 @@ dependencies = [
 
 [[package]]
 name = "hangar-shim"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hangar-proto",
  "serde",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "testkit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "hangar",

@@ -167,7 +167,7 @@ Claude Code then starts the shim instead of the server. The shim is a 900 KB pro
 With the three sessions from the video running (the video turns the shared Playwright browser on):
 
 ```
-hangar daemon 0.1.0 (pid 18188), up 1m, 9 MB
+hangar daemon 0.2.0 (pid 18188), up 1m, 9 MB
 
 SERVER                 SHARE    STATE          PID SESSIONS     MEMORY REQUESTS CACHED RESTARTS
 playwright             native   ready        30368        3     134 MB       13      0        0
