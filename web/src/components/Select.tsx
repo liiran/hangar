@@ -21,6 +21,7 @@ export function Select({
   label,
   icon,
   variant = "pill",
+  up,
 }: {
   value: string;
   options: Option[];
@@ -28,6 +29,8 @@ export function Select({
   label: string;
   icon?: ReactNode;
   variant?: "pill" | "row";
+  /** Opens upward, for a dropdown at the bottom of the window. */
+  up?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -117,7 +120,7 @@ export function Select({
           tabIndex={-1}
           aria-activedescendant={`${id}-${active}`}
           onKeyDown={onListKey}
-          className={cx("animate-pop absolute z-50 mt-1 rounded-lg bg-panel p-1 shadow-pop outline-none", variant === "row" ? "inset-x-0" : "left-0 w-[232px]")}
+          className={cx("animate-pop absolute z-50 rounded-lg bg-panel p-1 shadow-pop outline-none", up ? "bottom-full mb-1" : "mt-1", variant === "row" ? "inset-x-0" : "left-0 w-[232px]")}
         >
           {options.map((o, i) => (
             <div

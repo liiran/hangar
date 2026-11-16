@@ -273,6 +273,12 @@ function handle(msg: any) {
   }
 }
 
+/** Switches a session's permission mode. Full access asks first. */
+export function setPermissionMode(id: string, mode: string) {
+  if (mode === "bypassPermissions" && !confirm("Full access lets Claude run any command and edit any file without asking. Only use it in a sandbox you trust. Continue?")) return;
+  api.update(id, { permission_mode: mode }).catch(report);
+}
+
 /** Stops the daemon, as `hangar stop` does. The window then says so and waits for `hangar up`. */
 export async function stopHangar() {
   await api.shutdown();

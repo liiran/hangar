@@ -186,6 +186,12 @@ try {
   check("…with Claude Code's own three choices, and all of the plan showing", JSON.stringify(choices) === JSON.stringify(["Yes, auto-accept edits", "Yes, manually approve edits", "No, keep planning"]), choices.join(" | "));
   check("…and where Claude saved it", (await plan.innerText()).includes("Saved to .claude-plans") && (await plan.innerText()).includes("split-the-auth-module.md"));
   check("the session is in plan mode", (await session(planId)).permission_mode === "plan");
+  // The mode sits under the message box, bottom left, where the key hints used to be.
+  const mode = (label) => page.locator(`button[aria-label="Mode: ${label}"]`);
+  const boxOf = () => page.locator("textarea[data-composer]").evaluate((el) => el.parentElement.getBoundingClientRect().toJSON());
+  const [modeAt, messageBox] = [await mode("Plan only").boundingBox(), await boxOf()];
+  check("the mode shows under the message box, bottom left", modeAt && modeAt.y >= messageBox.bottom && Math.abs(modeAt.x - messageBox.left) < 4, JSON.stringify(modeAt));
+  check("…and the Enter and Shift+Enter hints are gone", (await page.locator("text=new line").count()) === 0);
   await sleep(700);
   await shot(page, "plan-presented");
   await shot(plan, "plan-card");
@@ -203,6 +209,7 @@ try {
   await plan.locator("button", { hasText: "Yes, auto-accept edits" }).click();
   await main.locator("text=plan approved (mode acceptEdits), edit made").waitFor();
   check("approving with “auto-accept edits” continues in that mode, and the edit is made without asking", (await session(planId)).permission_mode === "acceptEdits" && (await main.locator("text=Claude wants to use Edit").count()) === 0);
+  check("the mode under the message box follows", (await mode("Auto-accept edits").count()) === 1);
   check("the answered plan reads as approved, and how", (await main.locator("[data-plan-outcome]").last().innerText()).includes("Plan approved, auto-accepting edits"));
   await main.locator("[data-plan-outcome] button").last().click();
   check("…and opens to show the plan again", (await main.locator("[data-plan-outcome]").last().locator("h1").innerText()) === "Plan: split the auth module");
@@ -216,6 +223,14 @@ try {
   await shot(page, "plan-approved-manual");
   await main.locator("button", { hasText: /^\s*Allow$/ }).click();
   await main.locator("text=plan approved (mode default), edit made").waitFor();
+  await mode("Ask first").click();
+  const modes = page.locator('[role="listbox"][aria-label="Mode"]');
+  const [listAt, pillAt] = [await modes.boundingBox(), await mode("Ask first").boundingBox()];
+  check("the mode opens upward into a list of the four modes", listAt.y + listAt.height <= pillAt.y && (await modes.locator('[role="option"]').count()) === 4);
+  await shot(page, "mode-menu");
+  await modes.locator('[role="option"]', { hasText: "Auto-accept edits" }).click();
+  await mode("Auto-accept edits").waitFor();
+  check("…and choosing one switches the session", (await session(manualId)).permission_mode === "acceptEdits");
 
   const stopId = await start("make plan and stop to rethink", "plan");
   await plan.waitFor();

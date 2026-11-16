@@ -1,11 +1,12 @@
-import { ArrowLeft, ArrowUp, ChevronRight, Copy, Ellipsis, Folder, PanelRight, Pause, Pencil, Play, Square, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowUp, ChevronRight, Copy, Ellipsis, Folder, PanelRight, Pause, Pencil, Play, Shield, Square, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type Session } from "../api";
 import { basename, bytes, PERMISSION_MODES, usd } from "../format";
-import { report, useStore } from "../store";
+import { report, setPermissionMode, useStore } from "../store";
 import { intent, useUI } from "../ui";
 import { ContextWheel } from "./ContextWheel";
 import { Properties } from "./Properties";
+import { Select } from "./Select";
 import { Transcript } from "./Transcript";
 import { Button, cx, IconButton, Kbd, StatusIcon, StatusLabel, useDismiss } from "./ui";
 
@@ -262,12 +263,10 @@ function Composer({ session }: { session: Session }) {
             <ArrowUp className="size-4" />
           </button>
         </div>
-        <div className="mt-1.5 flex min-h-5 items-center justify-between gap-3 px-1 text-[11px] text-faint">
-          <span className="hidden items-center gap-1 sm:flex">
-            <Kbd>Enter</Kbd> send <span className="mx-1">·</span> <Kbd>Shift</Kbd>
-            <Kbd>Enter</Kbd> new line
-          </span>
-          <span className="ml-auto flex items-center gap-3">
+        {/* Under the box: the mode the session is in (and a way to change it) on the left, how full the context is on the right. */}
+        <div className="mt-1.5 flex min-h-6 items-center justify-between gap-3 text-[11px] text-faint">
+          <Select variant="pill" up icon={<Shield className="size-3" />} label="Mode" value={session.permission_mode} onChange={(mode) => setPermissionMode(session.id, mode)} options={PERMISSION_MODES} />
+          <span className="ml-auto flex items-center gap-3 pr-1">
             {session.status === "working" && (
               <span className="hidden items-center gap-1 sm:flex">
                 <Kbd>Esc</Kbd> stop the turn

@@ -2,7 +2,7 @@ import { Check, CircleDollarSign, Clock, Copy, Cpu, Folder, Gauge, MemoryStick, 
 import { useState, type ReactNode } from "react";
 import { api, type Session } from "../api";
 import { ago, basename, bytes, MODELS, modelChoice, PERMISSION_MODES, STATUS, tokens, usd } from "../format";
-import { report } from "../store";
+import { report, setPermissionMode } from "../store";
 import { useNow } from "../ui";
 import { Select } from "./Select";
 import { cx, StatusIcon } from "./ui";
@@ -11,10 +11,7 @@ const MCP_DOT: Record<string, string> = { connected: "bg-emerald-500", pending: 
 
 export function Properties({ session: s }: { session: Session }) {
   const now = useNow();
-  const setMode = (mode: string) => {
-    if (mode === "bypassPermissions" && !confirm("Full access lets Claude run any command and edit any file without asking. Only use it in a sandbox you trust. Continue?")) return;
-    api.update(s.id, { permission_mode: mode }).catch(report);
-  };
+  const setMode = (mode: string) => setPermissionMode(s.id, mode);
   // Takes effect from the next turn; a paused session resumes with it.
   const setModel = (model: string) => {
     if (model !== modelChoice(s.model)) api.update(s.id, { model }).catch(report);
