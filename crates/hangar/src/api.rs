@@ -19,7 +19,7 @@
 use crate::daemon::Pairing;
 use crate::pool::Pool;
 use crate::procs;
-use crate::sessions::{Manager, NeedsTrust, NewSession};
+use crate::sessions::{Answer, Manager, NeedsTrust, NewSession};
 use crate::util::constant_time_eq;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
@@ -412,11 +412,23 @@ async fn send_message(State(st): State<AppState>, Path(id): Path<String>, Json(b
     result(st.manager.send(&id, &b.text))
 }
 
+/// The answer to a permission request. Beyond `behavior`, each field fits
+/// one kind of request only (see [`Answer`]); the manager refuses the rest.
 #[derive(Deserialize)]
 struct DecideBody {
     behavior: String,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    answers: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    feedback: Option<String>,
+    #[serde(default)]
+    stop: bool,
+    #[serde(default)]
+    clarify: bool,
 }
 
 async fn decide(State(st): State<AppState>, Path((id, request_id)): Path<(String, String)>, Json(b): Json<DecideBody>) -> Response {
@@ -426,7 +438,8 @@ async fn decide(State(st): State<AppState>, Path((id, request_id)): Path<(String
         "deny" => (false, false),
         other => return err(StatusCode::BAD_REQUEST, format!("unknown behavior {other}")),
     };
-    result(st.manager.decide(&id, &request_id, allow, always, b.message))
+    let answer = Answer { allow, always, message: b.message, answers: b.answers, mode: b.mode, feedback: b.feedback, stop: b.stop, clarify: b.clarify };
+    result(st.manager.decide(&id, &request_id, answer))
 }
 
 async fn interrupt(State(st): State<AppState>, Path(id): Path<String>) -> Response {

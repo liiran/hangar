@@ -118,9 +118,13 @@ pub enum EventBody {
         description: Option<String>,
     },
     /// `allow`, `allow_always` (rules remembered for this session), `deny` or `cancelled`.
+    /// `detail` is what the user chose beyond that: the answers to a
+    /// question, the mode a plan continues in, or what they asked to change.
     Decision {
         request_id: String,
         behavior: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<Value>,
     },
     Status {
         status: Status,
@@ -164,6 +168,146 @@ pub enum UiEvent {
     Session { session: SessionView },
     Event { session_id: String, event: Event },
     Removed { session_id: String },
+}
+
+/// How the user answered a permission request.
+#[derive(Debug, Default, Clone)]
+pub struct Answer {
+    pub allow: bool,
+    /// Allow: also remember Claude's suggested rules for this session.
+    pub always: bool,
+    /// Deny: the words Claude reads, instead of the usual ones.
+    pub message: Option<String>,
+    /// A question (`AskUserQuestion`), allowed: the answer to each question, by its text.
+    pub answers: Option<BTreeMap<String, String>>,
+    /// A plan (`ExitPlanMode`), allowed: the permission mode to carry on in.
+    pub mode: Option<String>,
+    /// Deny: what the user wants done differently, in their own words.
+    pub feedback: Option<String>,
+    /// Deny: end the turn too, so Claude waits for the next message.
+    pub stop: bool,
+    /// A question, denied: the user wants to talk the questions over first.
+    pub clarify: bool,
+}
+
+/// The tool Claude Code asks questions with.
+pub const ASK_TOOL: &str = "AskUserQuestion";
+/// The tool Claude Code presents a plan with.
+pub const PLAN_TOOL: &str = "ExitPlanMode";
+/// The modes a session can carry on in once a plan is approved.
+pub const AFTER_PLAN: &[&str] = &["acceptEdits", "default"];
+/// The longest answer or feedback sent on to Claude, in characters.
+const MAX_REPLY: usize = 8000;
+
+// Claude Code's own wording for a refused tool call, so that Claude reads a
+// refusal from hangar exactly as one from its terminal.
+const REFUSED: &str =
+    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). ";
+const REFUSED_STOP: &str = "STOP what you are doing and wait for the user to tell you how to proceed.";
+const REFUSED_BECAUSE: &str = "To tell you how to proceed, the user said:\n";
+
+/// What goes back to Claude for one answered request.
+#[derive(Debug, PartialEq)]
+struct Reply {
+    allow: bool,
+    /// Allow: the input the tool runs with.
+    input: Value,
+    /// Allow: permission changes applied with it.
+    permissions: Option<Value>,
+    /// Deny: what Claude reads.
+    message: String,
+    /// Deny: the turn ends too.
+    interrupt: bool,
+    /// For the history: `allow`, `allow_always` or `deny`.
+    behavior: &'static str,
+    detail: Option<Value>,
+    /// The permission mode the session is in afterwards, if it changes.
+    mode: Option<String>,
+}
+
+/// Works out the reply to `p` from the user's answer, or says why the
+/// answer does not fit the request. Nothing is sent here.
+fn reply_to(p: &PendingPermission, a: &Answer) -> Result<Reply> {
+    let reply = |text: &str| -> String { text.trim().chars().take(MAX_REPLY).collect() };
+    let mut r = Reply {
+        allow: a.allow,
+        input: p.input.clone(),
+        permissions: None,
+        message: String::new(),
+        interrupt: false,
+        behavior: "deny",
+        detail: None,
+        mode: None,
+    };
+    if a.answers.is_some() && !(a.allow && p.tool_name == ASK_TOOL) {
+        bail!("answers go with allowing a question");
+    }
+    if a.mode.is_some() && !(a.allow && p.tool_name == PLAN_TOOL) {
+        bail!("a mode goes with approving a plan");
+    }
+    if a.clarify && (a.allow || p.tool_name != ASK_TOOL) {
+        bail!("only a question can be talked over");
+    }
+    if a.allow {
+        r.behavior = "allow";
+        if p.tool_name == ASK_TOOL {
+            // Allowed with no answers, Claude is told "the user did not
+            // answer": that is never what an Allow click means.
+            let asked: Vec<&str> = p.input["questions"].as_array().map(|qs| qs.iter().filter_map(|q| q["question"].as_str()).collect()).unwrap_or_default();
+            let mut answers = serde_json::Map::new();
+            for (question, answer) in a.answers.iter().flatten() {
+                if !asked.contains(&question.as_str()) {
+                    bail!("that is not one of the questions Claude asked");
+                }
+                let answer = reply(answer);
+                if !answer.is_empty() {
+                    answers.insert(question.clone(), json!(answer));
+                }
+            }
+            if answers.is_empty() {
+                bail!("choose an answer first");
+            }
+            r.input["answers"] = Value::Object(answers.clone());
+            r.detail = Some(json!({"answers": answers}));
+        } else if p.tool_name == PLAN_TOOL {
+            if let Some(mode) = &a.mode {
+                if !AFTER_PLAN.contains(&mode.as_str()) {
+                    bail!("a plan can continue in acceptEdits or default mode");
+                }
+                r.permissions = Some(json!([{"type": "setMode", "mode": mode, "destination": "session"}]));
+                r.detail = Some(json!({"mode": mode}));
+                r.mode = Some(mode.clone());
+            }
+        } else if a.always
+            && let Some(rules) = p.suggestions.as_ref().and_then(claude::session_only)
+        {
+            r.permissions = Some(rules);
+            r.behavior = "allow_always";
+        }
+        return Ok(r);
+    }
+    let feedback = a.feedback.as_deref().map(reply).filter(|f| !f.is_empty());
+    if a.clarify {
+        let asked: Vec<String> = p.input["questions"]
+            .as_array()
+            .map(|qs| qs.iter().filter_map(|q| q["question"].as_str()).map(|q| format!("- {q}\n  (No answer provided)")).collect())
+            .unwrap_or_default();
+        r.message = format!(
+            "The user wants to clarify these questions.\nThis means they may have additional information, context or questions for you.\nTake their response into account and then reformulate the questions if appropriate.\nStart by asking them what they would like to clarify.\n\nQuestions asked:\n{}",
+            asked.join("\n")
+        );
+        r.detail = Some(json!({"clarify": true}));
+    } else if let Some(feedback) = feedback {
+        r.message = format!("{REFUSED}{REFUSED_BECAUSE}{feedback}");
+        r.detail = Some(json!({"feedback": feedback}));
+    } else if a.stop {
+        r.message = format!("{REFUSED}{REFUSED_STOP}");
+        r.interrupt = true;
+        r.detail = Some(json!({"stopped": true}));
+    } else {
+        r.message = a.message.as_deref().map(reply).filter(|m| !m.is_empty()).unwrap_or_else(|| "The user declined this tool use.".into());
+    }
+    Ok(r)
 }
 
 pub struct NewSession {
@@ -529,20 +673,26 @@ impl Manager {
         Ok(())
     }
 
-    pub fn decide(&self, id: &str, request_id: &str, allow: bool, always: bool, message: Option<String>) -> Result<()> {
+    /// Answers a permission request. An answer that does not fit the request
+    /// is refused and the request stays open.
+    pub fn decide(&self, id: &str, request_id: &str, answer: Answer) -> Result<()> {
         let mut inner = self.inner.locked();
         let s = inner.sessions.get_mut(id).context("no such session")?;
         let run = s.run.as_ref().context("session is not running")?;
-        let p = s.pending.remove(request_id).context("that request is no longer pending")?;
-        let behavior = if allow {
-            let remembered = run.driver.allow(request_id, &p.input, if always { p.suggestions.as_ref() } else { None });
-            if remembered { "allow_always" } else { "allow" }
+        let reply = reply_to(s.pending.get(request_id).context("that request is no longer pending")?, &answer)?;
+        s.pending.remove(request_id);
+        if reply.allow {
+            run.driver.allow(request_id, &reply.input, reply.permissions.as_ref());
         } else {
-            run.driver.deny(request_id, message.as_deref().unwrap_or("The user declined this tool use."));
-            "deny"
-        };
+            run.driver.deny(request_id, &reply.message, reply.interrupt);
+        }
+        // Claude Code confirms a mode change with a status message; the app
+        // shows the new mode without waiting for it.
+        if let Some(mode) = reply.mode {
+            s.meta.permission_mode = mode;
+        }
         let still_waiting = !s.pending.is_empty();
-        self.push_event(&mut inner, id, EventBody::Decision { request_id: request_id.into(), behavior: behavior.into() });
+        self.push_event(&mut inner, id, EventBody::Decision { request_id: request_id.into(), behavior: reply.behavior.into(), detail: reply.detail });
         if !still_waiting {
             set_status(&mut inner, id, Status::Working, None);
         }
@@ -845,6 +995,13 @@ impl Manager {
                     status = Some(Status::Working);
                 }
             }
+            // Claude Code says so when the mode changes inside it: a plan
+            // was approved, or it left plan mode some other way.
+            ("system", "status") => {
+                if let Some(mode) = msg["permissionMode"].as_str().filter(|m| PERMISSION_MODES.contains(m)) {
+                    s.meta.permission_mode = mode.to_string();
+                }
+            }
             ("assistant", _) => {
                 if let Some(text) = first_text(&msg) {
                     s.meta.preview = truncate(&text, 160);
@@ -866,7 +1023,9 @@ impl Manager {
                     s.meta.claude_session_id = Some(sid.to_string());
                 }
                 if msg["is_error"].as_bool().unwrap_or(false) {
-                    s.meta.preview = truncate(msg["result"].as_str().unwrap_or("the turn failed"), 160);
+                    // A turn the user stopped did not fail.
+                    let stopped = msg["terminal_reason"].as_str().is_some_and(|r| r.starts_with("aborted"));
+                    s.meta.preview = truncate(msg["result"].as_str().unwrap_or(if stopped { "Stopped" } else { "the turn failed" }), 160);
                 }
                 s.idle_since = Some(Instant::now());
                 status = Some(Status::Idle);
@@ -927,7 +1086,7 @@ impl Manager {
         }
         let still_waiting = !s.pending.is_empty();
         let needs_you = s.meta.status == Status::NeedsYou;
-        self.push_event(&mut inner, id, EventBody::Decision { request_id: request_id.into(), behavior: "cancelled".into() });
+        self.push_event(&mut inner, id, EventBody::Decision { request_id: request_id.into(), behavior: "cancelled".into(), detail: None });
         if !still_waiting && needs_you {
             set_status(&mut inner, id, Status::Working, None);
         }
@@ -969,7 +1128,7 @@ impl Manager {
             }
         };
         for request_id in withdrawn {
-            self.push_event(&mut inner, id, EventBody::Decision { request_id, behavior: "cancelled".into() });
+            self.push_event(&mut inner, id, EventBody::Decision { request_id, behavior: "cancelled".into(), detail: None });
         }
         // Only full turns say anything about what a session costs.
         if run.completed_turns > 0 {
@@ -1179,6 +1338,81 @@ mod tests {
         assert!(!valid_id("../../etc"));
         assert!(!valid_id("s12345678901z"));
         assert!(!valid_id("x123456789012"));
+    }
+
+    fn pending(tool: &str, input: Value) -> PendingPermission {
+        let suggestions =
+            json!([{"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "ls"}], "behavior": "allow", "destination": "localSettings"}]);
+        PendingPermission { request_id: "r".into(), tool_name: tool.into(), input, suggestions: Some(suggestions), can_remember: true }
+    }
+
+    fn answers(pairs: &[(&str, &str)]) -> Option<BTreeMap<String, String>> {
+        Some(pairs.iter().map(|(q, a)| (q.to_string(), a.to_string())).collect())
+    }
+
+    #[test]
+    fn a_question_goes_back_with_the_answers_and_nothing_else_can_carry_them() {
+        let ask = pending(ASK_TOOL, json!({"questions": [{"question": "Which colour?"}, {"question": "Which fruit?"}]}));
+        let yes = Answer { allow: true, ..Default::default() };
+        let r = reply_to(&ask, &Answer { answers: answers(&[("Which colour?", " Green "), ("Which fruit?", "Apple, Cherry")]), always: true, ..yes.clone() })
+            .unwrap();
+        assert_eq!(r.input["answers"], json!({"Which colour?": "Green", "Which fruit?": "Apple, Cherry"}));
+        assert_eq!(r.input["questions"], ask.input["questions"], "the questions go back as they came");
+        assert_eq!((r.behavior, &r.permissions), ("allow", &None), "there are no rules to remember for a question");
+        assert_eq!(r.detail, Some(json!({"answers": {"Which colour?": "Green", "Which fruit?": "Apple, Cherry"}})));
+        // One answered of two is still an answer; none is not.
+        assert!(reply_to(&ask, &Answer { answers: answers(&[("Which colour?", "Blue"), ("Which fruit?", "  ")]), ..yes.clone() }).is_ok());
+        assert!(reply_to(&ask, &yes).is_err());
+        assert!(reply_to(&ask, &Answer { answers: answers(&[("Which colour?", " ")]), ..yes.clone() }).is_err());
+        assert!(reply_to(&ask, &Answer { answers: answers(&[("Delete everything?", "Yes")]), ..yes.clone() }).is_err(), "not a question Claude asked");
+        // Answers replace a tool's input, so no other tool takes them.
+        let bash = pending("Bash", json!({"command": "ls"}));
+        assert!(reply_to(&bash, &Answer { answers: answers(&[("command", "rm -rf /")]), ..yes.clone() }).is_err());
+        assert!(reply_to(&ask, &Answer { answers: answers(&[("Which colour?", "Red")]), ..Default::default() }).is_err(), "answers do not go with a refusal");
+        let r = reply_to(&bash, &Answer { always: true, ..yes.clone() }).unwrap();
+        assert_eq!((r.input.clone(), r.behavior), (json!({"command": "ls"}), "allow_always"));
+        assert_eq!(r.permissions.unwrap()[0]["destination"], "session");
+
+        let r = reply_to(&ask, &Answer { clarify: true, ..Default::default() }).unwrap();
+        assert!(
+            !r.allow
+                && !r.interrupt
+                && r.message.starts_with("The user wants to clarify these questions.")
+                && r.message.contains("- Which fruit?\n  (No answer provided)"),
+            "{}",
+            r.message
+        );
+        assert!(reply_to(&bash, &Answer { clarify: true, ..Default::default() }).is_err());
+        let long = "x".repeat(MAX_REPLY * 2);
+        let r = reply_to(&ask, &Answer { answers: answers(&[("Which colour?", &long)]), ..yes }).unwrap();
+        assert_eq!(r.input["answers"]["Which colour?"].as_str().unwrap().len(), MAX_REPLY);
+    }
+
+    #[test]
+    fn a_plan_continues_in_the_chosen_mode_or_goes_back_in_claudes_own_words() {
+        let plan = pending(PLAN_TOOL, json!({"plan": "# Plan"}));
+        let yes = Answer { allow: true, ..Default::default() };
+        let r = reply_to(&plan, &Answer { mode: Some("acceptEdits".into()), ..yes.clone() }).unwrap();
+        assert_eq!(r.permissions, Some(json!([{"type": "setMode", "mode": "acceptEdits", "destination": "session"}])));
+        assert_eq!((r.mode.as_deref(), r.input.clone()), (Some("acceptEdits"), json!({"plan": "# Plan"})));
+        for bad in ["bypassPermissions", "plan", "--dangerously-skip-permissions", ""] {
+            assert!(reply_to(&plan, &Answer { mode: Some(bad.into()), ..yes.clone() }).is_err(), "{bad:?}");
+        }
+        assert!(
+            reply_to(&pending("Bash", json!({"command": "ls"})), &Answer { mode: Some("acceptEdits".into()), ..yes.clone() }).is_err(),
+            "only a plan changes the mode"
+        );
+        let r = reply_to(&plan, &Answer { always: true, ..yes }).unwrap();
+        assert_eq!((r.behavior, r.permissions, r.mode), ("allow", None, None), "a plan never takes Claude's suggested rules");
+
+        let r = reply_to(&plan, &Answer { feedback: Some("  add tests first ".into()), stop: true, ..Default::default() }).unwrap();
+        assert_eq!(r.message, format!("{REFUSED}{REFUSED_BECAUSE}add tests first"));
+        assert!(!r.interrupt, "with something to act on, the turn goes on");
+        let r = reply_to(&plan, &Answer { stop: true, ..Default::default() }).unwrap();
+        assert!(r.interrupt && r.message == format!("{REFUSED}{REFUSED_STOP}"));
+        assert_eq!(r.detail, Some(json!({"stopped": true})));
+        let r = reply_to(&plan, &Answer { feedback: Some("   ".into()), ..Default::default() }).unwrap();
+        assert_eq!((r.message.as_str(), r.interrupt, r.detail), ("The user declined this tool use.", false, None));
     }
 
     #[test]

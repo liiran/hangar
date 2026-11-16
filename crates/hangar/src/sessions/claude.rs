@@ -205,21 +205,31 @@ impl Driver {
         self.write(&json!({"type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": null, "session_id": "default"}));
     }
 
-    /// Allows a tool call. With `remember`, Claude's suggested rules are
-    /// applied to this session only; returns whether any were.
-    pub fn allow(&self, request_id: &str, input: &Value, remember: Option<&Value>) -> bool {
+    /// Allows a tool call. `input` is what the tool runs with: the input
+    /// Claude sent, or that with the user's answers added. `permissions`
+    /// are changes Claude Code applies along with it (session rules, or the
+    /// mode to continue in after a plan).
+    pub fn allow(&self, request_id: &str, input: &Value, permissions: Option<&Value>) {
         let mut response = json!({"behavior": "allow", "updatedInput": input});
-        let rules = remember.and_then(session_only);
-        let remembered = rules.is_some();
-        if let Some(rules) = rules {
-            response["updatedPermissions"] = rules;
+        if let Some(p) = permissions {
+            response["updatedPermissions"] = p.clone();
         }
         self.write(&json!({"type": "control_response", "response": {"subtype": "success", "request_id": request_id, "response": response}}));
-        remembered
     }
 
-    pub fn deny(&self, request_id: &str, message: &str) {
-        self.write(&json!({"type": "control_response", "response": {"subtype": "success", "request_id": request_id, "response": {"behavior": "deny", "message": message}}}));
+    /// Refuses a tool call; Claude reads `message`. With `interrupt` the
+    /// turn ends there and Claude waits for the next message.
+    pub fn deny(&self, request_id: &str, message: &str, interrupt: bool) {
+        let mut response = json!({"behavior": "deny", "message": message});
+        if interrupt {
+            response["interrupt"] = json!(true);
+        }
+        self.write(&json!({"type": "control_response", "response": {"subtype": "success", "request_id": request_id, "response": response}}));
+    }
+
+    /// Asks how full the context window is (what `/context` shows in a terminal).
+    pub fn context_usage(&self) {
+        self.control(&format!("ctx-{}", crate::util::now_ms()), json!({"subtype": "get_context_usage"}));
     }
 
     pub fn interrupt(&self) {

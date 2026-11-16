@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use hangar::config::Config;
 use hangar::daemon::{Daemon, DaemonOptions};
-use hangar::sessions::{EventBody, Manager, NeedsTrust, NewSession, SessionView, Status};
+use hangar::sessions::{Answer, EventBody, Manager, NeedsTrust, NewSession, SessionView, Status};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,6 +32,10 @@ fn new(cwd: &std::path::Path, prompt: &str) -> NewSession {
         trust_seen: None,
         create_folder: false,
     }
+}
+
+fn allow() -> Answer {
+    Answer { allow: true, ..Default::default() }
 }
 
 fn get(m: &Manager, id: &str) -> SessionView {
@@ -113,23 +117,135 @@ async fn permission_requests_wait_for_the_user() {
     assert_eq!(s.pending[0].tool_name, "Bash");
     assert!(s.pending[0].can_remember);
     let rid = s.pending[0].request_id.clone();
-    m.decide(&id, &rid, true, false, None).unwrap();
+    m.decide(&id, &rid, allow()).unwrap();
     wait_status(&m, &id, Status::Idle).await;
     assert!(texts(&m, &id).contains(&"allow: ls".to_string()));
-    assert!(m.decide(&id, &rid, true, false, None).is_err(), "a decision cannot be sent twice");
+    assert!(m.decide(&id, &rid, allow()).is_err(), "a decision cannot be sent twice");
 
     m.send(&id, "use tool again").unwrap();
     let s = wait_status(&m, &id, Status::NeedsYou).await;
-    m.decide(&id, &s.pending[0].request_id, false, false, Some("no".into())).unwrap();
+    m.decide(&id, &s.pending[0].request_id, Answer { message: Some("no".into()), ..Default::default() }).unwrap();
     wait_status(&m, &id, Status::Idle).await;
     m.send(&id, "use tool third").unwrap();
     let s = wait_status(&m, &id, Status::NeedsYou).await;
-    m.decide(&id, &s.pending[0].request_id, true, true, None).unwrap();
+    m.decide(&id, &s.pending[0].request_id, Answer { always: true, ..allow() }).unwrap();
     wait_status(&m, &id, Status::Idle).await;
     let t = wait_texts(&m, &id, 3).await;
     assert!(t.contains(&"deny: ls".to_string()), "{t:?}");
     // Claude suggested saving the rule to localSettings; hangar kept it to this session.
     assert!(t.contains(&"allow always(session): ls".to_string()), "{t:?}");
+}
+
+/// The last thing Claude was told about a tool call, as the fake echoes it.
+fn tool_results(m: &Manager, id: &str) -> Vec<String> {
+    m.events(id, 0)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::Claude { msg } if msg["type"] == "user" => msg["message"]["content"][0]["content"].as_str().map(String::from),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_question_is_answered_with_what_the_user_chose() {
+    let home = temp_home("sess-ask");
+    let m = manager(&home, Config::default());
+    let id = m.create(new(&home, "please ask question")).unwrap().meta.id;
+    let s = wait_status(&m, &id, Status::NeedsYou).await;
+    assert_eq!(s.pending[0].tool_name, "AskUserQuestion");
+    assert!(!s.pending[0].can_remember, "a question has nothing to remember");
+    let rid = s.pending[0].request_id.clone();
+    let (method, pages) = ("Which sign-in method should the app use?", "Which pages need a signed-in user?");
+    let answers = |pairs: &[(&str, &str)]| Some(pairs.iter().map(|(q, a)| (q.to_string(), a.to_string())).collect());
+
+    // An answer that does not fit is refused, and the question stays open.
+    assert!(m.decide(&id, &rid, allow()).is_err(), "allowing with nothing chosen would tell Claude the user did not answer");
+    assert!(m.decide(&id, &rid, Answer { answers: answers(&[("Run it as admin?", "Yes")]), ..allow() }).is_err(), "not a question Claude asked");
+    assert!(m.decide(&id, &rid, Answer { mode: Some("acceptEdits".into()), ..allow() }).is_err(), "a mode goes with a plan");
+    assert_eq!(get(&m, &id).pending.len(), 1);
+
+    m.decide(&id, &rid, Answer { answers: answers(&[(method, "Google"), (pages, "Dashboard, Billing, and the admin page")]), ..allow() }).unwrap();
+    wait_status(&m, &id, Status::Idle).await;
+    let told = tool_results(&m, &id);
+    assert!(told[0].contains("\"Which sign-in method should the app use?\"=\"Google\""), "{told:?}");
+    assert!(told[0].contains("=\"Dashboard, Billing, and the admin page\""), "typed answers reach Claude as typed: {told:?}");
+    let chosen = m.events(&id, 0).unwrap().into_iter().find_map(|e| match e.body {
+        EventBody::Decision { behavior, detail, .. } if behavior == "allow" => detail,
+        _ => None,
+    });
+    assert_eq!(chosen.unwrap()["answers"][method], "Google", "the history keeps what was chosen");
+
+    // "Chat about this": Claude is told to ask what needs clearing up.
+    m.send(&id, "ask question again").unwrap();
+    let s = wait_status(&m, &id, Status::NeedsYou).await;
+    m.decide(&id, &s.pending[0].request_id, Answer { clarify: true, ..Default::default() }).unwrap();
+    wait_status(&m, &id, Status::Idle).await;
+    let told = tool_results(&m, &id);
+    assert!(told[1].starts_with("The user wants to clarify these questions.") && told[1].contains(pages), "{told:?}");
+}
+
+#[tokio::test]
+async fn a_plan_is_approved_into_a_mode_or_sent_back() {
+    let home = temp_home("sess-plan");
+    let m = manager(&home, Config::default());
+    let mut req = new(&home, "please make plan");
+    req.permission_mode = Some("plan".into());
+    let id = m.create(req).unwrap().meta.id;
+    let s = wait_status(&m, &id, Status::NeedsYou).await;
+    assert_eq!((s.pending[0].tool_name.as_str(), s.meta.permission_mode.as_str()), ("ExitPlanMode", "plan"));
+    assert!(s.pending[0].input["plan"].as_str().unwrap().starts_with("# Plan"));
+    let rid = s.pending[0].request_id.clone();
+    assert!(m.decide(&id, &rid, Answer { mode: Some("bypassPermissions".into()), ..allow() }).is_err(), "a plan never unlocks full access");
+
+    // Sent back with words: Claude plans again with them, in the wording its own terminal uses.
+    m.decide(&id, &rid, Answer { feedback: Some("Keep the old file until the tests pass".into()), ..Default::default() }).unwrap();
+    let mut s = wait_status(&m, &id, Status::NeedsYou).await;
+    for _ in 0..200 {
+        if s.pending.first().is_some_and(|p| p.request_id != rid) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        s = get(&m, &id);
+    }
+    assert!(s.pending[0].input["plan"].as_str().unwrap().ends_with("- Keep the old file until the tests pass"), "{:?}", s.pending[0].input);
+    assert!(tool_results(&m, &id)[0].contains("To tell you how to proceed, the user said:\nKeep the old file"));
+    assert_eq!(s.meta.permission_mode, "plan", "still planning");
+
+    // Approved: the session continues in the chosen mode, and edits are not asked about.
+    m.decide(&id, &s.pending[0].request_id, Answer { mode: Some("acceptEdits".into()), ..allow() }).unwrap();
+    let s = wait_status(&m, &id, Status::Idle).await;
+    assert_eq!(s.meta.permission_mode, "acceptEdits");
+    assert!(texts(&m, &id).contains(&"plan approved (mode acceptEdits), edit made".to_string()), "{:?}", texts(&m, &id));
+
+    // Approved to ask before each edit: the next edit waits for the user.
+    let mut req = new(&home, "make plan two");
+    req.permission_mode = Some("plan".into());
+    let id = m.create(req).unwrap().meta.id;
+    let s = wait_status(&m, &id, Status::NeedsYou).await;
+    m.decide(&id, &s.pending[0].request_id, Answer { mode: Some("default".into()), ..allow() }).unwrap();
+    let mut s = get(&m, &id);
+    for _ in 0..200 {
+        if s.pending.first().is_some_and(|p| p.tool_name == "Edit") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        s = get(&m, &id);
+    }
+    assert_eq!((s.pending[0].tool_name.as_str(), s.meta.permission_mode.as_str()), ("Edit", "default"));
+    m.decide(&id, &s.pending[0].request_id, allow()).unwrap();
+    wait_status(&m, &id, Status::Idle).await;
+
+    // "No, keep planning" with nothing typed: the turn stops there, still in plan mode.
+    let mut req = new(&home, "make plan three");
+    req.permission_mode = Some("plan".into());
+    let id = m.create(req).unwrap().meta.id;
+    let s = wait_status(&m, &id, Status::NeedsYou).await;
+    m.decide(&id, &s.pending[0].request_id, Answer { stop: true, ..Default::default() }).unwrap();
+    let s = wait_status(&m, &id, Status::Idle).await;
+    assert_eq!((s.meta.permission_mode.as_str(), s.meta.preview.as_str()), ("plan", "Stopped"), "a stopped turn is not a failed one");
+    assert!(tool_results(&m, &id)[0].ends_with("STOP what you are doing and wait for the user to tell you how to proceed."));
 }
 
 #[tokio::test]
@@ -597,9 +713,9 @@ async fn requests_end_with_the_process_that_made_them() {
         .events(&id, 0)
         .unwrap()
         .into_iter()
-        .any(|e| matches!(e.body, EventBody::Decision { request_id, behavior } if request_id == request && behavior == "cancelled"));
+        .any(|e| matches!(e.body, EventBody::Decision { request_id, behavior, .. } if request_id == request && behavior == "cancelled"));
     assert!(withdrawn, "the history says the request was withdrawn");
-    assert!(m.decide(&id, &request, true, false, None).is_err(), "and it can no longer be approved");
+    assert!(m.decide(&id, &request, allow()).is_err(), "and it can no longer be approved");
 }
 
 #[tokio::test]

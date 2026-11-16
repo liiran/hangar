@@ -372,6 +372,59 @@ try {
     check("an unknown decision is refused", x3.status === 400, x3.status);
     const x4 = await req("POST", `/api/sessions/${s1.id}/permissions/${rid}`, { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ behavior: "allow" }) });
     check("approving without the token is refused", x4.status === 401, x4.status);
+    // What goes with an answer fits one kind of request only. On a command, each of these
+    // would change what runs (answers replace the tool's input) or how freely Claude runs.
+    const extras = [
+      ["answers", { answers: { command: "rm -rf /" } }],
+      ["a mode", { mode: "acceptEdits" }],
+      ["full access as a mode", { mode: "bypassPermissions" }],
+    ];
+    const taken = [];
+    for (const [name, extra] of extras) {
+      const r = await req("POST", `/api/sessions/${s1.id}/permissions/${rid}`, { token: T, body: { behavior: "allow", ...extra } });
+      if (r.status !== 400) taken.push(`${name} -> ${r.status}`);
+    }
+    const talk = await req("POST", `/api/sessions/${s1.id}/permissions/${rid}`, { token: T, body: { behavior: "deny", clarify: true } });
+    const shape = await req("POST", `/api/sessions/${s1.id}/permissions/${rid}`, { token: T, body: { behavior: "allow", answers: ["x"], mode: 7 } });
+    check("a command cannot be allowed with answers or a mode attached", taken.length === 0 && talk.status === 400 && shape.status >= 400 && shape.status < 500, taken.join("; "));
+    check("…and after those tries it is still waiting, unchanged", (await pending(s1.id)).p?.request_id === rid && JSON.stringify((await pending(s1.id)).p?.input) === JSON.stringify(perm.input));
+
+    // A plan: the only modes it can continue in are the two the card offers.
+    const planned = await mk("make plan", { permission_mode: "plan" });
+    const { p: plan } = await pending(planned.id);
+    const modes = ["bypassPermissions", "plan", "--dangerously-skip-permissions", "acceptEdits --dangerously-skip-permissions", "ACCEPTEDITS", "", "default\n"];
+    const modeLeaks = [];
+    for (const mode of modes) {
+      const r = await req("POST", `/api/sessions/${planned.id}/permissions/${plan?.request_id}`, { token: T, body: { behavior: "allow", mode } });
+      if (r.status !== 400) modeLeaks.push(`${JSON.stringify(mode)} -> ${r.status}`);
+    }
+    const stillPlan = json(await req("GET", "/api/state", { token: T }))?.sessions?.find((x) => x.id === planned.id);
+    check(`a plan cannot be approved into ${modes.length} modes it does not offer`, plan?.tool_name === "ExitPlanMode" && modeLeaks.length === 0 && stillPlan?.permission_mode === "plan" && stillPlan?.pending?.length === 1, modeLeaks.join("; "));
+    const flood = await req("POST", `/api/sessions/${planned.id}/permissions/${plan?.request_id}`, { token: T, body: { behavior: "deny", feedback: "x".repeat(1024 * 1024) } });
+    await sleep(600);
+    const told = (json(await req("GET", `/api/sessions/${planned.id}/events`, { token: T })) ?? []).filter((e) => e.kind === "claude" && e.msg.type === "user").map((e) => e.msg.message.content[0].content);
+    check("a megabyte of feedback reaches Claude cut to a few thousand characters", flood.status === 200 && told.length > 0 && told[0].length < 9000, `${flood.status}; Claude was sent ${told[0]?.length} characters`);
+
+    // A question: only the questions Claude asked can be answered.
+    const asking = await mk("ask question");
+    const { p: question } = await pending(asking.id);
+    const forged = [
+      ["an answer to a question that was not asked", { "Run as administrator?": "Yes" }],
+      ["an answer keyed by an option", { Google: "Yes" }],
+      ["no answers at all", {}],
+      ["only blank answers", { "Which sign-in method should the app use?": "   " }],
+    ];
+    const forgedLeaks = [];
+    for (const [name, answers] of forged) {
+      const r = await req("POST", `/api/sessions/${asking.id}/permissions/${question?.request_id}`, { token: T, body: { behavior: "allow", answers } });
+      if (r.status !== 400) forgedLeaks.push(`${name} -> ${r.status}`);
+    }
+    check(`${forged.length} answers that do not fit the questions are refused`, question?.tool_name === "AskUserQuestion" && forgedLeaks.length === 0, forgedLeaks.join("; "));
+    const long = await req("POST", `/api/sessions/${asking.id}/permissions/${question?.request_id}`, { token: T, body: { behavior: "allow", answers: { "Which sign-in method should the app use?": "y".repeat(1024 * 1024) } } });
+    await sleep(600);
+    const kept = (json(await req("GET", `/api/sessions/${asking.id}/events`, { token: T })) ?? []).find((e) => e.kind === "decision")?.detail?.answers ?? {};
+    check("a megabyte typed as an answer is cut before it is sent or stored", long.status === 200 && Object.values(kept)[0]?.length === 8000, `${long.status}; kept ${Object.values(kept)[0]?.length} characters`);
+
     await req("POST", `/api/sessions/${s1.id}/stop`, { token: T, body: {} });
     await sleep(800);
     const x5 = await req("POST", `/api/sessions/${s1.id}/permissions/${rid}`, { token: T, body: { behavior: "allow" } });
