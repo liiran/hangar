@@ -154,6 +154,16 @@ check("approved with auto-accept, Claude carries the plan out without asking abo
 check("…and the session is in the mode that was chosen", built.permission_mode === "acceptEdits", built.permission_mode);
 check("Claude is told the plan was approved, in its own terminal's words", toolResults(builtEvents).some((t) => t.startsWith("User has approved your plan")));
 
+// ---------------------------------------------------------------- an edit, and the numbers
+await api("POST", `/sessions/${planned.id}/messages`, { text: "Use the Edit tool to change the word hi in hello.txt to: hello there. Then reply with the single word DONE." });
+await waitFor(planned.id, (s) => s.status === "idle" && wrote("hello.txt") === "hello there", "the edit");
+const editEvents = await eventsOf(planned.id);
+const patches = editEvents.filter((e) => e.kind === "claude" && e.msg.type === "user" && e.msg.tool_use_result?.structuredPatch?.length).map((e) => e.msg.tool_use_result);
+const patch = patches.at(-1);
+const patchLines = patch?.structuredPatch[0].lines ?? [];
+check("an edit's changed lines are kept, with the line they start at", patch?.structuredPatch[0].oldStart === 1 && patchLines.includes("-hi") && patchLines.includes("+hello there"), JSON.stringify(patch).slice(0, 160));
+check("…and nothing else of the file", patch && Object.keys(patch).every((k) => ["structuredPatch", "type", "truncated"].includes(k)), patch && Object.keys(patch).join(","));
+
 await api("DELETE", `/sessions/${planned.id}`);
 
 await api("DELETE", `/sessions/${id}`);

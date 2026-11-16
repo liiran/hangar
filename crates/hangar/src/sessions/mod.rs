@@ -1264,11 +1264,59 @@ fn slim(mut msg: Value) -> Value {
     }
     if msg["type"] == "user" {
         cut(&mut msg["message"]);
-        if let Some(o) = msg.as_object_mut() {
-            o.remove("tool_use_result");
+        // Claude Code repeats each tool's output here in full (a whole file,
+        // before and after). Only the line-by-line changes of an edit are kept.
+        if let Some(o) = msg.as_object_mut()
+            && let Some(patch) = o.remove("tool_use_result").as_ref().and_then(patch_of)
+        {
+            o.insert("tool_use_result".into(), patch);
         }
     }
     msg
+}
+
+/// The most lines of one edit's changes kept, and the longest line.
+const MAX_PATCH_LINES: usize = 400;
+const MAX_PATCH_LINE: usize = 1000;
+
+/// The changes an Edit or Write made, as Claude Code reports them: for each
+/// changed stretch, the line it starts at before and after, and its lines
+/// (` ` unchanged, `-` removed, `+` added). `None` for any other tool.
+fn patch_of(result: &Value) -> Option<Value> {
+    let hunks = result["structuredPatch"].as_array()?;
+    let mut left = MAX_PATCH_LINES;
+    let mut truncated = false;
+    let mut kept = Vec::new();
+    for h in hunks {
+        let (Some(old_start), Some(new_start), Some(lines)) = (h["oldStart"].as_u64(), h["newStart"].as_u64(), h["lines"].as_array()) else { continue };
+        if left == 0 {
+            truncated = true;
+            break;
+        }
+        let mut out = Vec::new();
+        for line in lines.iter().filter_map(Value::as_str) {
+            if left == 0 {
+                truncated = true;
+                break;
+            }
+            left -= 1;
+            let mut end = line.len().min(MAX_PATCH_LINE);
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            out.push(if end < line.len() { format!("{}…", &line[..end]) } else { line.to_string() });
+        }
+        kept.push(json!({"oldStart": old_start, "newStart": new_start, "lines": out}));
+    }
+    let mut v = json!({"structuredPatch": kept});
+    // Write says whether the file is new.
+    if let Some(kind) = result["type"].as_str().filter(|k| ["create", "update"].contains(k)) {
+        v["type"] = json!(kind);
+    }
+    if truncated {
+        v["truncated"] = json!(true);
+    }
+    Some(v)
 }
 
 pub fn title_from(prompt: &str) -> String {
@@ -1413,6 +1461,29 @@ mod tests {
         assert_eq!(r.detail, Some(json!({"stopped": true})));
         let r = reply_to(&plan, &Answer { feedback: Some("   ".into()), ..Default::default() }).unwrap();
         assert_eq!((r.message.as_str(), r.interrupt, r.detail), ("The user declined this tool use.", false, None));
+    }
+
+    #[test]
+    fn slim_keeps_only_the_changed_lines_of_an_edit() {
+        let edit = json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}, "tool_use_result": {
+            "filePath": "C:/repo/a.ts", "originalFile": "x".repeat(50_000), "oldString": "a", "newString": "b", "userModified": false,
+            "structuredPatch": [{"oldStart": 14, "oldLines": 3, "newStart": 14, "newLines": 3, "lines": [" line 16", "-line 17", "+LINE"]}]
+        }});
+        assert_eq!(slim(edit)["tool_use_result"], json!({"structuredPatch": [{"oldStart": 14, "newStart": 14, "lines": [" line 16", "-line 17", "+LINE"]}]}));
+        let created = json!({"type": "user", "message": {"content": []}, "tool_use_result": {"type": "create", "content": "the whole file", "structuredPatch": [], "originalFile": null}});
+        assert_eq!(slim(created)["tool_use_result"], json!({"structuredPatch": [], "type": "create"}));
+        // A huge change is cut at a whole line and says so; a huge line is cut at a whole character.
+        let many: Vec<String> = (0..MAX_PATCH_LINES + 50).map(|i| format!("+{i}")).collect();
+        let big = json!({"type": "user", "message": {"content": []}, "tool_use_result": {"structuredPatch": [
+            {"oldStart": 1, "newStart": 1, "lines": many}, {"oldStart": 900, "newStart": 950, "lines": ["+never reached"]}
+        ]}});
+        let kept = slim(big)["tool_use_result"].clone();
+        assert_eq!(kept["structuredPatch"].as_array().unwrap().len(), 1);
+        assert_eq!(kept["structuredPatch"][0]["lines"].as_array().unwrap().len(), MAX_PATCH_LINES);
+        assert_eq!(kept["truncated"], true);
+        let wide = json!({"type": "user", "message": {"content": []}, "tool_use_result": {"structuredPatch": [{"oldStart": 1, "newStart": 1, "lines": [format!("+{}", "\u{e9}".repeat(MAX_PATCH_LINE))]}]}});
+        let line = slim(wide)["tool_use_result"]["structuredPatch"][0]["lines"][0].as_str().unwrap().to_string();
+        assert!(line.len() <= MAX_PATCH_LINE + 3 && line.ends_with('\u{2026}'), "{}", line.len());
     }
 
     #[test]

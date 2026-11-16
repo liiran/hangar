@@ -21,12 +21,14 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type React
 import type { Session, SessionEvent } from "../api";
 import { api } from "../api";
 import { ASK_TOOL, PLAN_TOOL, planOf, questionsOf } from "../ask";
+import { diffOf } from "../diff";
 import { ago, duration, usd } from "../format";
 import { report } from "../store";
 import { useNow } from "../ui";
 import { rightToLeft, sessionRules, visible } from "../safe";
 import { needsSignIn, PAGE, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
 import { ApprovalBox, ARM_MS, countLines, Shown } from "./approval";
+import { DiffStat, DiffView } from "./Diff";
 import { Markdown } from "./Markdown";
 import { PlanCard, PlanOutcome } from "./Plan";
 import { Answered, QuestionCard } from "./Question";
@@ -439,17 +441,24 @@ function ToolRow({ row, cwd, live }: { row: Extract<Row, { kind: "tool" }>; cwd:
   // A question or a plan that was turned down is not a tool that broke: the row under it says what happened.
   const dialog = row.name === ASK_TOOL || row.name === PLAN_TOOL;
   const failed = row.result?.isError && !dialog;
+  // What an edit changed, once it has run: the lines Claude Code reported, or, if it did not
+  // go through, the change that was asked for.
+  const diff = useMemo(() => diffOf(row.name, row.input, row.result), [row]);
   const plan = row.name === PLAN_TOOL ? planOf(row.input) : null;
   return (
     <Activity icon={<Icon className="size-3" />} tone={failed ? "error" : undefined}>
       <button onClick={() => setOpen(!open)} aria-expanded={open} className="group flex w-full min-w-0 items-center gap-2 text-left">
         <span className="shrink-0 font-medium text-fg">{TOOL_NAMES[row.name] ?? row.name.replace(/^mcp__/, "").replace(/__/g, " · ")}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint group-hover:text-muted">{summary}</span>
+        {diff && !failed && (row.result?.patch as { type?: unknown } | undefined)?.type === "create" && <span className="shrink-0 text-[11px] text-faint">new file</span>}
+        {diff && !failed && <DiffStat diff={diff} />}
         {!row.result && live && <span className="size-1.5 shrink-0 animate-soft-pulse rounded-full bg-s-working" title="Running" />}
         {!row.result && !live && <span className="shrink-0 text-[11px] text-faint">no result</span>}
         {failed && <X className="size-3.5 shrink-0 text-s-error" />}
         <ChevronRight className={cx("size-3 shrink-0 text-faint transition-transform", open && "rotate-90")} />
       </button>
+      {diff && failed && <p className="mt-1 text-[12px] [overflow-wrap:anywhere] text-s-error">Not applied: {visible(row.result?.text.split("\n")[0] ?? "").slice(0, 200)}</p>}
+      {diff && <DiffView diff={diff} dim={failed} />}
       {open && (
         <div className="mt-2 space-y-2">
           {plan ? (

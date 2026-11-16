@@ -46,6 +46,19 @@ describe("questions, plans and edits", () => {
     expect(old[0]).toMatchObject({ decision: "deny", detail: null });
   });
 
+  it("attaches Claude Code's report of an edit to its tool row, and redraws the row for it", () => {
+    const call = assistant([{ type: "tool_use", id: "e1", name: "Edit", input: { file_path: "a.ts", old_string: "a", new_string: "b" } }]);
+    const patch = { structuredPatch: [{ oldStart: 3, newStart: 3, lines: ["-a", "+b"] }] };
+    const done = ev({ kind: "claude", msg: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "e1", content: "updated" }] }, tool_use_result: patch } });
+    const row = toRows([call, done])[0];
+    expect(row).toMatchObject({ kind: "tool", result: { text: "updated", isError: false, patch } });
+    expect(rowState(row)).not.toBe(rowState(toRows([call])[0]));
+    // A tool that reports nothing structured (or an error text) has no patch.
+    const bash = assistant([{ type: "tool_use", id: "b1", name: "Bash", input: { command: "ls" } }]);
+    const plain = ev({ kind: "claude", msg: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b1", content: "x" }] }, tool_use_result: "Error: no" } });
+    expect((toRows([bash, plain])[0] as any).result.patch).toBeUndefined();
+  });
+
   it("tells a turn the user stopped from one that failed", () => {
     const result = (extra: Record<string, unknown>) => toRows([ev({ kind: "claude", msg: { type: "result", is_error: true, result: null, ...extra } })])[0];
     expect(result({ subtype: "error_during_execution", terminal_reason: "aborted_streaming" })).toMatchObject({ isError: true, stopped: true });

@@ -263,6 +263,47 @@ try {
   await plan.locator("button", { hasText: "No, keep planning" }).click();
   await main.locator("text=/^Stopped/").waitFor();
 
+  // ================================================================ edits in the feed
+  const editId = await start("edit files in the auth module");
+  await main.locator("text=edited 5 files; one edit failed").waitFor();
+  const diffs = main.locator("[data-diff]");
+  check("every edit shows what it changed, in the feed", (await diffs.count()) === 6);
+  const lines = (i, sign) => diffs.nth(i).locator(`[data-sign="${sign}"]`);
+  const numbers = (i) => diffs.nth(i).evaluate((el) => [...el.querySelectorAll("[data-sign]")].map((row) => `${row.children[0].textContent.trim()}${row.dataset.sign}`.trim()));
+  const firstNumbers = await numbers(0);
+  check("an edit shows the file's own line numbers, with unchanged lines around the change", JSON.stringify(firstNumbers) === JSON.stringify(["14", "15", "16", "17-", "17+", "18+", "19", "20", "21"]), firstNumbers.join(" "));
+  check("…the removed line and the lines that replaced it", (await lines(0, "-").innerText()).includes("const ttl = 3600;") && (await lines(0, "+").first().innerText()).includes("config.sessionTtl ?? 3600") && (await lines(0, "+").count()) === 2);
+  // The color as the screen mixes it: painted on a canvas and read back as red, green, blue.
+  const tint = (locator) =>
+    locator.evaluate((el) => {
+      const c = document.createElement("canvas").getContext("2d");
+      c.fillStyle = getComputedStyle(el).backgroundColor;
+      c.fillRect(0, 0, 1, 1);
+      return [...c.getImageData(0, 0, 1, 1).data];
+    });
+  const [added, removed] = [await tint(lines(0, "+").first()), await tint(lines(0, "-"))];
+  check("added lines are green and removed lines red", added[1] > added[0] && added[1] > added[2] && removed[0] > removed[1] && removed[0] > removed[2], `added rgb ${added.slice(0, 3)} removed rgb ${removed.slice(0, 3)}`);
+  const stats = await main.locator("[data-diff-stat]").allInnerTexts();
+  check("each row says how many lines were added and removed", JSON.stringify(stats.map((s) => s.replace(/\s+/g, " "))) === JSON.stringify(["+2 −1", "+4", "+2 −1", "+2 −2", "+60"]), stats.join(" | "));
+  check("a new file is marked as one and shown from line 1", (await main.locator("text=new file").count()) === 2 && JSON.stringify(await numbers(1)) === JSON.stringify(["1+", "2+", "3+", "4+"]));
+  check("a file written over shows only what changed, with the patch's own notes", (await diffs.nth(2).innerText()).includes("No newline at end of file") && (await lines(2, "+").count()) === 2);
+  check("“every occurrence” shows each place, apart", (await diffs.nth(3).locator("text=⋯").count()) === 1 && (await numbers(3)).includes("89-"));
+  const failedRow = main.locator("text=Not applied: String to replace not found in file.");
+  check("an edit that failed says so, and shows what was asked for dimmed and without line numbers", (await failedRow.count()) === 1 && (await diffs.nth(4).evaluate((el) => getComputedStyle(el).opacity)) === "0.6" && JSON.stringify(await numbers(4)) === JSON.stringify(["−-", "++"]), (await numbers(4)).join(" "));
+  check("a long change opens folded", (await diffs.nth(5).locator("[data-sign]").count()) === 12 && (await diffs.nth(5).innerText()).includes("Show all 60 lines"));
+  await shot(page, "edits-in-the-feed");
+  await shot(diffs.nth(0), "edit-diff");
+  await shot(diffs.nth(3), "edit-diff-two-places");
+  await diffs.nth(5).locator("button", { hasText: "Show all 60 lines" }).click();
+  check("…and unfolds to all of it, and back", (await diffs.nth(5).locator("[data-sign]").count()) === 60);
+  await diffs.nth(5).locator("button", { hasText: "Show less" }).click();
+  check("…and folds again", (await diffs.nth(5).locator("[data-sign]").count()) === 12);
+  await main.locator("button", { hasText: "src/auth/session.ts" }).first().click();
+  check("the row still opens to the tool's raw input", (await main.locator("pre", { hasText: '"old_string": "  const ttl = 3600;"' }).count()) === 1);
+  await main.locator("button", { hasText: "src/auth/session.ts" }).first().click();
+  const stored = (await api("GET", `/sessions/${editId}/events`)).data.filter((e) => e.kind === "claude" && e.msg.type === "user").map((e) => e.msg.tool_use_result);
+  check("the daemon keeps the changed lines only, never the whole file", stored.length === 6 && stored.every((r) => r === undefined || (!("originalFile" in r) && !("content" in r) && !("filePath" in r))));
+
 } finally {
   await browser.close();
   try {

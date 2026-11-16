@@ -8,10 +8,17 @@ export type Row =
   | { kind: "user"; key: string; text: string; ts: number }
   | { kind: "text"; key: string; text: string }
   | { kind: "thinking"; key: string; text: string }
-  | { kind: "tool"; key: string; id: string; name: string; input: any; result?: { text: string; isError: boolean } }
+  | { kind: "tool"; key: string; id: string; name: string; input: any; result?: ToolResult }
   | { kind: "permission"; key: string; requestId: string; tool: string; input: any; decision: string | null; detail?: DecisionDetail | null; description?: string | null; superseded?: boolean }
   | { kind: "result"; key: string; cost: number | null; durationMs: number | null; turns: number | null; isError: boolean; stopped: boolean; text: string | null }
   | { kind: "error"; key: string; message: string };
+
+export interface ToolResult {
+  text: string;
+  isError: boolean;
+  /** For an edit: the changed lines as Claude Code reported them (see diff.ts). */
+  patch?: unknown;
+}
 
 /**
  * Claude Code's own "you are signed out" reply. It says to run `/login`, a command of Claude
@@ -30,7 +37,7 @@ export const PAGE = 300;
  * as before does not need drawing again.
  */
 export function rowState(r: Row): string {
-  if (r.kind === "tool") return r.result ? `done ${r.result.isError} ${r.result.text.length}` : "running";
+  if (r.kind === "tool") return r.result ? `done ${r.result.isError} ${r.result.text.length} ${r.result.patch != null}` : "running";
   if (r.kind === "permission") return `${r.decision} ${r.superseded === true} ${r.detail != null}`;
   return "";
 }
@@ -77,7 +84,8 @@ export function toRows(events: SessionEvent[]): Row[] {
           if (Array.isArray(content)) {
             for (const b of content) {
               if (b?.type === "tool_result" && tools.has(b.tool_use_id)) {
-                tools.get(b.tool_use_id)!.result = { text: resultText(b.content), isError: !!b.is_error };
+                const patch = m.tool_use_result && typeof m.tool_use_result === "object" ? m.tool_use_result : undefined;
+                tools.get(b.tool_use_id)!.result = { text: resultText(b.content), isError: !!b.is_error, patch };
               }
             }
           }
