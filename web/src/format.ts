@@ -41,6 +41,25 @@ export function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+/** When a limit starts over: the time, with the weekday when that is not today. */
+export function resetTime(seconds: number, now = Date.now()): string {
+  const at = new Date(seconds * 1000);
+  const time = clock(at.getTime());
+  return at.toDateString() === new Date(now).toDateString() ? time : `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
+/** Claude Code's name for a usage window, in words: `five_hour` is the 5-hour limit. */
+export function limitName(name: string): string {
+  const known: Record<string, string> = { five_hour: "5-hour limit", seven_day: "7-day limit" };
+  if (known[name]) return known[name];
+  const words = name
+    .replace(/^five_hour/, "5-hour")
+    .replace(/^seven_day/, "7-day")
+    .split("_")
+    .filter(Boolean);
+  return words.map((w, i) => (i > 0 ? w[0].toUpperCase() + w.slice(1) : w)).join(" ") + " limit";
+}
+
 export function basename(path: string): string {
   const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/);
   return parts[parts.length - 1] || path;

@@ -144,6 +144,52 @@ impl ContextUsage {
     }
 }
 
+/// Your plan's usage limits, as Claude Code last reported them. They belong
+/// to the account, not to one session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Limits {
+    pub windows: Vec<LimitWindow>,
+    pub at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LimitWindow {
+    /// Claude Code's name for the window: `five_hour`, `seven_day`.
+    pub name: String,
+    /// The share used: 0.46 is 46%.
+    pub used: f64,
+    /// When the window starts over, in seconds since 1970.
+    #[serde(default)]
+    pub resets_at: Option<u64>,
+    /// `allowed`, `allowed_warning` or `rejected`.
+    pub status: String,
+}
+
+impl Limits {
+    /// Reads the `rate_limit_info` of a `rate_limit_event`. `None` when it
+    /// names no window with a usage figure (an API key has none).
+    fn read(info: &Value, at_ms: u64) -> Option<Limits> {
+        fn window(name: &str, w: &Value) -> Option<LimitWindow> {
+            let name = Some(name).filter(|n| !n.is_empty() && n.len() <= 32 && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))?;
+            let used = w["utilization"].as_f64().filter(|u| u.is_finite() && *u >= 0.0)?.min(10.0);
+            let status = w["status"].as_str().filter(|s| ["allowed", "allowed_warning", "rejected"].contains(s)).unwrap_or("allowed");
+            // A time between 2001 and 5138: anything else is not a time in seconds.
+            let resets_at = w["resetsAt"].as_u64().filter(|t| (1_000_000_000..100_000_000_000).contains(t));
+            Some(LimitWindow { name: name.to_string(), used, resets_at, status: status.to_string() })
+        }
+        let mut windows: Vec<LimitWindow> = match info["unifiedWindows"].as_object() {
+            Some(all) => all.iter().filter_map(|(name, w)| window(name, w)).collect(),
+            // Older versions name one window only.
+            None => info["rateLimitType"].as_str().and_then(|name| window(name, info)).into_iter().collect(),
+        };
+        // The short window first, then the long one, then any others.
+        let rank = |w: &LimitWindow| (["five_hour", "seven_day"].iter().position(|n| *n == w.name).unwrap_or(2), w.name.clone());
+        windows.sort_by_key(rank);
+        windows.truncate(6);
+        (!windows.is_empty()).then_some(Limits { windows, at_ms })
+    }
+}
+
 /// A short name from Claude Code, safe to show: no control or invisible
 /// characters, and not longer than `max`.
 fn label(text: &str, max: usize) -> Option<String> {
@@ -485,6 +531,8 @@ pub struct Manager {
     reclaim_after: Duration,
     /// Set by `shutdown`: start nothing new.
     closing: std::sync::atomic::AtomicBool,
+    /// The plan's usage limits, from the last session that reported them.
+    limits: Mutex<Option<Limits>>,
 }
 
 type ConfigStamp = Option<(Option<std::time::SystemTime>, u64)>;
@@ -512,6 +560,7 @@ impl Manager {
             hibernate_after: (b.hibernate_after_mins > 0).then(|| Duration::from_secs(b.hibernate_after_mins * 60)),
             reclaim_after: Duration::from_secs(b.reclaim_idle_after_secs),
             closing: std::sync::atomic::AtomicBool::new(false),
+            limits: Mutex::new(std::fs::read(home.join(LIMITS_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok())),
         });
         manager.load();
         tokio::spawn(manager.clone().driver_loop(driver_rx));
@@ -563,6 +612,11 @@ impl Manager {
 
     pub fn machine(&self) -> Machine {
         self.inner.locked().budget.machine()
+    }
+
+    /// The plan's usage limits as Claude Code last reported them, if it has.
+    pub fn limits(&self) -> Option<Limits> {
+        self.limits.locked().clone()
     }
 
     /// Events after `after`, oldest first.
@@ -1112,6 +1166,11 @@ impl Manager {
                     run.ask_context();
                 }
             }
+            ("rate_limit_event", _) => {
+                if let Some(limits) = Limits::read(&msg["rate_limit_info"], now_ms()) {
+                    self.set_limits(limits);
+                }
+            }
             ("result", _) => {
                 // total_cost_usd is a running total for the process.
                 let total = msg["total_cost_usd"].as_f64().unwrap_or(run.cost_seen);
@@ -1172,6 +1231,19 @@ impl Manager {
         s.meta.context = Some(now);
         self.save(&inner, id);
         self.broadcast_session(&inner, id);
+    }
+
+    /// Keeps the newest limits, in memory and on disk (so they show before
+    /// the first session of the day has run).
+    fn set_limits(&self, limits: Limits) {
+        let mut held = self.limits.locked();
+        if held.as_ref().is_some_and(|h| h.windows == limits.windows) {
+            return;
+        }
+        if let Ok(bytes) = serde_json::to_vec(&limits) {
+            let _ = crate::util::write_private(&self.home.join(LIMITS_FILE), &bytes);
+        }
+        *held = Some(limits);
     }
 
     fn on_permission(&self, id: &str, pid: u32, req: claude::PermissionRequest) {
@@ -1445,6 +1517,9 @@ fn patch_of(result: &Value) -> Option<Value> {
     Some(v)
 }
 
+/// Where the newest plan limits are kept between runs.
+const LIMITS_FILE: &str = "limits.json";
+
 pub fn title_from(prompt: &str) -> String {
     let first = prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or("New session").trim();
     truncate(first, 60)
@@ -1587,6 +1662,46 @@ mod tests {
         assert_eq!(r.detail, Some(json!({"stopped": true})));
         let r = reply_to(&plan, &Answer { feedback: Some("   ".into()), ..Default::default() }).unwrap();
         assert_eq!((r.message.as_str(), r.interrupt, r.detail), ("The user declined this tool use.", false, None));
+    }
+
+    #[test]
+    fn context_and_limits_are_claudes_numbers_or_nothing() {
+        let v = json!({"totalTokens": 28884, "maxTokens": 1000000, "percentage": 3, "model": "claude-haiku-5-5", "autoCompactThreshold": 967000, "isAutoCompactEnabled": true, "categories": [
+            {"name": "System prompt", "tokens": 3432, "kind": "used"},
+            {"name": "System tools (deferred)", "tokens": 18433, "kind": "deferred"},
+            {"name": "Messages\u{202e}", "tokens": 7749, "kind": "used"},
+            {"name": "Nothing yet", "tokens": 0, "kind": "used"},
+            {"name": "Free space", "tokens": 938116, "kind": "free"}
+        ]});
+        let c = ContextUsage::read(&v, 7).unwrap();
+        assert_eq!((c.used_tokens, c.max_tokens, c.percent, c.auto_compact_at, c.at_ms), (28884, 1000000, 3, Some(967000), 7));
+        let parts: Vec<(&str, u64)> = c.parts.iter().map(|p| (p.name.as_str(), p.tokens)).collect();
+        assert_eq!(parts, [("System prompt", 3432), ("Messages", 7749)], "only what is in use, with invisible characters gone");
+        let mut odd = v.clone();
+        odd["isAutoCompactEnabled"] = json!(false);
+        odd["percentage"] = json!(250.4);
+        let c = ContextUsage::read(&odd, 7).unwrap();
+        assert_eq!((c.percent, c.auto_compact_at), (100, None));
+        for missing in ["percentage", "totalTokens", "maxTokens"] {
+            let mut without = v.clone();
+            without.as_object_mut().unwrap().remove(missing);
+            assert_eq!(ContextUsage::read(&without, 7), None, "without Claude's own {missing} there is nothing to show");
+        }
+        assert_eq!(ContextUsage::read(&Value::Null, 7), None);
+
+        let info = json!({"status": "allowed", "resetsAt": 1794791400u64, "rateLimitType": "five_hour", "unifiedWindows": {
+            "seven_day": {"utilization": 0.1, "resetsAt": 1795197600u64, "status": "allowed"},
+            "five_hour": {"utilization": 0.46, "resetsAt": 1794791400u64, "status": "allowed_warning"},
+            "Not A Name": {"utilization": 0.5},
+            "seven_day_opus": {"utilization": "a lot"}
+        }});
+        let l = Limits::read(&info, 9).unwrap();
+        let seen: Vec<(&str, f64, Option<u64>, &str)> = l.windows.iter().map(|w| (w.name.as_str(), w.used, w.resets_at, w.status.as_str())).collect();
+        assert_eq!(seen, [("five_hour", 0.46, Some(1794791400), "allowed_warning"), ("seven_day", 0.1, Some(1795197600), "allowed")]);
+        // An older shape names one window; a time that is not one is dropped, a status that is not one reads as allowed.
+        let one = Limits::read(&json!({"status": "weird", "rateLimitType": "seven_day", "utilization": 1.0, "resetsAt": 5}), 9).unwrap();
+        assert_eq!(one.windows, [LimitWindow { name: "seven_day".into(), used: 1.0, resets_at: None, status: "allowed".into() }]);
+        assert_eq!(Limits::read(&json!({"status": "allowed", "rateLimitType": "five_hour"}), 9), None, "no usage figure: nothing to show");
     }
 
     #[test]

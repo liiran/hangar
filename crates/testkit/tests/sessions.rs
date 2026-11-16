@@ -249,6 +249,51 @@ async fn a_plan_is_approved_into_a_mode_or_sent_back() {
 }
 
 #[tokio::test]
+async fn edits_keep_their_changed_lines_and_claudes_own_numbers_are_shown() {
+    let home = temp_home("sess-edit");
+    let m = manager(&home, Config::default());
+    let id = m.create(new(&home, "edit files context 42 limits 46 10")).unwrap().meta.id;
+    let s = wait_status(&m, &id, Status::Idle).await;
+    let patches: Vec<Value> = m
+        .events(&id, 0)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::Claude { msg } if msg["type"] == "user" => Some(msg["tool_use_result"].clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(patches.len(), 6);
+    assert_eq!(patches[0]["structuredPatch"][0]["oldStart"], 14, "{}", patches[0]);
+    assert_eq!(patches[0]["structuredPatch"][0]["lines"][3], "-  const ttl = 3600;");
+    assert!(patches[0].get("originalFile").is_none() && patches[0].get("filePath").is_none(), "only the changed lines are kept: {}", patches[0]);
+    assert_eq!((patches[1]["type"].as_str(), patches[2]["type"].as_str()), (Some("create"), Some("update")));
+    assert_eq!(patches[3]["structuredPatch"].as_array().unwrap().len(), 2, "every occurrence: two places");
+    assert!(patches[4].is_null(), "a failed edit changed nothing");
+
+    // The context figures are the ones Claude gave, not sums of hangar's own.
+    let mut context = s.meta.context;
+    for _ in 0..200 {
+        if context.as_ref().is_some_and(|c| c.percent == 42) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        context = get(&m, &id).meta.context;
+    }
+    let c = context.expect("context was reported");
+    assert_eq!((c.percent, c.used_tokens, c.max_tokens, c.auto_compact_at), (42, 84_000, 200_000, Some(167_000)));
+    assert_eq!(c.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["System prompt", "System tools", "Skills", "Messages"]);
+
+    let limits = m.limits().expect("limits were reported");
+    assert_eq!(limits.windows.iter().map(|w| (w.name.as_str(), w.used)).collect::<Vec<_>>(), [("five_hour", 0.46), ("seven_day", 0.1)]);
+    // Both outlive a restart: a paused session still shows how full it was.
+    drop(m);
+    let m = manager(&home, Config::default());
+    assert_eq!(get(&m, &id).meta.context.map(|c| c.percent), Some(42));
+    assert_eq!(m.limits().map(|l| l.windows.len()), Some(2));
+}
+
+#[tokio::test]
 async fn interrupting_withdraws_a_pending_request() {
     let home = temp_home("sess-interrupt");
     let m = manager(&home, Config::default());

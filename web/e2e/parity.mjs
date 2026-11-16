@@ -332,6 +332,25 @@ try {
   await shot(page.locator("textarea[data-composer]").locator("xpath=ancestor::div[contains(@class,'max-w')]"), "context-wheel-95");
   check("the properties panel shows the same figures", (await page.locator('aside[aria-label="Properties"]').innerText()).replace(/\s+/g, " ").includes("95% of context · 190k / 200k"));
 
+  // ================================================================ the plan's limits
+  const footer = page.locator("[data-plan-limits]");
+  check("no limits are shown before Claude has reported any", (await footer.count()) === 0);
+  await say("limits 46 10 please");
+  await footer.waitFor({ timeout: 8000 });
+  const limitsText = async () => (await footer.innerText()).replace(/\s+/g, " ");
+  check("both windows appear in the sidebar once a session reports them", /^5-hour limit 46% resets \S.* 7-day limit 10% resets \S/.test(await limitsText()), await limitsText());
+  await shot(page.locator('aside[aria-label="Sidebar"]'), "limits-sidebar");
+  await shot(footer, "limits");
+  await say("limits 93 71 please");
+  await footer.locator("text=93%").waitFor({ timeout: 8000 });
+  const bars = () => footer.locator('[role="meter"] > div:first-child').evaluateAll((els) => els.map((el) => el.className));
+  check("they update while the app is open, and a nearly used window turns red", (await bars())[0].includes("bg-s-error") && (await bars())[1].includes("bg-accent"), (await bars()).join(" | "));
+  await shot(footer, "limits-high");
+  await say("limits 100 71 please");
+  await footer.locator("text=reached").waitFor({ timeout: 8000 });
+  check("a used-up window says so", /^5-hour limit reached resets/.test(await limitsText()));
+  await shot(page, "limits-reached");
+
 } finally {
   await browser.close();
   try {

@@ -1,8 +1,9 @@
 import { ChevronDown, CircleHelp, Folder, Inbox, Layers, Search, Server, SquarePen } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
-import { bytes } from "../format";
+import type { Limits } from "../api";
+import { bytes, clock, limitName, resetTime } from "../format";
 import { useStore } from "../store";
-import { useUI } from "../ui";
+import { useNow, useUI } from "../ui";
 import { needsYou, projects, samePath } from "../views";
 import { cx, IconButton, Kbd, Logo, Meter } from "./ui";
 
@@ -136,6 +137,36 @@ function NavItem({
   );
 }
 
+/**
+ * How much of the Claude plan's usage limits is used: the 5-hour window and the 7-day one. The
+ * figures are the ones Claude Code reports while a session talks to Claude (they belong to the
+ * account, so every session reports the same ones). hangar does not ask Anthropic itself.
+ */
+function PlanLimits({ limits }: { limits: Limits }) {
+  const now = useNow();
+  const note = `Your Claude plan's usage, as Claude Code last reported it (${clock(limits.at_ms)}). It updates whenever a session talks to Claude.`;
+  return (
+    <div className="space-y-2.5" title={note} data-plan-limits>
+      {limits.windows.slice(0, 3).map((w) => {
+        // Past its reset time, the window has started over and the old figure is no longer true.
+        const over = w.resets_at != null && w.resets_at * 1000 <= now;
+        const percent = Math.round(w.used * 100);
+        const hit = !over && (w.status === "rejected" || percent >= 100);
+        return (
+          <div key={w.name}>
+            <div className="mb-1.5 flex items-baseline justify-between gap-2 text-[11.5px]">
+              <span className="truncate text-muted">{limitName(w.name)}</span>
+              <span className={cx("shrink-0 tabular-nums", hit ? "text-s-error" : "text-faint")}>{over ? "started over" : hit ? "reached" : `${percent}%`}</span>
+            </div>
+            <Meter used={over ? 0 : Math.min(100, percent)} total={100} />
+            {!over && w.resets_at != null && <div className="mt-1.5 truncate text-[11px] text-faint">resets {resetTime(w.resets_at, now)}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function MachineFooter() {
   const system = useStore((s) => s.system);
   const sessions = useStore((s) => s.sessions);
@@ -168,6 +199,7 @@ function MachineFooter() {
           {full && <span className="shrink-0">next one waits</span>}
         </div>
       </div>
+      {system.limits && system.limits.windows.length > 0 && <PlanLimits limits={system.limits} />}
       <div className="flex items-center justify-between text-[11px] text-faint">
         <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
           <span className={cx("size-1.5 shrink-0 rounded-full", conn === "live" ? "bg-emerald-500" : "animate-soft-pulse bg-s-needs")} />

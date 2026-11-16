@@ -175,6 +175,10 @@ for (const end = Date.now() + 10000; Date.now() < end; await sleep(250)) {
 check("the context figure is the size of the prompt Claude last read, to the token", context?.used_tokens === read, `hangar shows ${context?.used_tokens}; Claude's last reply read ${read}`);
 check("…with Claude Code's own percentage and window", context?.max_tokens > 0 && Math.abs(context.percent - (100 * context.used_tokens) / context.max_tokens) <= 1 && context.parts.length > 0, `${context?.percent}% of ${context?.max_tokens}; ${context?.parts.map((p) => p.name).join(", ")}`);
 
+const limits = (await api("GET", "/state")).limits;
+const windows = Object.fromEntries((limits?.windows ?? []).map((w) => [w.name, w]));
+const sane = (w) => w && w.used >= 0 && w.used <= 10 && w.resets_at * 1000 > Date.now();
+check("the plan's 5-hour and 7-day limits are reported with their reset times", sane(windows.five_hour) && sane(windows.seven_day), JSON.stringify(limits?.windows.map((w) => `${w.name} ${Math.round(w.used * 100)}%`)));
 await api("DELETE", `/sessions/${planned.id}`);
 
 await api("DELETE", `/sessions/${id}`);

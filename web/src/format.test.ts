@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { basename, bytes, duration, GROUP_ORDER, modelChoice, STATUS } from "./format";
-import { tokens } from "./format";
+import { basename, bytes, duration, GROUP_ORDER, limitName, modelChoice, resetTime, STATUS, tokens } from "./format";
 
 describe("format", () => {
   it("formats bytes", () => {
@@ -34,6 +33,17 @@ describe("format", () => {
   it("writes token counts the way Claude Code does", () => {
     expect([0, 950, 1000, 28_884, 84_000, 200_000, 967_000].map(tokens)).toEqual(["0", "950", "1k", "28.9k", "84k", "200k", "967k"]);
     expect([999_949, 999_950, 1_000_000, 1_250_000].map(tokens)).toEqual(["999.9k", "1M", "1M", "1.3M"]);
+  });
+
+  it("names the usage windows and says when they start over", () => {
+    expect(["five_hour", "seven_day", "seven_day_opus", "weekly"].map(limitName)).toEqual(["5-hour limit", "7-day limit", "7-day Opus limit", "weekly limit"]);
+    const now = new Date(2026, 10, 15, 13, 0).getTime();
+    const today = resetTime(new Date(2026, 10, 15, 15, 40).getTime() / 1000, now);
+    const later = resetTime(new Date(2026, 10, 18, 14, 0).getTime() / 1000, now);
+    // The time is in the user's own format; the weekday is there only on another day.
+    expect(today).toMatch(/40/);
+    expect(later.endsWith(resetTime(new Date(2026, 10, 15, 14, 0).getTime() / 1000, now))).toBe(true);
+    expect(later.length).toBeGreaterThan(today.length);
   });
 
   it("puts every status in a known group", () => {

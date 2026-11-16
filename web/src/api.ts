@@ -50,6 +50,23 @@ export interface ContextUsage {
   at_ms: number;
 }
 
+/** One of the plan's usage windows, as Claude Code reports it. */
+export interface LimitWindow {
+  /** `five_hour`, `seven_day`. */
+  name: string;
+  /** The share used: 0.46 is 46%. */
+  used: number;
+  /** When it starts over, in seconds since 1970. */
+  resets_at: number | null;
+  /** `allowed`, `allowed_warning` or `rejected`. */
+  status: string;
+}
+
+export interface Limits {
+  windows: LimitWindow[];
+  at_ms: number;
+}
+
 export type Decision = "allow" | "allow_always" | "deny" | "cancelled";
 
 /** What the user chose beyond allow or deny. */
@@ -130,6 +147,8 @@ export interface System {
   machine: Machine;
   servers: Server[];
   unshared?: Unshared[];
+  /** The plan's usage limits, once a session has reported them. */
+  limits?: Limits | null;
   saved_bytes: number;
   daemon_bytes: number;
   version: string;

@@ -250,6 +250,7 @@ pub async fn system_snapshot(st: &AppState) -> Value {
         "machine": st.manager.machine(),
         "servers": servers,
         "unshared": unshared,
+        "limits": st.manager.limits(),
         "saved_bytes": saved,
         "daemon_bytes": daemon,
         "version": env!("CARGO_PKG_VERSION"),
