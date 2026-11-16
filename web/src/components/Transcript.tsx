@@ -20,7 +20,7 @@ import {
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session, SessionEvent } from "../api";
 import { api } from "../api";
-import { ASK_TOOL, PLAN_TOOL, planOf, questionsOf } from "../ask";
+import { ASK_TOOL, ENTER_PLAN_TOOL, PLAN_TOOL, planOf, questionsOf } from "../ask";
 import { diffOf } from "../diff";
 import { ago, duration, usd } from "../format";
 import { report } from "../store";
@@ -49,10 +49,11 @@ const TOOL_ICONS: Record<string, typeof Hammer> = {
   WebSearch: Globe,
   [ASK_TOOL]: CircleHelp,
   [PLAN_TOOL]: ClipboardList,
+  [ENTER_PLAN_TOOL]: ClipboardList,
 };
 
-/** Claude Code's two dialogs, by what they are instead of by their tool names. */
-const TOOL_NAMES: Record<string, string> = { [ASK_TOOL]: "Question", [PLAN_TOOL]: "Plan" };
+/** Claude Code's dialogs and its switch into plan mode, by what they are instead of by their tool names. */
+const TOOL_NAMES: Record<string, string> = { [ASK_TOOL]: "Question", [PLAN_TOOL]: "Plan", [ENTER_PLAN_TOOL]: "Entered plan mode" };
 
 export function Transcript({ session, events, header }: { session: Session; events: SessionEvent[] | undefined; header?: ReactNode }) {
   // Each new event rebuilds the rows. A row that is the same as before keeps its identity, so

@@ -279,6 +279,18 @@ export function setPermissionMode(id: string, mode: string) {
   api.update(id, { permission_mode: mode }).catch(report);
 }
 
+/** Whether the session has a turn to stop: Claude is working, or its plan is waiting for an answer. */
+export const canStop = (s: Session) => s.status === "working" || s.pending.some((p) => p.tool_name === PLAN_TOOL);
+
+/**
+ * Stops the session's turn. A plan that is waiting is turned down with it, which is what Esc does
+ * in Claude Code's terminal: the turn ends there, still in plan mode.
+ */
+export function stopTurn(s: Session) {
+  const plan = s.pending.find((p) => p.tool_name === PLAN_TOOL);
+  (plan ? api.decide(s.id, plan.request_id, "deny", { stop: true }) : api.interrupt(s.id)).catch(report);
+}
+
 /** Stops the daemon, as `hangar stop` does. The window then says so and waits for `hangar up`. */
 export async function stopHangar() {
   await api.shutdown();

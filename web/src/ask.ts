@@ -4,6 +4,8 @@
 
 export const ASK_TOOL = "AskUserQuestion";
 export const PLAN_TOOL = "ExitPlanMode";
+/** Claude going into plan mode by itself. Claude Code does not ask about it when hangar drives it. */
+export const ENTER_PLAN_TOOL = "EnterPlanMode";
 
 export interface Choice {
   label: string;

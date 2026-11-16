@@ -199,12 +199,14 @@ try {
   const plan = main.locator("[data-plan-card]");
   await plan.waitFor();
   const planBox = plan.locator("[data-approval-content]");
-  check("a plan shows as a card of its own, formatted", (await plan.innerText()).includes("Claude's plan") && (await planBox.locator("h1").innerText()) === "Plan: split the auth module" && (await planBox.locator("ol > li").count()) === 4 && (await planBox.locator("table tr").count()) === 4);
+  check("a plan shows as a card of its own, formatted", (await planBox.locator("h1").innerText()) === "Plan: split the auth module" && (await planBox.locator("ol > li").count()) === 4 && (await planBox.locator("table tr").count()) === 4);
+  const planLines = (await plan.innerText()).split("\n").map((l) => l.trim());
+  check("the card is worded as Claude Code's terminal is, line for line", planLines[0] === "Ready to code?" && planLines.includes("Here is Claude's plan:") && planLines.includes("Claude has written up a plan and is ready to execute. Would you like to proceed?"), planLines.slice(0, 2).join(" | "));
   const choices = (await plan.locator("button").allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim());
-  check("…and under it Claude Code's own question and three numbered choices, with all of the plan showing", (await plan.innerText()).includes("Would you like to proceed?") && JSON.stringify(choices) === JSON.stringify(["1 Yes, auto-accept edits", "2 Yes, manually approve edits", "3 No, keep planning"]), choices.join(" | "));
+  check("…with its three numbered choices, and all of the plan showing", JSON.stringify(choices) === JSON.stringify(["1 Yes, auto-accept edits", "2 Yes, manually approve edits", "3 No, keep planning"]), choices.join(" | "));
   const rows = await plan.locator("[data-plan-choices] > *").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().width)));
   check("the choices are one list of equal rows, the last with room to say what to change", new Set(rows).size === 1 && (await plan.locator("input").getAttribute("placeholder")) === "Tell Claude what to change", rows.join(" "));
-  check("…and where Claude saved it", (await plan.innerText()).includes("Saved to .claude-plans") && (await plan.innerText()).includes("split-the-auth-module.md"));
+  check("…and, under the choices, where Claude saved it", /\.claude-plans.split-the-auth-module\.md$/.test(planLines.at(-1)), planLines.at(-1));
   check("the session is in plan mode", (await session(planId)).permission_mode === "plan");
   // The mode sits under the message box, bottom left, where the key hints used to be.
   const mode = (label) => page.locator(`button[aria-label="Mode: ${label}"]`);
@@ -216,7 +218,18 @@ try {
   await shot(page, "plan-presented");
   await shot(plan, "plan-card");
 
+  // As in the terminal: the third choice does nothing until something is typed.
+  await plan.locator("button", { hasText: "No, keep planning" }).click();
+  await plan.locator("input").press("Enter");
+  await sleep(400);
+  check(
+    "“No, keep planning” with nothing typed only puts the cursor in its box: nothing is sent, and the turn goes on waiting",
+    (await plan.locator("input").evaluate((el) => el === document.activeElement)) && (await session(planId)).pending.length === 1 && (await main.locator("[data-plan-outcome]").count()) === 0,
+  );
+  const approveWith = plan.locator("[data-plan-approve-with]");
+  check("…and nothing offers to approve with a note yet", (await approveWith.count()) === 0);
   await plan.locator("input").fill("Keep the old file until the tests pass");
+  check("once something is typed, the row says what Claude Code's says under it", (await approveWith.innerText()) === "shift+tab to approve with this feedback");
   await shot(plan, "plan-card-feedback");
   await plan.locator("input").press("Enter");
   await main.locator("[data-plan-outcome]", { hasText: "Plan sent back" }).waitFor();
@@ -256,13 +269,41 @@ try {
   await mode("Auto-accept edits").waitFor();
   check("…and choosing one switches the session", (await session(manualId)).permission_mode === "acceptEdits");
 
+  // Approved with a note. In the box, Shift+Tab approves with what was typed (auto-accept edits).
+  const noteId = await start("make plan and approve with a note", "plan");
+  await plan.waitFor();
+  await enabled(plan.locator("button", { hasText: "Yes, auto-accept edits" }));
+  await plan.locator("input").fill("Skip step 4");
+  await plan.locator("input").press("Shift+Tab");
+  await main.locator("text=plan approved (mode acceptEdits), edit made, with your note: Skip step 4").waitFor();
+  const noted = (await main.locator("[data-plan-outcome]").innerText()).replace(/\s+/g, " ");
+  check("Shift+Tab in the box approves the plan with what was typed, and Claude reads it with the approval", (await session(noteId)).permission_mode === "acceptEdits" && noted.includes("Plan approved, auto-accepting edits, with your note: “Skip step 4”"), noted);
+  const said = (await api("GET", `/sessions/${noteId}/events`)).data.filter((e) => e.kind === "user").map((e) => e.text);
+  check("…the note is kept with the approval, not shown as a message of its own", said.length === 1, said.join(" | "));
+  await shot(page, "plan-approved-with-note");
+
+  // What is typed goes with whichever "Yes" is chosen, as in the terminal.
+  const note2Id = await start("make plan and approve each edit with a note", "plan");
+  await plan.waitFor();
+  await enabled(plan.locator("button", { hasText: "Yes, manually approve edits" }));
+  await plan.locator("input").fill("Use pnpm, not npm");
+  await plan.locator("button", { hasText: "Yes, manually approve edits" }).click();
+  await main.locator("text=Claude wants to use Edit").waitFor();
+  await enabled(main.locator("button", { hasText: /^\s*Allow$/ }));
+  await main.locator("button", { hasText: /^\s*Allow$/ }).click();
+  await main.locator("text=plan approved (mode default), edit made, with your note: Use pnpm, not npm").waitFor();
+  check("a “Yes” chosen with something typed carries it along too", (await session(note2Id)).permission_mode === "default" && (await main.locator("[data-plan-outcome]").innerText()).includes("asking before each edit, with your note"));
+
+  // Stopping while a plan waits: the Stop button, as Esc in the terminal.
   const stopId = await start("make plan and stop to rethink", "plan");
   await plan.waitFor();
-  await plan.locator("button", { hasText: "No, keep planning" }).click();
-  await main.locator("[data-plan-outcome]", { hasText: "stopped, to hear what to change" }).waitFor();
+  const stop = page.locator("header button", { hasText: "Stop" });
+  check("a session whose plan is waiting has the Stop button", (await stop.count()) === 1 && (await page.locator("text=stop the turn").count()) === 1);
+  await stop.click();
+  await main.locator("[data-plan-outcome]", { hasText: "Plan not approved: stopped" }).waitFor();
   await main.locator("text=/^Stopped/").waitFor();
   const stopped = await session(stopId);
-  check("“No, keep planning” with nothing typed stops the turn, still in plan mode", stopped.status === "idle" && stopped.permission_mode === "plan");
+  check("Stop while a plan waits ends the turn there, still in plan mode", stopped.status === "idle" && stopped.permission_mode === "plan" && (await stop.count()) === 0);
   check("a stopped turn is shown as stopped, not as failed", (await main.locator("text=The turn failed").count()) === 0 && stopped.preview === "Stopped");
   await shot(page, "plan-stopped");
 
@@ -308,7 +349,20 @@ try {
   await plan.locator("button", { hasText: "Show it as plain text" }).click();
   check("…and shows them written out on request", (await planBox.locator("mark").first().innerText()) === "⟨U+202E⟩" && (await planBox.innerText()).includes("[Approve here](javascript:window.pwned=3)"));
   await shot(plan, "plan-card-hostile");
-  await plan.locator("button", { hasText: "No, keep planning" }).click();
+  await plan.locator("button", { hasText: "Yes, auto-accept edits" }).focus();
+  await page.keyboard.press("Escape");
+  await main.locator("text=/^Stopped/").waitFor();
+  check("Esc stops a turn whose plan is waiting, as in the terminal", (await main.locator("[data-plan-outcome]").innerText()).includes("Plan not approved: stopped"));
+
+  // Claude going into plan mode by itself: Claude Code does not ask about it, and the mode follows.
+  const enterId = await start("enter plan mode first");
+  await plan.waitFor();
+  const entered = main.getByText("Entered plan mode", { exact: true });
+  check("Claude entering plan mode by itself shows in the feed in Claude Code's words, and is not asked about", (await entered.count()) === 1 && (await main.locator("text=Claude wants to use").count()) === 0);
+  check("…and the session's mode follows", (await session(enterId)).permission_mode === "plan" && (await mode("Plan only").count()) === 1);
+  await sleep(700);
+  await shot(page, "plan-entered");
+  await page.keyboard.press("Escape");
   await main.locator("text=/^Stopped/").waitFor();
 
   // ================================================================ edits in the feed

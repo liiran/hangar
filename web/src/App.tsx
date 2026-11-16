@@ -1,6 +1,5 @@
 import { Gauge, Layers, ShieldCheck } from "lucide-react";
 import { useEffect, useRef } from "react";
-import { api } from "./api";
 import { CommandPalette } from "./components/CommandPalette";
 import { NewSession } from "./components/NewSession";
 import { PoolView } from "./components/PoolView";
@@ -9,7 +8,7 @@ import { SessionPane } from "./components/SessionPane";
 import { Sidebar } from "./components/Sidebar";
 import { StopHangar, StoppedScreen } from "./components/StopHangar";
 import { Button, cx, Kbd, Logo, useDialog } from "./components/ui";
-import { report, useStore } from "./store";
+import { canStop, stopTurn, useStore } from "./store";
 import { attentionCount, ignoreShortcut } from "./sync";
 import { focusComposer, useUI, useVisible } from "./ui";
 import { step } from "./views";
@@ -74,8 +73,8 @@ export function App() {
         e.preventDefault();
         const next = step(list, selected, e.key === "ArrowDown" ? 1 : -1);
         if (next) select(next);
-      } else if (e.key === "Escape" && session?.status === "working" && view.kind !== "pool") {
-        api.interrupt(session.id).catch(report);
+      } else if (e.key === "Escape" && session && canStop(session) && view.kind !== "pool") {
+        stopTurn(session);
       }
     };
     window.addEventListener("keydown", onKey);

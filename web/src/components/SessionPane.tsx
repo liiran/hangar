@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, type Session } from "../api";
 import { ASK_TOOL, questionsOf } from "../ask";
 import { basename, bytes, PERMISSION_MODES, usd } from "../format";
-import { report, setPermissionMode, useStore } from "../store";
+import { canStop, report, setPermissionMode, stopTurn, useStore } from "../store";
 import { intent, useUI } from "../ui";
 import { ContextWheel } from "./ContextWheel";
 import { Properties } from "./Properties";
@@ -58,8 +58,8 @@ function Toolbar({ session, onRename }: { session: Session; onRename: () => void
           <span className="truncate font-medium">{session.title}</span>
         </span>
       </nav>
-      {session.status === "working" && (
-        <Button size="sm" onClick={act(() => api.interrupt(session.id))} title="Stop this turn (Esc)">
+      {canStop(session) && (
+        <Button size="sm" onClick={() => stopTurn(session)} title="Stop this turn (Esc)">
           <Square className="size-3 fill-current" /> Stop <Kbd className="ml-0.5 hidden sm:inline-grid">Esc</Kbd>
         </Button>
       )}
@@ -273,7 +273,7 @@ function Composer({ session }: { session: Session }) {
         <div className="mt-1.5 flex min-h-6 items-center justify-between gap-3 text-[11px] text-faint">
           <Select variant="pill" up icon={<Shield className="size-3" />} label="Mode" value={session.permission_mode} onChange={(mode) => setPermissionMode(session.id, mode)} options={PERMISSION_MODES} />
           <span className="ml-auto flex items-center gap-3 pr-1">
-            {session.status === "working" && (
+            {canStop(session) && (
               <span className="hidden items-center gap-1 sm:flex">
                 <Kbd>Esc</Kbd> stop the turn
               </span>
