@@ -25,7 +25,6 @@ const PLAN_HEIGHT = 900;
 export function PlanCard({ session, requestId, plan, file, armed }: { session: Session; requestId: string; plan: string; file: string | null; armed: boolean }) {
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [clipped, setClipped] = useState(false);
   const [plain, setPlain] = useState(false);
   const [feedback, setFeedback] = useState("");
   const changeBox = useRef<HTMLInputElement>(null);
@@ -39,9 +38,9 @@ export function PlanCard({ session, requestId, plan, file, armed }: { session: S
       setBusy(false);
     }
   };
-  // Approving waits until the plan has been on screen a moment and all of it is showing.
-  const unread = clipped && !expanded;
-  const hold = busy || !armed || unread;
+  // Approving waits only until the plan has been on screen a moment. A plan longer than the card
+  // can be answered without opening the rest: it is the user's to read as much of as they like.
+  const hold = busy || !armed;
   const change = feedback.trim();
   const keep = () => send("deny", change ? { feedback: change } : { stop: true });
   // The number keys choose, as in Claude Code's terminal; Enter in the box sends what was typed.
@@ -70,7 +69,7 @@ export function PlanCard({ session, requestId, plan, file, armed }: { session: S
         Claude's plan
         <span className="font-normal text-muted">Ready to code?</span>
       </div>
-      <ApprovalBox prose={!plain} lines={countLines(plan)} expanded={expanded} onExpand={() => setExpanded(true)} onClipped={setClipped} height={PLAN_HEIGHT}>
+      <ApprovalBox prose={!plain} lines={countLines(plan)} expanded={expanded} onExpand={() => setExpanded(true)} height={PLAN_HEIGHT}>
         {plain ? <Shown text={plan} /> : <Markdown text={plan} />}
       </ApprovalBox>
       {invisible && (
@@ -131,7 +130,6 @@ export function PlanCard({ session, requestId, plan, file, armed }: { session: S
           {change && <Kbd>⏎</Kbd>}
         </div>
       </div>
-      {unread && <p className="mt-2 text-[12px] text-s-needs">Show all of it to approve it.</p>}
     </div>
   );
 }

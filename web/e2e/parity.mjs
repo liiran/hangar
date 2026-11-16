@@ -269,14 +269,22 @@ try {
   await plan.waitFor();
   const yes = plan.locator("button", { hasText: "Yes, auto-accept edits" });
   await sleep(900); // past the moment in which every new request ignores clicks
-  check("a plan longer than a screen cannot be approved before all of it was opened", (await yes.isDisabled()) && (await plan.innerText()).includes("Show all of it to approve it."));
-  check("…and what hides below the fold is not readable until then", !(await planBox.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)));
+  const cut = () => planBox.evaluate((el) => el.scrollHeight > el.clientHeight + 1);
+  check("a plan longer than a screen is cut at a visible line, with a button to show the rest", (await cut()) && (await plan.locator("button", { hasText: "There is more below" }).count()) === 1);
+  check("…and can be answered without opening the rest: the choices are live", (await enabled(yes)) && !(await plan.innerText()).includes("to approve it"));
   await shot(plan, "plan-card-long");
   await plan.locator("button", { hasText: "There is more below" }).click();
-  await yes.waitFor();
-  check("…after which it can", (await enabled(yes)) && (await planBox.innerText()).includes("Delete the old"));
+  check("…the button shows all of it", !(await cut()) && (await planBox.innerText()).includes("Delete the old"));
   await yes.click();
   await main.locator("text=plan approved (mode acceptEdits), edit made").waitFor();
+
+  await start("long plan, approved unread", "plan");
+  await plan.waitFor();
+  await sleep(900);
+  await plan.locator("button", { hasText: "Yes, auto-accept edits" }).focus();
+  await page.keyboard.press("1");
+  await main.locator("text=plan approved (mode acceptEdits), edit made").waitFor();
+  check("a long plan is approved by its number key without being opened", true);
 
   // ================================================================ content that tries to mislead
   await start("ask hostile question");

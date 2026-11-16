@@ -1,5 +1,5 @@
-// What every card that waits for the user shares: text shown honestly, and content that cannot
-// be approved before all of it has been on screen.
+// What every card that waits for the user shares: text shown honestly, and long content cut at a
+// visible line with a way to open the rest.
 
 import { Check, ChevronRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
@@ -69,9 +69,10 @@ export const countLines = (...texts: string[]) => texts.reduce((n, t) => n + t.s
 
 /**
  * The exact content being approved. It never scrolls and never runs off to
- * the side: long content is cut at a visible line, and `onClipped` tells the
- * row to hold Allow back until the user has opened all of it. `prose` is for
- * formatted text (a plan) instead of code.
+ * the side: long content is cut at a visible line. `onClipped` tells a row
+ * that holds Allow back until the user has opened all of it (a command, an
+ * edit) that there is more; a plan does not hold anything back. `prose` is
+ * for formatted text (a plan) instead of code.
  */
 export function ApprovalBox({
   children,
@@ -86,7 +87,7 @@ export function ApprovalBox({
   lines: number;
   expanded: boolean;
   onExpand: () => void;
-  onClipped: (clipped: boolean) => void;
+  onClipped?: (clipped: boolean) => void;
   prose?: boolean;
   height?: number;
 }) {
@@ -98,7 +99,7 @@ export function ApprovalBox({
     const measure = () => {
       const now = el.scrollHeight > height + 1;
       setClipped(now);
-      onClipped(now);
+      onClipped?.(now);
     };
     measure();
     const observer = new ResizeObserver(measure);
