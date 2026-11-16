@@ -141,11 +141,12 @@ try {
   check("an earlier question opens again with its answer still marked", (await marked("Google")) === "true" && (await marked("Both")) === "false");
   await shot(card, "question-panel-back");
   await option("Both").click();
-  await main.getByText("Protected: Dashboard, Billing, the admin page").waitFor();
-  check("once no question is left open, the answers go to Claude: as chosen, several joined in Claude's order, the typed one last", (await main.innerText()).includes("Sign-in: Both"));
+  await main.getByText("Which pages need a signed-in user? Dashboard, Billing, the admin page").waitFor();
+  check("once no question is left open, the answers go to Claude: as chosen, several joined in Claude's order, the typed one last", (await main.innerText()).includes("Which sign-in method should the app use? Both"));
   const answered = main.locator("[data-answered]").last();
-  const answeredText = await answered.innerText();
-  check("the feed keeps a record of what was answered, and the panel is gone", (await card.count()) === 0 && (await main.locator("[data-asking]").count()) === 0 && answeredText.includes("You answered") && answeredText.includes("Sign-in") && answeredText.includes("Both") && answeredText.includes("Dashboard, Billing, the admin page"), answeredText.replace(/\s+/g, " "));
+  const answeredText = (await answered.innerText()).replace(/\s+/g, " ");
+  check("the feed keeps a record of each question and its answer, and the panel is gone", (await card.count()) === 0 && (await main.locator("[data-asking]").count()) === 0 && answeredText === "You answered Which sign-in method should the app use? Both Which pages need a signed-in user? Dashboard, Billing, the admin page", answeredText);
+  check("the short tag Claude sends with each question is shown nowhere", !/Sign-in|Protected/.test(firstText) && !/Sign-in|Protected/.test(await main.innerText()));
   await shot(page, "question-answered");
 
   // Out of order, by keyboard: the second question first, then an own answer to the first.
@@ -163,8 +164,8 @@ try {
   check("the letter after the last option goes to the own-answer row", await own.evaluate((el) => el === document.activeElement));
   await page.keyboard.type("Magic links by email");
   await page.keyboard.press("Enter");
-  await main.getByText("Sign-in: Magic links by email").waitFor();
-  check("an answer typed by the user reaches Claude word for word, and questions can be answered in any order", (await main.innerText()).includes("Protected: Settings"));
+  await main.getByText("Which sign-in method should the app use? Magic links by email").waitFor();
+  check("an answer typed by the user reaches Claude word for word, and questions can be answered in any order", (await main.innerText()).includes("Which pages need a signed-in user? Settings"));
 
   // An answer the daemon must refuse: nothing chosen, or a question Claude did not ask.
   await say("ask question a third time");
@@ -190,7 +191,7 @@ try {
   await sleep(700);
   await shot(card, "question-panel-preview");
   await option("Tabs").click();
-  await main.getByText("Layout: Tabs").waitFor();
+  await main.getByText("Which layout should the settings page use? Tabs").waitFor();
   check("with a single question, choosing an option sends it", (await card.count()) === 0);
 
   // ================================================================ a plan

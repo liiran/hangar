@@ -301,10 +301,10 @@ fn main() {
                                 .into_iter()
                                 .flatten()
                                 .filter_map(|q| {
-                                    let answer = answers.get(q["question"].as_str()?)?.as_str()?;
-                                    let name =
-                                        q["header"].as_str().filter(|h| h.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '-')).unwrap_or("Answer");
-                                    Some(format!("- {name}: {answer}"))
+                                    let question = q["question"].as_str()?;
+                                    let answer = answers.get(question)?.as_str()?;
+                                    let plain = question.chars().all(|c| c.is_alphanumeric() || " -?,'".contains(c));
+                                    Some(format!("- {} {answer}", if plain { question } else { "Answer:" }))
                                 })
                                 .collect();
                             fake.done(&if chosen.is_empty() {

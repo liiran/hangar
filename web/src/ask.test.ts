@@ -8,7 +8,7 @@ const fruit = { question: "Which fruits?", header: "Fruit", multiSelect: true, o
 describe("questionsOf", () => {
   it("reads the questions Claude Code sends", () => {
     const [one, many] = questionsOf({ questions: [colour, { ...fruit, options: [{ label: "Apple", description: "a", preview: "+--+" }, { label: "Banana" }] }] })!;
-    expect(one).toEqual({ question: "Which colour?", header: "Colour", multi: false, options: [{ label: "Red", description: "Red!", preview: null }, { label: "Green", description: "Green!", preview: null }, { label: "Blue", description: "Blue!", preview: null }] });
+    expect(one).toEqual({ question: "Which colour?", multi: false, options: [{ label: "Red", description: "Red!", preview: null }, { label: "Green", description: "Green!", preview: null }, { label: "Blue", description: "Blue!", preview: null }] });
     expect(many.multi).toBe(true);
     expect(many.options).toEqual([
       { label: "Apple", description: "a", preview: "+--+" },

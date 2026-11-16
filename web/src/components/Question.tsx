@@ -9,6 +9,12 @@ import { Button, cx, Kbd } from "./ui";
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 /**
+ * One row of the list of choices. Every row is at least as tall as a choice with one line of
+ * explanation under it, so the list reads as equal rows, the own-answer row included.
+ */
+const ROW = "flex min-h-12 items-start gap-2.5 rounded-md px-2 py-1.5";
+
+/**
  * Claude's questions, one at a time, in a panel that sits on top of the message box.
  *
  * Choosing an option answers the question and moves on to the next one still open; with none
@@ -136,7 +142,7 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
                     role="tab"
                     aria-selected={i === at}
                     aria-label={`Question ${i + 1}${done ? ", answered" : ""}`}
-                    title={qq.header.trim() || qq.question}
+                    title={qq.question}
                     onClick={() => go(i)}
                     className="grid size-4 place-items-center rounded-full"
                   >
@@ -161,12 +167,9 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
       </div>
 
       <div className="max-h-[min(48vh,440px)] overflow-y-auto px-3.5 pt-3 pb-1">
+        {/* Claude also sends a short tag with each question ("Sign-in"). It says nothing the
+            question does not, so only the question shows. */}
         <p className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[13.5px]">
-          {q.header.trim() && (
-            <span className="rounded bg-panel-2 px-1.5 py-px text-[11px] font-medium text-muted ring-1 ring-inset ring-line-strong">
-              <Shown text={q.header} />
-            </span>
-          )}
           <span className="min-w-0 font-medium [overflow-wrap:anywhere]">
             <Shown text={q.question} />
           </span>
@@ -188,7 +191,7 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
                   onMouseEnter={() => setPeek(o.label)}
                   onMouseLeave={() => setPeek(null)}
                   onFocus={() => setPeek(o.label)}
-                  className={cx("flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-panel-2", on && "bg-accent-soft hover:bg-accent-soft")}
+                  className={cx(ROW, "w-full text-left transition-colors", on ? "bg-accent-soft" : "hover:bg-panel-2")}
                 >
                   <ChoiceKey on={on}>{LETTERS[i]}</ChoiceKey>
                   <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
@@ -204,7 +207,7 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
                 </button>
               );
             })}
-            <div className={cx("flex items-center gap-2.5 rounded-md px-2 py-1", p.otherOn && "bg-accent-soft")}>
+            <div className={cx(ROW, p.otherOn ? "bg-accent-soft" : "focus-within:bg-panel-2")}>
               <button
                 type="button"
                 role={q.multi ? "checkbox" : "radio"}
@@ -216,17 +219,20 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
               >
                 <ChoiceKey on={p.otherOn}>{LETTERS[q.options.length]}</ChoiceKey>
               </button>
-              <input
-                ref={own}
-                data-choice
-                type="text"
-                value={p.other}
-                onChange={(e) => set(type(q, p, e.target.value))}
-                placeholder="Something else…"
-                aria-label={`Your own answer to: ${q.question}`}
-                maxLength={4000}
-                className="h-7 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-faint"
-              />
+              <label className="min-w-0 flex-1 cursor-text">
+                <input
+                  ref={own}
+                  data-choice
+                  type="text"
+                  value={p.other}
+                  onChange={(e) => set(type(q, p, e.target.value))}
+                  placeholder="Something else…"
+                  aria-label={`Your own answer to: ${q.question}`}
+                  maxLength={4000}
+                  className="block h-5 w-full bg-transparent text-[13px] leading-5 outline-none placeholder:text-fg"
+                />
+                <span className="block text-[12px] leading-snug text-muted">Type your own answer</span>
+              </label>
             </div>
           </fieldset>
           {previews.length > 0 && (
@@ -299,17 +305,17 @@ export function Answered({ questions, decision, detail }: { questions: Question[
     // In the order Claude asked; anything else that was answered comes after.
     const asked = (questions ?? []).filter((q) => q.question in answers);
     const rest = Object.keys(answers).filter((k) => !asked.some((q) => q.question === k));
-    const rows = [...asked.map((q) => ({ name: q.header.trim() || q.question, title: q.question, answer: answers[q.question] })), ...rest.map((k) => ({ name: k, title: k, answer: answers[k] }))];
+    const rows = [...asked.map((q) => q.question), ...rest].map((question) => ({ question, answer: answers[question] }));
     return (
       <div data-answered>
         <span className="text-faint">You answered</span>
-        <dl className="mt-1 space-y-0.5">
+        <dl className="mt-1.5 space-y-2 border-l border-line-strong pl-3 text-[12.5px] [overflow-wrap:anywhere]">
           {rows.map((r, i) => (
-            <div key={i} className="flex gap-2 text-[12.5px]" title={r.title}>
-              <dt className="max-w-[45%] shrink-0 truncate text-muted">
-                <Shown text={r.name} />
+            <div key={i}>
+              <dt className="text-muted">
+                <Shown text={r.question} />
               </dt>
-              <dd className="min-w-0 [overflow-wrap:anywhere] text-fg">
+              <dd className="text-fg">
                 <Shown text={r.answer} />
               </dd>
             </div>

@@ -14,8 +14,6 @@ export interface Choice {
 
 export interface Question {
   question: string;
-  /** A word or two naming the question, such as "Sign-in". */
-  header: string;
   /** Several options may be chosen. */
   multi: boolean;
   options: Choice[];
@@ -39,7 +37,8 @@ export function questionsOf(input: unknown): Question[] | null {
     }
     // Answers go back by question text and by label, so neither may repeat.
     if (new Set(options.map((o) => o.label)).size !== options.length) return null;
-    out.push({ question: q.question, header: typeof q.header === "string" ? q.header : "", multi: q.multiSelect === true, options });
+    // Claude also sends a short tag per question (`header`, such as "Sign-in"). It is not shown.
+    out.push({ question: q.question, multi: q.multiSelect === true, options });
   }
   return new Set(out.map((q) => q.question)).size === out.length ? out : null;
 }
