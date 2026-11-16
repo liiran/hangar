@@ -24,7 +24,7 @@
   - **A question:** when Claude asks you something, a panel comes up on top of the message box with one question at a time and its options, each with a letter.
     - Click an option or press its letter: that answers the question and moves to the next. To "Which sign-in method?" you can choose *Google*, or type *magic links by email* into "Something else…". Claude gets exactly that.
     - Once every question has an answer, they go to Claude. The dots and arrows open any question in any order, so an answer can be changed before the last one is given.
-  - **A plan:** in *Plan only*, Claude's finished plan shows formatted. Under it is Claude Code's own question, "Would you like to proceed?", with its three choices as a numbered list: *Yes, auto-accept edits*, *Yes, manually approve edits*, or *No, keep planning*. The last takes what to change on the same line, and Claude plans again; with nothing typed, the turn stops so you can say it in a message.
+  - **A plan:** in *Plan only*, Claude's finished plan shows formatted, worded as Claude Code's own dialog is: "Ready to code?", the plan, then "Would you like to proceed?" with its three choices as a numbered list: *Yes, auto-accept edits*, *Yes, manually approve edits*, or *No, keep planning*. The last has a box for what to change: type it, press Enter, and Claude plans again. What is typed there also goes along with a *Yes* (or with `Shift Tab` in the box), as a note Claude reads with the approval. For example, "skip step 4" and then *Yes, auto-accept edits*. To stop instead, use *Stop* or `Esc`: the turn ends there, still in plan mode. When Claude goes into plan mode by itself, the feed says so and the mode under the message box follows.
 - **Settings per session.** Each session gets a folder, a model (Opus, Sonnet or Haiku) and a permission level: ask first, accept edits, plan only or full access. Both the model and the permission level can be changed mid-session. The level a session is in shows under its message box, bottom left, and can be changed there.
 - **A feed per session.** It shows messages, tool calls you can expand, and each turn's time and cost. A properties panel shows the session's status, model, memory, cost and MCP servers. A long session opens at its newest entries and stays fast; the earlier ones are drawn when you ask for them.
   - **Every edit shows what it changed:** the file's own line numbers, removed lines in red, added lines in green, and a few unchanged lines around them. This is so even when edits are accepted without asking. A long change opens folded.
@@ -41,10 +41,10 @@
 | `C` | new session |
 | `J` / `K` | next / previous session |
 | `R` | reply to the open session |
-| `Esc` | stop the running turn |
+| `Esc` | stop the running turn, or the turn whose plan is waiting for your answer |
 | `Ctrl \` | show or hide the sidebar |
 | `A`, `B`, … | choose that option of Claude's question (with the panel in focus); `←` `→` go to the other questions |
-| `1`, `2`, `3` | choose that line of "Would you like to proceed?" under a plan (with the list in focus) |
+| `1`, `2`, `3` | choose that line of "Would you like to proceed?" under a plan (with the list in focus). In its box, `Enter` sends what you typed back to Claude and `Shift Tab` approves the plan with it |
 
 *Stop hangar* in the command palette does what `hangar stop` does, after asking. The window then says that hangar is stopped and how to start it again.
 
