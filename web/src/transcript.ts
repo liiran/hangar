@@ -1,7 +1,7 @@
 // Turns a session's event log into rows to render.
 
 import type { DecisionDetail, SessionEvent } from "./api";
-import { ASK_TOOL } from "./ask";
+import { ASK_TOOL, PLAN_TOOL } from "./ask";
 import { visible } from "./safe";
 
 export type Row =
@@ -10,7 +10,7 @@ export type Row =
   | { kind: "thinking"; key: string; text: string }
   | { kind: "tool"; key: string; id: string; name: string; input: any; result?: { text: string; isError: boolean } }
   | { kind: "permission"; key: string; requestId: string; tool: string; input: any; decision: string | null; detail?: DecisionDetail | null; description?: string | null; superseded?: boolean }
-  | { kind: "result"; key: string; cost: number | null; durationMs: number | null; turns: number | null; isError: boolean; text: string | null }
+  | { kind: "result"; key: string; cost: number | null; durationMs: number | null; turns: number | null; isError: boolean; stopped: boolean; text: string | null }
   | { kind: "error"; key: string; message: string };
 
 /**
@@ -90,6 +90,8 @@ export function toRows(events: SessionEvent[]): Row[] {
             durationMs: m.duration_ms ?? null,
             turns: m.num_turns ?? null,
             isError: !!m.is_error,
+            // A turn the user stopped ends as an "error" too; it did not fail.
+            stopped: !!m.is_error && typeof m.terminal_reason === "string" && m.terminal_reason.startsWith("aborted"),
             text: m.is_error ? m.result ?? null : null,
           });
         }
@@ -167,6 +169,11 @@ function summarize(name: string, input: any, cwd?: string): string {
     case ASK_TOOL: {
       const asked = Array.isArray(input.questions) ? input.questions.filter((q: any) => typeof q?.question === "string") : [];
       return asked.length > 0 ? `${asked[0].question}${asked.length > 1 ? `  +${asked.length - 1} more` : ""}` : "";
+    }
+    case PLAN_TOOL: {
+      // The plan's title: its first line of text, without the heading marks.
+      const first = typeof input.plan === "string" ? input.plan.split("\n").find((l: string) => l.trim()) : undefined;
+      return first ? first.replace(/^#+\s*/, "").trim() : "";
     }
     default: {
       const first = Object.values(input).find((v) => typeof v === "string") as string | undefined;

@@ -46,6 +46,20 @@ describe("questions, plans and edits", () => {
     expect(old[0]).toMatchObject({ decision: "deny", detail: null });
   });
 
+  it("tells a turn the user stopped from one that failed", () => {
+    const result = (extra: Record<string, unknown>) => toRows([ev({ kind: "claude", msg: { type: "result", is_error: true, result: null, ...extra } })])[0];
+    expect(result({ subtype: "error_during_execution", terminal_reason: "aborted_streaming" })).toMatchObject({ isError: true, stopped: true });
+    expect(result({ subtype: "error_during_execution" })).toMatchObject({ isError: true, stopped: false });
+    expect(toRows([ev({ kind: "claude", msg: { type: "result", is_error: false, terminal_reason: "aborted_streaming" } })])[0]).toMatchObject({ stopped: false });
+  });
+
+  it("summarizes a question by what it asks and a plan by its title", () => {
+    expect(toolSummary("AskUserQuestion", { questions: [{ question: "Which colour?" }, { question: "Which fruit?" }] })).toBe("Which colour?  +1 more");
+    expect(toolSummary("AskUserQuestion", { questions: [{ question: "Only one?" }] })).toBe("Only one?");
+    expect(toolSummary("AskUserQuestion", { questions: "x" })).toBe("");
+    expect(toolSummary("ExitPlanMode", { plan: "\n\n## Plan: split the auth module\n\n1. Move it", planFilePath: "p.md" })).toBe("Plan: split the auth module");
+    expect(toolSummary("ExitPlanMode", {})).toBe("");
+  });
 });
 
 describe("toRows", () => {

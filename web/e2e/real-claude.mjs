@@ -129,6 +129,33 @@ check("…and goes on with them", /Green/.test(lastResult(askedEvents)?.result ?
 check("the answers are kept in the session's history", askedEvents.find((e) => e.kind === "decision")?.detail?.answers?.[qs[0].question] === "Green");
 await api("DELETE", `/sessions/${asked.id}`);
 
+// ---------------------------------------------------------------- a plan
+const work = path.join(tmp, "plan-proj");
+fs.mkdirSync(work);
+const planned = await api("POST", "/sessions", {
+  cwd: work,
+  prompt: "Make a short plan (3 steps at most) to create a file named hello.txt containing the word hi in this folder. Do not ask me questions. Present the plan with ExitPlanMode.",
+  model: "haiku",
+  permission_mode: "plan",
+  trust: true,
+});
+const isPlan = (s) => s.status === "needs_you" && s.pending[0]?.tool_name === "ExitPlanMode";
+const firstPlan = await waitFor(planned.id, isPlan, "Claude's plan");
+check("Claude's plan arrives as a request that carries the plan", typeof firstPlan.pending[0].input.plan === "string" && /hello\.txt/.test(firstPlan.pending[0].input.plan), firstPlan.pending[0].input.plan.split("\n")[0]);
+await decide(planned.id, firstPlan.pending[0].request_id, { behavior: "deny", feedback: "Also create a second file named bye.txt containing the word bye." });
+const secondPlan = await waitFor(planned.id, (s) => isPlan(s) && s.pending[0].request_id !== firstPlan.pending[0].request_id, "the plan again");
+check("sent back with what to change, Claude plans again with it", /bye\.txt/.test(secondPlan.pending[0].input.plan) && secondPlan.permission_mode === "plan", secondPlan.pending[0].input.plan.split("\n")[0]);
+check("…and nothing was written while planning", !fs.existsSync(path.join(work, "hello.txt")));
+await decide(planned.id, secondPlan.pending[0].request_id, { behavior: "allow", mode: "acceptEdits" });
+const built = await waitFor(planned.id, (s) => s.status === "idle" || (s.status === "needs_you" && !isPlan(s)), "the plan to be carried out");
+const builtEvents = await eventsOf(planned.id);
+const wrote = (name) => fs.existsSync(path.join(work, name)) && fs.readFileSync(path.join(work, name), "utf8").trim();
+check("approved with auto-accept, Claude carries the plan out without asking about the edits", built.status === "idle" && wrote("hello.txt") === "hi" && wrote("bye.txt") === "bye", `${built.status}; hello.txt=${wrote("hello.txt")}; bye.txt=${wrote("bye.txt")}`);
+check("…and the session is in the mode that was chosen", built.permission_mode === "acceptEdits", built.permission_mode);
+check("Claude is told the plan was approved, in its own terminal's words", toolResults(builtEvents).some((t) => t.startsWith("User has approved your plan")));
+
+await api("DELETE", `/sessions/${planned.id}`);
+
 await api("DELETE", `/sessions/${id}`);
 check("deleted", !(await session(id)));
 execFileSync(hangar, ["stop"], { env });

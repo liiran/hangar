@@ -176,6 +176,93 @@ try {
   await card.locator("button", { hasText: "Send answer" }).click();
   await main.getByText('"Which layout should the settings page use?":"Tabs"').waitFor();
 
+  // ================================================================ a plan
+  const planId = await start("make plan for the auth module", "plan");
+  const plan = main.locator("[data-plan-card]");
+  await plan.waitFor();
+  const planBox = plan.locator("[data-approval-content]");
+  check("a plan shows as a card of its own, formatted", (await plan.innerText()).includes("Claude's plan") && (await planBox.locator("h1").innerText()) === "Plan: split the auth module" && (await planBox.locator("ol > li").count()) === 4 && (await planBox.locator("table tr").count()) === 4);
+  const choices = (await plan.locator("button").allInnerTexts()).map((t) => t.trim());
+  check("…with Claude Code's own three choices, and all of the plan showing", JSON.stringify(choices) === JSON.stringify(["Yes, auto-accept edits", "Yes, manually approve edits", "No, keep planning"]), choices.join(" | "));
+  check("…and where Claude saved it", (await plan.innerText()).includes("Saved to .claude-plans") && (await plan.innerText()).includes("split-the-auth-module.md"));
+  check("the session is in plan mode", (await session(planId)).permission_mode === "plan");
+  await sleep(700);
+  await shot(page, "plan-presented");
+  await shot(plan, "plan-card");
+
+  await plan.locator("textarea").fill("Keep the old file until the tests pass");
+  await shot(plan, "plan-card-feedback");
+  await plan.locator("button", { hasText: "No, keep planning" }).click();
+  await main.locator("[data-plan-outcome]", { hasText: "Plan sent back" }).waitFor();
+  await planBox.locator("text=Changed after your feedback").waitFor();
+  check("“No, keep planning” with words sends them to Claude, which presents the plan again", (await planBox.innerText()).includes("Keep the old file until the tests pass") && (await main.locator("[data-plan-outcome]").first().innerText()).includes("“Keep the old file until the tests pass”"));
+  check("…and the session is still planning", (await session(planId)).permission_mode === "plan");
+  await sleep(700);
+  await shot(page, "plan-sent-back");
+
+  await plan.locator("button", { hasText: "Yes, auto-accept edits" }).click();
+  await main.locator("text=plan approved (mode acceptEdits), edit made").waitFor();
+  check("approving with “auto-accept edits” continues in that mode, and the edit is made without asking", (await session(planId)).permission_mode === "acceptEdits" && (await main.locator("text=Claude wants to use Edit").count()) === 0);
+  check("the answered plan reads as approved, and how", (await main.locator("[data-plan-outcome]").last().innerText()).includes("Plan approved, auto-accepting edits"));
+  await main.locator("[data-plan-outcome] button").last().click();
+  check("…and opens to show the plan again", (await main.locator("[data-plan-outcome]").last().locator("h1").innerText()) === "Plan: split the auth module");
+  await shot(page, "plan-approved");
+
+  const manualId = await start("make plan and approve each edit", "plan");
+  await plan.waitFor();
+  await plan.locator("button", { hasText: "Yes, manually approve edits" }).click();
+  await main.locator("text=Claude wants to use Edit").waitFor();
+  check("approving with “manually approve edits” continues in ask-first mode, and the next edit asks", (await session(manualId)).permission_mode === "default" && (await main.locator("[data-plan-outcome]").innerText()).includes("asking before each edit"));
+  await shot(page, "plan-approved-manual");
+  await main.locator("button", { hasText: /^\s*Allow$/ }).click();
+  await main.locator("text=plan approved (mode default), edit made").waitFor();
+
+  const stopId = await start("make plan and stop to rethink", "plan");
+  await plan.waitFor();
+  await plan.locator("button", { hasText: "No, keep planning" }).click();
+  await main.locator("[data-plan-outcome]", { hasText: "stopped, to hear what to change" }).waitFor();
+  await main.locator("text=/^Stopped/").waitFor();
+  const stopped = await session(stopId);
+  check("“No, keep planning” with nothing typed stops the turn, still in plan mode", stopped.status === "idle" && stopped.permission_mode === "plan");
+  check("a stopped turn is shown as stopped, not as failed", (await main.locator("text=The turn failed").count()) === 0 && stopped.preview === "Stopped");
+  await shot(page, "plan-stopped");
+
+  await start("long plan for every file", "plan");
+  await plan.waitFor();
+  const yes = plan.locator("button", { hasText: "Yes, auto-accept edits" });
+  await sleep(900); // past the moment in which every new request ignores clicks
+  check("a plan longer than a screen cannot be approved before all of it was opened", (await yes.isDisabled()) && (await plan.innerText()).includes("Show all of it to approve it."));
+  check("…and what hides below the fold is not readable until then", !(await planBox.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)));
+  await shot(plan, "plan-card-long");
+  await plan.locator("button", { hasText: "There is more below" }).click();
+  await yes.waitFor();
+  check("…after which it can", (await enabled(yes)) && (await planBox.innerText()).includes("Delete the old"));
+  await yes.click();
+  await main.locator("text=plan approved (mode acceptEdits), edit made").waitFor();
+
+  // ================================================================ content that tries to mislead
+  await start("ask hostile question");
+  await card.waitFor();
+  const pwned = () => page.evaluate(() => window.pwned);
+  check("markup in a question is shown as text and never runs", (await card.locator("b, img, script, a").count()) === 0 && (await card.innerText()).includes("<b>backup</b>") && (await card.innerText()).includes("<script>window.pwned = 1</script>") && (await pwned()) === undefined);
+  const marked = await card.locator("mark").allInnerTexts();
+  check("invisible characters in a question and its options are written out", marked.includes("⟨U+202E⟩") && marked.includes("⟨U+200B⟩"), marked.join(" "));
+  await shot(card, "question-card-hostile");
+  await card.locator('[role="radio"]', { hasText: "No" }).click();
+  await card.locator("button", { hasText: "Send answer" }).click();
+  await main.getByText('":"No"}').waitFor();
+  check("…and it can still be answered", true);
+
+  await start("hostile plan please", "plan");
+  await plan.waitFor();
+  check("a plan cannot load an image, run a script or link to one", (await planBox.locator("img, script").count()) === 0 && (await planBox.locator('a[href^="javascript"]').count()) === 0 && (await pwned()) === undefined && external.length === 0, external.join(" "));
+  check("a plan with invisible characters in it says so", (await plan.innerText()).includes("This plan has invisible characters in it."));
+  await plan.locator("button", { hasText: "Show it as plain text" }).click();
+  check("…and shows them written out on request", (await planBox.locator("mark").first().innerText()) === "⟨U+202E⟩" && (await planBox.innerText()).includes("[Approve here](javascript:window.pwned=3)"));
+  await shot(plan, "plan-card-hostile");
+  await plan.locator("button", { hasText: "No, keep planning" }).click();
+  await main.locator("text=/^Stopped/").waitFor();
+
 } finally {
   await browser.close();
   try {

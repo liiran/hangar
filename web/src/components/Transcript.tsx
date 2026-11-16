@@ -4,6 +4,7 @@ import {
   Check,
   ChevronRight,
   CircleHelp,
+  ClipboardList,
   FileText,
   Globe,
   Hammer,
@@ -11,6 +12,7 @@ import {
   Shield,
   ShieldAlert,
   Sparkles,
+  Square,
   SquareTerminal,
   User,
   X,
@@ -18,7 +20,7 @@ import {
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session, SessionEvent } from "../api";
 import { api } from "../api";
-import { ASK_TOOL, PLAN_TOOL, questionsOf } from "../ask";
+import { ASK_TOOL, PLAN_TOOL, planOf, questionsOf } from "../ask";
 import { ago, duration, usd } from "../format";
 import { report } from "../store";
 import { useNow } from "../ui";
@@ -26,6 +28,7 @@ import { rightToLeft, sessionRules, visible } from "../safe";
 import { needsSignIn, PAGE, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
 import { ApprovalBox, ARM_MS, countLines, Shown } from "./approval";
 import { Markdown } from "./Markdown";
+import { PlanCard, PlanOutcome } from "./Plan";
 import { Answered, QuestionCard } from "./Question";
 import { Button, cx, Guard } from "./ui";
 
@@ -43,6 +46,7 @@ const TOOL_ICONS: Record<string, typeof Hammer> = {
   WebFetch: Globe,
   WebSearch: Globe,
   [ASK_TOOL]: CircleHelp,
+  [PLAN_TOOL]: ClipboardList,
 };
 
 /** Claude Code's two dialogs, by what they are instead of by their tool names. */
@@ -273,6 +277,13 @@ function RowView({ row, session }: { row: Row; session: Session }) {
     case "permission":
       return <PermissionRow row={row} session={session} />;
     case "result":
+      if (row.stopped) {
+        return (
+          <Activity icon={<Square className="size-2.5 fill-current" />}>
+            <span className="text-faint">Stopped{row.durationMs != null && ` after ${duration(row.durationMs)}`}</span>
+          </Activity>
+        );
+      }
       return (
         <Activity icon={row.isError ? <AlertTriangle className="size-3" /> : <Check className="size-3" />} tone={row.isError ? "error" : undefined}>
           <span className={row.isError ? "text-s-error" : "text-faint"}>
@@ -428,6 +439,7 @@ function ToolRow({ row, cwd, live }: { row: Extract<Row, { kind: "tool" }>; cwd:
   // A question or a plan that was turned down is not a tool that broke: the row under it says what happened.
   const dialog = row.name === ASK_TOOL || row.name === PLAN_TOOL;
   const failed = row.result?.isError && !dialog;
+  const plan = row.name === PLAN_TOOL ? planOf(row.input) : null;
   return (
     <Activity icon={<Icon className="size-3" />} tone={failed ? "error" : undefined}>
       <button onClick={() => setOpen(!open)} aria-expanded={open} className="group flex w-full min-w-0 items-center gap-2 text-left">
@@ -440,9 +452,15 @@ function ToolRow({ row, cwd, live }: { row: Extract<Row, { kind: "tool" }>; cwd:
       </button>
       {open && (
         <div className="mt-2 space-y-2">
-          <pre className="max-h-72 overflow-auto rounded-md bg-code p-2.5 font-mono text-[11.5px] whitespace-pre-wrap text-muted ring-1 ring-inset ring-line">
-            {JSON.stringify(row.input, null, 2)}
-          </pre>
+          {plan ? (
+            <div className="rounded-md bg-code px-4 py-3 text-[13px] ring-1 ring-inset ring-line">
+              <Markdown text={plan.plan} />
+            </div>
+          ) : (
+            <pre className="max-h-72 overflow-auto rounded-md bg-code p-2.5 font-mono text-[11.5px] whitespace-pre-wrap text-muted ring-1 ring-inset ring-line">
+              {JSON.stringify(row.input, null, 2)}
+            </pre>
+          )}
           {row.result && (
             <pre
               className={cx(
@@ -494,11 +512,20 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
   const hold = busy || !armed || unread;
   // A question or a plan in a shape hangar does not know falls through to the plain request below.
   const questions = row.tool === ASK_TOOL ? questionsOf(row.input) : null;
+  const plan = row.tool === PLAN_TOOL ? planOf(row.input) : null;
   if (pending && questions) return <QuestionCard session={session} requestId={row.requestId} questions={questions} armed={armed} />;
+  if (pending && plan) return <PlanCard session={session} requestId={row.requestId} plan={plan.plan} file={plan.file} armed={armed} />;
   if (!pending && row.tool === ASK_TOOL) {
     return (
       <Activity icon={<CircleHelp className="size-3" />}>
         <Answered questions={questions} decision={row.superseded ? null : row.decision} detail={row.detail} />
+      </Activity>
+    );
+  }
+  if (!pending && row.tool === PLAN_TOOL) {
+    return (
+      <Activity icon={<ClipboardList className="size-3" />}>
+        <PlanOutcome plan={plan?.plan ?? null} decision={row.superseded ? null : row.decision} detail={row.detail} />
       </Activity>
     );
   }
