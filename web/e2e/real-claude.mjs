@@ -1,8 +1,9 @@
 // Real Claude Code sessions (Haiku) driven through hangar's HTTP API:
 // permission prompt, approval, per-turn cost, stop, resume with the
 // conversation intact; then a question answered, a plan sent back and
-// approved, an edit's changed lines, and the context and limit figures
-// checked against Claude's own. Costs a few cents.
+// approved with a note, Claude entering plan mode by itself, an edit's
+// changed lines, and the context and limit figures checked against
+// Claude's own. Costs a few cents.
 //
 //   cargo build --release && cd web && npm run e2e:claude
 import { execFileSync } from "node:child_process";
@@ -146,17 +147,24 @@ await decide(planned.id, firstPlan.pending[0].request_id, { behavior: "deny", fe
 const secondPlan = await waitFor(planned.id, (s) => isPlan(s) && s.pending[0].request_id !== firstPlan.pending[0].request_id, "the plan again");
 check("sent back with what to change, Claude plans again with it", /bye\.txt/.test(secondPlan.pending[0].input.plan) && secondPlan.permission_mode === "plan", secondPlan.pending[0].input.plan.split("\n")[0]);
 check("…and nothing was written while planning", !fs.existsSync(path.join(work, "hello.txt")));
-await decide(planned.id, secondPlan.pending[0].request_id, { behavior: "allow", mode: "acceptEdits" });
+// Approved with a note, which Claude must read with the approval: before its first step, not after it.
+await decide(planned.id, secondPlan.pending[0].request_id, { behavior: "allow", mode: "acceptEdits", feedback: "Name the first file hello-b.txt, not hello.txt." });
 const built = await waitFor(planned.id, (s) => s.status === "idle" || (s.status === "needs_you" && !isPlan(s)), "the plan to be carried out");
 const builtEvents = await eventsOf(planned.id);
 const wrote = (name) => fs.existsSync(path.join(work, name)) && fs.readFileSync(path.join(work, name), "utf8").trim();
-check("approved with auto-accept, Claude carries the plan out without asking about the edits", built.status === "idle" && wrote("hello.txt") === "hi" && wrote("bye.txt") === "bye", `${built.status}; hello.txt=${wrote("hello.txt")}; bye.txt=${wrote("bye.txt")}`);
+check("approved with auto-accept, Claude carries the plan out without asking about the edits", built.status === "idle" && wrote("hello-b.txt") === "hi" && wrote("bye.txt") === "bye", `${built.status}; hello-b.txt=${wrote("hello-b.txt")}; bye.txt=${wrote("bye.txt")}`);
+const approvedAt = builtEvents.find((e) => e.kind === "decision" && e.behavior === "allow")?.seq ?? Infinity;
+const oldName = builtEvents
+  .filter((e) => e.seq > approvedAt && e.kind === "claude" && e.msg.type === "assistant")
+  .flatMap((e) => (e.msg.message?.content ?? []).filter((b) => b.type === "tool_use" && JSON.stringify(b.input).includes("hello.txt")).map((b) => b.name));
+check("a note typed with the approval is read with it: Claude never touches the old name", oldName.length === 0 && !fs.existsSync(path.join(work, "hello.txt")), oldName.join(", "));
+check("…and the note is kept with the approval, not as a message", builtEvents.find((e) => e.seq === approvedAt)?.detail?.feedback === "Name the first file hello-b.txt, not hello.txt." && builtEvents.filter((e) => e.kind === "user").length === 1);
 check("…and the session is in the mode that was chosen", built.permission_mode === "acceptEdits", built.permission_mode);
 check("Claude is told the plan was approved, in its own terminal's words", toolResults(builtEvents).some((t) => t.startsWith("User has approved your plan")));
 
 // ---------------------------------------------------------------- an edit, and the numbers
-await api("POST", `/sessions/${planned.id}/messages`, { text: "Use the Edit tool to change the word hi in hello.txt to: hello there. Then reply with the single word DONE." });
-await waitFor(planned.id, (s) => s.status === "idle" && wrote("hello.txt") === "hello there", "the edit");
+await api("POST", `/sessions/${planned.id}/messages`, { text: "Use the Edit tool to change the word hi in hello-b.txt to: hello there. Then reply with the single word DONE." });
+await waitFor(planned.id, (s) => s.status === "idle" && wrote("hello-b.txt") === "hello there", "the edit");
 const editEvents = await eventsOf(planned.id);
 const patches = editEvents.filter((e) => e.kind === "claude" && e.msg.type === "user" && e.msg.tool_use_result?.structuredPatch?.length).map((e) => e.msg.tool_use_result);
 const patch = patches.at(-1);
@@ -180,6 +188,25 @@ const windows = Object.fromEntries((limits?.windows ?? []).map((w) => [w.name, w
 const sane = (w) => w && w.used >= 0 && w.used <= 10 && w.resets_at * 1000 > Date.now();
 check("the plan's 5-hour and 7-day limits are reported with their reset times", sane(windows.five_hour) && sane(windows.seven_day), JSON.stringify(limits?.windows.map((w) => `${w.name} ${Math.round(w.used * 100)}%`)));
 await api("DELETE", `/sessions/${planned.id}`);
+
+// ---------------------------------------------------------------- Claude enters plan mode by itself
+const entering = await api("POST", "/sessions", {
+  cwd: work,
+  prompt: "Call the EnterPlanMode tool now, before anything else. Then make a one-step plan to create a file named later.txt, and present it with ExitPlanMode. Do not ask me questions.",
+  model: "haiku",
+  permission_mode: "default",
+  trust: true,
+});
+const enteredPlan = await waitFor(entering.id, (s) => s.status === "needs_you" || s.status === "idle", "Claude to enter plan mode and present a plan");
+const enteringEvents = await eventsOf(entering.id);
+const askedAbout = enteringEvents.filter((e) => e.kind === "permission").map((e) => e.tool_name);
+check("Claude Code does not ask before entering plan mode: the first request is the plan", askedAbout.length === 1 && askedAbout[0] === "ExitPlanMode", askedAbout.join(", "));
+check("…and the session's mode follows by itself", enteredPlan.permission_mode === "plan" && toolResults(enteringEvents).some((t) => t.startsWith("Entered plan mode")), enteredPlan.permission_mode);
+// Stopped while the plan waits, as the Stop button does.
+await decide(entering.id, enteredPlan.pending[0].request_id, { behavior: "deny", stop: true });
+const afterStop = await waitFor(entering.id, (s) => s.status === "idle", "the turn to stop", 60000);
+check("stopping while a plan waits ends the turn, still in plan mode, with nothing written", afterStop.permission_mode === "plan" && afterStop.preview === "Stopped" && !fs.existsSync(path.join(work, "later.txt")), `${afterStop.permission_mode}; ${afterStop.preview}`);
+await api("DELETE", `/sessions/${entering.id}`);
 
 await api("DELETE", `/sessions/${id}`);
 check("deleted", !(await session(id)));
