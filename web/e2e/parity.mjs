@@ -243,6 +243,7 @@ try {
   await page.keyboard.press("2");
   await main.locator("text=Claude wants to use Edit").waitFor();
   check("approving with “manually approve edits” continues in ask-first mode, and the next edit asks", (await session(manualId)).permission_mode === "default" && (await main.locator("[data-plan-outcome]").innerText()).includes("asking before each edit"));
+  await sleep(700); // the picture shows the request awake, its Allow button lit
   await shot(page, "plan-approved-manual");
   await main.locator("button", { hasText: /^\s*Allow$/ }).click();
   await main.locator("text=plan approved (mode default), edit made").waitFor();
