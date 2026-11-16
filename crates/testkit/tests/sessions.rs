@@ -237,7 +237,37 @@ async fn a_plan_is_approved_into_a_mode_or_sent_back() {
     m.decide(&id, &s.pending[0].request_id, allow()).unwrap();
     wait_status(&m, &id, Status::Idle).await;
 
-    // "No, keep planning" with nothing typed: the turn stops there, still in plan mode.
+    // Approved with a note: Claude reads the note with the approval. It is not a turn of its own,
+    // and the history keeps it with the decision, not as a message.
+    let mut req = new(&home, "make plan four");
+    req.permission_mode = Some("plan".into());
+    let id = m.create(req).unwrap().meta.id;
+    let s = wait_status(&m, &id, Status::NeedsYou).await;
+    let rid = s.pending[0].request_id.clone();
+    assert!(
+        m.decide(&id, &rid, Answer { feedback: Some("skip step 4".into()), mode: Some("plan".into()), ..allow() }).is_err(),
+        "a note does not widen the modes"
+    );
+    m.decide(&id, &rid, Answer { feedback: Some(" skip step 4 ".into()), mode: Some("acceptEdits".into()), ..allow() }).unwrap();
+    let s = wait_status(&m, &id, Status::Idle).await;
+    assert_eq!(s.meta.permission_mode, "acceptEdits");
+    assert_eq!(texts(&m, &id).last().map(String::as_str), Some("plan approved (mode acceptEdits), edit made, with your note: skip step 4"));
+    let events = m.events(&id, 0).unwrap();
+    assert_eq!(events.iter().filter(|e| matches!(e.body, EventBody::User { .. })).count(), 1, "the note is not shown as a message");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(&e.body, EventBody::Decision { detail: Some(d), .. } if d == &json!({"mode": "acceptEdits", "feedback": "skip step 4"}))),
+        "the note is kept with the decision"
+    );
+
+    // Claude enters plan mode by itself: nothing is asked, and the session's mode follows.
+    let id = m.create(new(&home, "enter plan")).unwrap().meta.id;
+    let s = wait_status(&m, &id, Status::NeedsYou).await;
+    assert_eq!((s.pending.len(), s.pending[0].tool_name.as_str(), s.meta.permission_mode.as_str()), (1, "ExitPlanMode", "plan"));
+    assert!(tool_results(&m, &id)[0].starts_with("Entered plan mode."));
+
+    // Stopped while the plan waits (the Stop button, or Esc): the turn ends there, still in plan mode.
     let mut req = new(&home, "make plan three");
     req.permission_mode = Some("plan".into());
     let id = m.create(req).unwrap().meta.id;

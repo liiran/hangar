@@ -301,7 +301,9 @@ pub struct Answer {
     pub answers: Option<BTreeMap<String, String>>,
     /// A plan (`ExitPlanMode`), allowed: the permission mode to carry on in.
     pub mode: Option<String>,
-    /// Deny: what the user wants done differently, in their own words.
+    /// What the user typed, in their own words. Deny: what they want done
+    /// differently. A plan, allowed: a note that goes to Claude with the
+    /// approval.
     pub feedback: Option<String>,
     /// Deny: end the turn too, so Claude waits for the next message.
     pub stop: bool,
@@ -342,6 +344,8 @@ struct Reply {
     detail: Option<Value>,
     /// The permission mode the session is in afterwards, if it changes.
     mode: Option<String>,
+    /// A plan, allowed: the user's note, which Claude reads with the approval.
+    note: Option<String>,
 }
 
 /// Works out the reply to `p` from the user's answer, or says why the
@@ -357,6 +361,7 @@ fn reply_to(p: &PendingPermission, a: &Answer) -> Result<Reply> {
         behavior: "deny",
         detail: None,
         mode: None,
+        note: None,
     };
     if a.answers.is_some() && !(a.allow && p.tool_name == ASK_TOOL) {
         bail!("answers go with allowing a question");
@@ -366,6 +371,10 @@ fn reply_to(p: &PendingPermission, a: &Answer) -> Result<Reply> {
     }
     if a.clarify && (a.allow || p.tool_name != ASK_TOOL) {
         bail!("only a question can be talked over");
+    }
+    let feedback = a.feedback.as_deref().map(reply).filter(|f| !f.is_empty());
+    if a.allow && feedback.is_some() && p.tool_name != PLAN_TOOL {
+        bail!("a note goes with approving a plan");
     }
     if a.allow {
         r.behavior = "allow";
@@ -397,6 +406,10 @@ fn reply_to(p: &PendingPermission, a: &Answer) -> Result<Reply> {
                 r.detail = Some(json!({"mode": mode}));
                 r.mode = Some(mode.clone());
             }
+            if let Some(note) = feedback {
+                r.detail.get_or_insert_with(|| json!({}))["feedback"] = json!(note);
+                r.note = Some(note);
+            }
         } else if a.always
             && let Some(rules) = p.suggestions.as_ref().and_then(claude::session_only)
         {
@@ -405,7 +418,6 @@ fn reply_to(p: &PendingPermission, a: &Answer) -> Result<Reply> {
         }
         return Ok(r);
     }
-    let feedback = a.feedback.as_deref().map(reply).filter(|f| !f.is_empty());
     if a.clarify {
         let asked: Vec<String> = p.input["questions"]
             .as_array()
@@ -835,6 +847,16 @@ impl Manager {
         let reply = reply_to(s.pending.get(request_id).context("that request is no longer pending")?, &answer)?;
         s.pending.remove(request_id);
         if reply.allow {
+            // Claude Code's terminal hands Claude a note typed with an approval
+            // together with the approval. The answer hangar sends has no place
+            // for one, so the note goes in as a message just ahead of it:
+            // Claude Code holds a message that arrives while a request waits,
+            // and Claude reads it with the approval, before its next step.
+            // (Sent after the approval, it is read one step too late. Both
+            // orders were tried against Claude Code 2.1.325.)
+            if let Some(note) = &reply.note {
+                run.driver.send_user(note);
+            }
             run.driver.allow(request_id, &reply.input, reply.permissions.as_ref());
         } else {
             run.driver.deny(request_id, &reply.message, reply.interrupt);
@@ -1665,8 +1687,19 @@ mod tests {
             reply_to(&pending("Bash", json!({"command": "ls"})), &Answer { mode: Some("acceptEdits".into()), ..yes.clone() }).is_err(),
             "only a plan changes the mode"
         );
-        let r = reply_to(&plan, &Answer { always: true, ..yes }).unwrap();
-        assert_eq!((r.behavior, r.permissions, r.mode), ("allow", None, None), "a plan never takes Claude's suggested rules");
+        let r = reply_to(&plan, &Answer { always: true, ..yes.clone() }).unwrap();
+        assert_eq!((r.behavior, r.permissions, r.mode, r.note), ("allow", None, None, None), "a plan never takes Claude's suggested rules");
+
+        // Approved with a note: the note goes to Claude as it was typed, and is kept in the history.
+        let r = reply_to(&plan, &Answer { mode: Some("default".into()), feedback: Some("  skip step 4 ".into()), ..yes.clone() }).unwrap();
+        assert_eq!((r.allow, r.note.as_deref(), r.mode.as_deref()), (true, Some("skip step 4"), Some("default")));
+        assert_eq!(r.detail, Some(json!({"mode": "default", "feedback": "skip step 4"})));
+        let r = reply_to(&plan, &Answer { mode: Some("default".into()), feedback: Some("   ".into()), ..yes.clone() }).unwrap();
+        assert_eq!((r.note, r.detail), (None, Some(json!({"mode": "default"}))), "a note of spaces is no note");
+        assert!(
+            reply_to(&pending("Bash", json!({"command": "ls"})), &Answer { feedback: Some("and then delete it".into()), ..yes }).is_err(),
+            "only a plan is approved with a note"
+        );
 
         let r = reply_to(&plan, &Answer { feedback: Some("  add tests first ".into()), stop: true, ..Default::default() }).unwrap();
         assert_eq!(r.message, format!("{REFUSED}{REFUSED_BECAUSE}add tests first"));

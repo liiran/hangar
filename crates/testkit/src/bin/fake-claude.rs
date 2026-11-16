@@ -5,7 +5,10 @@
 //! * each user message gets `system/init`, an assistant reply and a `result`;
 //! * `total_cost_usd` is a running total for the process (0.01 per turn);
 //! * permission suggestions target `localSettings`, as the real CLI's often do;
-//! * `get_context_usage` is answered at any time, also while a request waits.
+//! * `get_context_usage` is answered at any time, also while a request waits;
+//! * a message that arrives while a plan waits is held, and read with the answer
+//!   to the plan;
+//! * entering plan mode (`EnterPlanMode`) is not asked about.
 //!
 //! Message text controls behavior:
 //! * `use tool`: asks permission for `Bash {command: "ls"}` first; an
@@ -20,7 +23,9 @@
 //!   the mode that came back, says so (`system/status`) and makes one edit
 //!   (asking first unless edits are accepted). Refused with words, it presents
 //!   the plan again with those words added. Refused with `interrupt`, the turn
-//!   ends as a stopped one. `long plan` is one too long for the card, and
+//!   ends as a stopped one. Approved with a message held, the reply repeats
+//!   the message. `enter plan` enters plan mode with `EnterPlanMode` first.
+//!   `long plan` is one too long for the card, and
 //!   `hostile plan` one with markup, a script link, a remote image and an
 //!   invisible character in it, and a field besides the plan in its request;
 //! * `edit files`: edits and writes files without asking, with the line-by-line
@@ -67,6 +72,8 @@ struct Fake {
     turn: u64,
     /// Set by `context NN`.
     context_percent: Option<u64>,
+    /// Messages that arrived while a request was waiting.
+    held: Vec<String>,
 }
 
 impl Fake {
@@ -158,6 +165,8 @@ impl Fake {
                     out(json!({"type": "control_cancel_request", "request_id": request_id}));
                     return Decision::Interrupted;
                 }
+            } else if v["type"] == "user" {
+                self.held.push(v["message"]["content"].as_str().unwrap_or_default().to_string());
             } else if v["type"] == "control_response" && v["response"]["request_id"] == request_id {
                 let r = &v["response"]["response"];
                 return if r["behavior"] == "allow" {
@@ -218,6 +227,7 @@ fn main() {
         mode: flag("--permission-mode").unwrap_or_else(|| "default".into()),
         turn: 0,
         context_percent: None,
+        held: Vec::new(),
     };
     let cwd = std::env::current_dir().unwrap_or_default();
     let file = |name: &str| cwd.join(name).display().to_string();
@@ -233,6 +243,7 @@ fn main() {
             }
             "user" => {
                 fake.turn += 1;
+                fake.held.clear();
                 let turn = fake.turn;
                 let text = msg["message"]["content"].as_str().unwrap_or_default().to_string();
                 out(
@@ -327,7 +338,16 @@ fn main() {
                     continue;
                 }
 
-                if text.contains("make plan") || text.contains("long plan") || text.contains("hostile plan") {
+                if text.contains("make plan") || text.contains("long plan") || text.contains("hostile plan") || text.contains("enter plan") {
+                    if text.contains("enter plan") {
+                        // Not asked about: driven like this, Claude Code enters plan mode by itself.
+                        let id = format!("tn{turn}");
+                        let entered = "Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.";
+                        fake.tool_use(&id, "EnterPlanMode", &json!({}));
+                        fake.mode = "plan".into();
+                        out(json!({"type": "system", "subtype": "status", "status": null, "permissionMode": fake.mode, "session_id": fake.session_id}));
+                        fake.tool_result(&id, entered, false, json!({"message": entered}));
+                    }
                     let mut plan = if text.contains("hostile plan") {
                         "# Plan: tidy up\u{202e}\n\n<script>window.pwned = 1</script>\n\n<img src=x onerror=\"window.pwned = 2\">\n\n[Approve here](javascript:window.pwned=3) and ![pixel](https://evil.example/pixel.png)\n\n1. Delete the backups".to_string()
                     } else if text.contains("long plan") {
@@ -375,7 +395,9 @@ fn main() {
                                 } else {
                                     fake.tool_result(&edit_id, "The user declined this tool use.", true, json!("Error: declined"));
                                 }
-                                fake.done(&format!("plan approved (mode {}), edit {}", fake.mode, if allowed { "made" } else { "refused" }));
+                                // A message held while the plan waited: read with the approval.
+                                let note: String = std::mem::take(&mut fake.held).iter().map(|n| format!(", with your note: {n}")).collect();
+                                fake.done(&format!("plan approved (mode {}), edit {}{note}", fake.mode, if allowed { "made" } else { "refused" }));
                                 break;
                             }
                             Decision::Deny { message, interrupt } => {
