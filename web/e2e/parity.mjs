@@ -22,6 +22,9 @@ const home = path.join(tmp, "home");
 const proj = path.join(tmp, "shop-app");
 fs.mkdirSync(home);
 fs.mkdirSync(proj);
+// A dozen sessions are open at once here. The fake ones are tiny, so the budget is told so:
+// otherwise, on a PC that is short of memory, it makes the later ones wait in the queue.
+fs.writeFileSync(path.join(home, "config.toml"), ["[budget]", "reserve_mb = 64", "initial_estimate_mb = 8", ""].join("\n"));
 const shots = process.env.E2E_SHOTS;
 if (shots) fs.mkdirSync(shots, { recursive: true });
 let shotNo = 0;
