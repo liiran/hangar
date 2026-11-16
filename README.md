@@ -21,14 +21,16 @@
   - Nothing in a request can hide: long ones must be opened in full before Allow works, and invisible characters are written out.
   - *Allow for session* shows the rule it adds.
 - **Questions and plans, answered in the app.** These are Claude Code's own two dialogs, and they work as they do in its terminal.
-  - **A question:** when Claude asks you something, each question shows with its options. Pick one, pick several where that is allowed, or type your own answer. For example, to "Which sign-in method?" you can choose *Google*, or type *magic links by email*. Claude gets exactly that.
-  - **A plan:** in *Plan only*, Claude's finished plan shows formatted, with Claude Code's three choices: *Yes, auto-accept edits*, *Yes, manually approve edits*, or *No, keep planning*. With "No" you can type what to change and Claude plans again; with nothing typed, the turn stops so you can say it in a message.
-- **Settings per session.** Each session gets a folder, a model (Opus, Sonnet or Haiku) and a permission level: ask first, accept edits, plan only or full access. Both the model and the permission level can be changed mid-session.
+  - **A question:** when Claude asks you something, a panel comes up on top of the message box with one question at a time and its options, each with a letter.
+    - Click an option or press its letter: that answers the question and moves to the next. To "Which sign-in method?" you can choose *Google*, or type *magic links by email* into "Something else…". Claude gets exactly that.
+    - Once every question has an answer, they go to Claude. The dots and arrows open any question in any order, so an answer can be changed before the last one is given.
+  - **A plan:** in *Plan only*, Claude's finished plan shows formatted. Under it is Claude Code's own question, "Would you like to proceed?", with its three choices as a numbered list: *Yes, auto-accept edits*, *Yes, manually approve edits*, or *No, keep planning*. The last takes what to change on the same line, and Claude plans again; with nothing typed, the turn stops so you can say it in a message.
+- **Settings per session.** Each session gets a folder, a model (Opus, Sonnet or Haiku) and a permission level: ask first, accept edits, plan only or full access. Both the model and the permission level can be changed mid-session. The level a session is in shows under its message box, bottom left, and can be changed there.
 - **A feed per session.** It shows messages, tool calls you can expand, and each turn's time and cost. A properties panel shows the session's status, model, memory, cost and MCP servers. A long session opens at its newest entries and stays fast; the earlier ones are drawn when you ask for them.
   - **Every edit shows what it changed:** the file's own line numbers, removed lines in red, added lines in green, and a few unchanged lines around them. This is so even when edits are accepted without asking. A long change opens folded.
 - **Context and plan limits in view.** Every number is Claude Code's own, as of Claude's last reply; hangar works none of them out.
-  - **Context:** a ring under the reply box fills as Claude's context window does, for example `42%`. It turns orange at 75% and red at 90%. Hover it to see what fills the window.
-  - **Limits:** the sidebar shows how much of your Claude plan's 5-hour and 7-day limits is used and when each starts over. They appear once a session has talked to Claude, and update as sessions run.
+  - **Context:** a ring under the message box, bottom right, fills as Claude's context window does, for example `42%`. It warms as it fills: yellow from 50%, orange from 70%, red at the end. Hover it to see what fills the window.
+  - **Limits:** the sidebar shows how much of your Claude plan's 5-hour and 7-day limits is used and when each starts over, with bars colored the same way. They appear once a session has talked to Claude, and update as sessions run.
 - **History that lasts.** Sessions outlive restarts. A stopped or paused session carries on in the same conversation when you send your next message. The conversation is Claude Code's own, so `claude --resume <id>` in a terminal can continue it too.
 - **Light or dark.** hangar follows your system. To pin one, press `Ctrl K` and type *theme*.
 - **Keyboard first:**
@@ -41,7 +43,8 @@
 | `R` | reply to the open session |
 | `Esc` | stop the running turn |
 | `Ctrl \` | show or hide the sidebar |
-| `Ctrl Enter` | send your answers to Claude's questions |
+| `A`, `B`, … | choose that option of Claude's question (with the panel in focus); `←` `→` go to the other questions |
+| `1`, `2`, `3` | choose that line of "Would you like to proceed?" under a plan (with the list in focus) |
 
 *Stop hangar* in the command palette does what `hangar stop` does, after asking. The window then says that hangar is stopped and how to start it again.
 
