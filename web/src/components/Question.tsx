@@ -1,168 +1,308 @@
-import { Check, CircleHelp, MessagesSquare } from "lucide-react";
-import { useState, type KeyboardEvent } from "react";
+import { Check, ChevronLeft, ChevronRight, CircleHelp, MessagesSquare } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api, type DecisionDetail, type Session } from "../api";
 import { answerOf, answersOf, NOTHING, pick, toggleOther, type, type Picked, type Question } from "../ask";
 import { report } from "../store";
-import { Shown } from "./approval";
+import { Shown, useArmed } from "./approval";
 import { Button, cx, Kbd } from "./ui";
 
+const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
 /**
- * Claude's questions, to answer. Each question lists its options the way the app's own dropdowns
- * do; the last row takes an answer of the user's own. The answers go back to Claude exactly as
- * its terminal sends them: one line per question, several choices joined with ", ".
+ * Claude's questions, one at a time, in a panel that sits on top of the message box.
+ *
+ * Choosing an option answers the question and moves on to the next one still open; with none
+ * left, the answers go to Claude. Questions that take several choices, or an answer of the
+ * user's own, move on with Enter or the button. The dots and arrows go to any question in any
+ * order, and an earlier answer can be changed until the last one is given. The answers go back
+ * exactly as Claude Code's terminal sends them: one per question, several choices joined ", ".
  */
-export function QuestionCard({ session, requestId, questions, armed }: { session: Session; requestId: string; questions: Question[]; armed: boolean }) {
+export function QuestionPanel({ session, requestId, questions }: { session: Session; requestId: string; questions: Question[] }) {
+  const armed = useArmed(session);
   const [picked, setPicked] = useState<Picked[]>(() => questions.map(() => NOTHING));
+  const [at, setAt] = useState(0);
   const [busy, setBusy] = useState(false);
-  const answers = answersOf(questions, picked);
-  const answered = questions.filter((q, i) => answerOf(q, picked[i]) !== null).length;
-  const set = (i: number, p: Picked) => setPicked((all) => all.map((old, j) => (j === i ? p : old)));
+  // The option under the pointer or the keyboard focus: its preview shows before it is chosen.
+  const [peek, setPeek] = useState<string | null>(null);
+  const root = useRef<HTMLDivElement>(null);
+  const own = useRef<HTMLInputElement>(null);
+  const alive = useRef(true);
+  useEffect(() => () => void (alive.current = false), []);
+
+  const q = questions[at];
+  const p = picked[at];
+  const open = (all: Picked[]) => questions.map((qq, i) => answerOf(qq, all[i]) === null);
+  const left = open(picked).filter(Boolean).length;
   const send = async (behavior: "allow" | "deny", extra: Parameters<typeof api.decide>[3]) => {
     setBusy(true);
     try {
       await api.decide(session.id, requestId, behavior, extra);
     } catch (e) {
       report(e);
-      setBusy(false);
+      if (alive.current) setBusy(false);
     }
   };
-  const ready = answers !== null && armed && !busy;
-  const submit = () => ready && send("allow", { answers });
+  /** After an answer: on to the next question still open or, with none left, off to Claude. */
+  const onward = (all: Picked[]) => {
+    const still = open(all);
+    for (let step = 1; step <= questions.length; step++) {
+      const next = (at + step) % questions.length;
+      if (still[next]) return go(next);
+    }
+    const answers = answersOf(questions, all);
+    if (answers && armed && !busy) send("allow", { answers });
+  };
+  const go = (i: number) => {
+    setAt(i);
+    setPeek(null);
+    // The keys keep working on the question that is now showing.
+    requestAnimationFrame(() => root.current?.querySelector<HTMLElement>("[data-choice]")?.focus());
+  };
+  const set = (next: Picked) => {
+    const all = picked.map((old, i) => (i === at ? next : old));
+    setPicked(all);
+    return all;
+  };
+  const choose = (label: string) => {
+    if (!armed || busy) return; // a request ignores clicks for its first moment on screen
+    const all = set(pick(q, p, label));
+    // One choice answers the question. The mark shows for a moment before the panel moves on.
+    if (!q.multi) setTimeout(() => alive.current && onward(all), 160);
+  };
+  const answeredHere = answerOf(q, p) !== null;
+
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const typing = e.target === own.current;
+    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+      // Enter moves on once the question has an answer. Before that, on an option, it chooses
+      // it (as Space does at any time).
+      e.preventDefault();
+      if (answeredHere) onward(picked);
+      else if ((e.target as HTMLElement).hasAttribute("data-option")) (e.target as HTMLElement).click();
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const rows = Array.from(root.current?.querySelectorAll<HTMLElement>("[data-choice]") ?? []);
+      const from = rows.indexOf(document.activeElement as HTMLElement);
+      if (rows.length === 0) return;
+      e.preventDefault();
+      rows[from < 0 ? 0 : (from + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length].focus();
+      return;
+    }
+    if (typing) return;
+    if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && questions.length > 1) {
+      e.preventDefault();
+      go((at + (e.key === "ArrowRight" ? 1 : questions.length - 1)) % questions.length);
+      return;
+    }
+    const letter = e.key.length === 1 ? LETTERS.indexOf(e.key.toUpperCase()) : -1;
+    if (letter >= 0 && letter < q.options.length) {
+      e.preventDefault();
+      choose(q.options[letter].label);
+    } else if (letter === q.options.length) {
+      e.preventDefault();
+      own.current?.focus();
+    }
+  };
+
+  // Options with previews (mock-ups, snippets) show them beside the list, as Claude Code does:
+  // the one under the pointer or focus, else the chosen one, else the first. Every preview is
+  // laid out in the same cell and only one is visible, so the panel keeps its size and no
+  // option moves away from the pointer when the preview changes.
+  const previews = q.options.filter((o) => o.preview);
+  const showing = previews.find((o) => o.label === peek) ?? previews.find((o) => p.labels.includes(o.label)) ?? previews[0];
   return (
     <div
-      className="rounded-lg bg-s-needs/[0.06] p-4 ring-1 ring-inset ring-s-needs/35"
-      data-question-card
-      onKeyDown={(e) => {
-        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-          e.preventDefault();
-          submit();
-        }
-      }}
+      ref={root}
+      role="group"
+      aria-label={questions.length === 1 ? "Claude's question" : `Claude's questions: ${at + 1} of ${questions.length}`}
+      data-question-panel
+      data-armed={armed}
+      onKeyDown={onKey}
+      className="animate-rise mb-1.5 overflow-hidden rounded-lg bg-panel shadow-pop"
     >
-      <div className="flex items-center gap-2 text-[13px] font-medium">
-        <CircleHelp className="size-4 text-s-needs" />
-        {questions.length === 1 ? "Claude has a question" : `Claude has ${questions.length} questions`}
-      </div>
-      {questions.map((q, i) => (
-        <QuestionBlock key={i} q={q} picked={picked[i]} onChange={(p) => set(i, p)} disabled={busy} />
-      ))}
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Button variant="primary" size="sm" disabled={!ready} onClick={submit}>
-          <Check className="size-3.5" /> {questions.length === 1 ? "Send answer" : "Send answers"}
-          <span className="ml-1 hidden items-center gap-0.5 sm:inline-flex">
-            <Kbd className="border-white/25 bg-white/10 text-white/85">Ctrl</Kbd>
-            <Kbd className="border-white/25 bg-white/10 text-white/85">⏎</Kbd>
+      <div className="flex items-center gap-2 border-b border-line px-3.5 py-2 text-[12.5px]">
+        <CircleHelp className="size-3.5 shrink-0 text-s-needs" />
+        <span className="font-medium">{questions.length === 1 ? "Claude has a question" : "Claude has questions"}</span>
+        {questions.length > 1 && (
+          <span className="ml-auto flex items-center gap-2">
+            <span className="flex items-center gap-1" role="tablist" aria-label="Questions">
+              {questions.map((qq, i) => {
+                const done = answerOf(qq, picked[i]) !== null;
+                return (
+                  <button
+                    key={i}
+                    role="tab"
+                    aria-selected={i === at}
+                    aria-label={`Question ${i + 1}${done ? ", answered" : ""}`}
+                    title={qq.header.trim() || qq.question}
+                    onClick={() => go(i)}
+                    className="grid size-4 place-items-center rounded-full"
+                  >
+                    <span className={cx("rounded-full transition-all", i === at ? "size-2.5" : "size-1.5", done ? "bg-accent" : i === at ? "bg-fg" : "bg-faint/60")} />
+                  </button>
+                );
+              })}
+            </span>
+            <span className="text-faint tabular-nums" aria-live="polite">
+              {at + 1} of {questions.length}
+            </span>
+            <span className="flex">
+              <PagerButton label="Previous question" onClick={() => go((at + questions.length - 1) % questions.length)}>
+                <ChevronLeft className="size-3.5" />
+              </PagerButton>
+              <PagerButton label="Next question" onClick={() => go((at + 1) % questions.length)}>
+                <ChevronRight className="size-3.5" />
+              </PagerButton>
+            </span>
           </span>
-        </Button>
+        )}
+      </div>
+
+      <div className="max-h-[min(48vh,440px)] overflow-y-auto px-3.5 pt-3 pb-1">
+        <p className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[13.5px]">
+          {q.header.trim() && (
+            <span className="rounded bg-panel-2 px-1.5 py-px text-[11px] font-medium text-muted ring-1 ring-inset ring-line-strong">
+              <Shown text={q.header} />
+            </span>
+          )}
+          <span className="min-w-0 font-medium [overflow-wrap:anywhere]">
+            <Shown text={q.question} />
+          </span>
+          {q.multi && <span className="text-[11.5px] text-faint">Choose any that apply</span>}
+        </p>
+        <div className={cx(previews.length > 0 && "grid items-start gap-3 sm:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]")}>
+          <fieldset role={q.multi ? "group" : "radiogroup"} aria-label={q.question} disabled={busy} className="min-w-0 space-y-0.5">
+            {q.options.map((o, i) => {
+              const on = p.labels.includes(o.label);
+              return (
+                <button
+                  key={o.label}
+                  type="button"
+                  role={q.multi ? "checkbox" : "radio"}
+                  aria-checked={on}
+                  data-choice
+                  data-option
+                  onClick={() => choose(o.label)}
+                  onMouseEnter={() => setPeek(o.label)}
+                  onMouseLeave={() => setPeek(null)}
+                  onFocus={() => setPeek(o.label)}
+                  className={cx("flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-panel-2", on && "bg-accent-soft hover:bg-accent-soft")}
+                >
+                  <Letter on={on}>{LETTERS[i]}</Letter>
+                  <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                    <span className="block text-[13px] leading-5 text-fg">
+                      <Shown text={o.label} />
+                    </span>
+                    {o.description.trim() && (
+                      <span className="block text-[12px] leading-snug text-muted">
+                        <Shown text={o.description} />
+                      </span>
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+            <div className={cx("flex items-center gap-2.5 rounded-md px-2 py-1", p.otherOn && "bg-accent-soft")}>
+              <button
+                type="button"
+                role={q.multi ? "checkbox" : "radio"}
+                aria-checked={p.otherOn}
+                aria-label="Your own answer"
+                tabIndex={-1}
+                onClick={() => (p.other.trim() ? set(toggleOther(q, p)) : own.current?.focus())}
+                className="shrink-0 rounded"
+              >
+                <Letter on={p.otherOn}>{LETTERS[q.options.length]}</Letter>
+              </button>
+              <input
+                ref={own}
+                data-choice
+                type="text"
+                value={p.other}
+                onChange={(e) => set(type(q, p, e.target.value))}
+                placeholder="Something else…"
+                aria-label={`Your own answer to: ${q.question}`}
+                maxLength={4000}
+                className="h-7 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-faint"
+              />
+            </div>
+          </fieldset>
+          {previews.length > 0 && (
+            <div className="mb-1 grid min-w-0" data-preview>
+              {previews.map((o) => (
+                <pre
+                  key={o.label}
+                  aria-hidden={o !== showing}
+                  className={cx("col-start-1 row-start-1 min-w-0 overflow-x-auto rounded-md bg-code p-3 font-mono text-[11.5px] leading-snug text-muted ring-1 ring-inset ring-line", o !== showing && "invisible")}
+                >
+                  <Shown text={o.preview ?? ""} />
+                </pre>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 px-3.5 py-2.5">
         <Button variant="ghost" size="sm" disabled={busy} onClick={() => send("deny", { clarify: true })} title="Answer nothing yet: Claude asks what you would like to clear up first">
           <MessagesSquare className="size-3.5" /> Chat about this
         </Button>
-        {questions.length > 1 && (
-          <span className="text-[12px] text-faint" aria-live="polite">
-            {answered} of {questions.length} answered
-          </span>
-        )}
+        <span className="ml-auto hidden items-center gap-1 text-[11px] text-faint sm:flex">
+          <Kbd>A</Kbd>–<Kbd>{LETTERS[q.options.length]}</Kbd> choose
+          {questions.length > 1 && (
+            <>
+              <span className="mx-1">·</span>
+              <Kbd>←</Kbd>
+              <Kbd>→</Kbd> other questions
+            </>
+          )}
+        </span>
+        <Button variant="primary" size="sm" className="ml-auto sm:ml-0" disabled={!answeredHere || !armed || busy} onClick={() => onward(picked)} data-onward>
+          {left === 0 ? (
+            <>
+              <Check className="size-3.5" /> {questions.length === 1 ? "Send answer" : "Send answers"}
+            </>
+          ) : (
+            "Next"
+          )}
+          <Kbd className="ml-0.5 border-accent-fg/25 bg-accent-fg/10 text-accent-fg/85">⏎</Kbd>
+        </Button>
       </div>
     </div>
   );
 }
 
-function QuestionBlock({ q, picked, onChange, disabled }: { q: Question; picked: Picked; onChange: (p: Picked) => void; disabled: boolean }) {
-  const chosen = q.multi ? null : q.options.find((o) => picked.labels.includes(o.label));
-  // Up and down move between the rows of one question, as in a dropdown.
-  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const rows = Array.from(e.currentTarget.querySelectorAll<HTMLElement>("[data-choice]"));
-    const at = rows.indexOf(document.activeElement as HTMLElement);
-    if (at < 0) return;
-    e.preventDefault();
-    rows[(at + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length].focus();
-  };
+function PagerButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (
-    <fieldset className="mt-3.5 min-w-0" disabled={disabled}>
-      <legend className="flex w-full flex-wrap items-baseline gap-x-2 gap-y-1 text-[13px]">
-        {q.header.trim() && (
-          <span className="rounded bg-panel-2 px-1.5 py-px text-[11px] font-medium text-muted ring-1 ring-inset ring-line-strong">
-            <Shown text={q.header} />
-          </span>
-        )}
-        <span className="min-w-0 font-medium [overflow-wrap:anywhere]">
-          <Shown text={q.question} />
-        </span>
-        {q.multi && <span className="text-[11.5px] text-faint">Choose any that apply</span>}
-      </legend>
-      <div role={q.multi ? "group" : "radiogroup"} aria-label={q.question} onKeyDown={onKey} className="mt-2 divide-y divide-line overflow-hidden rounded-md bg-panel ring-1 ring-inset ring-line-strong">
-        {q.options.map((o) => {
-          const on = picked.labels.includes(o.label);
-          return (
-            <button
-              key={o.label}
-              type="button"
-              role={q.multi ? "checkbox" : "radio"}
-              aria-checked={on}
-              data-choice
-              onClick={() => onChange(pick(q, picked, o.label))}
-              className={cx("flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors hover:bg-panel-2", on && "bg-accent-soft hover:bg-accent-soft")}
-            >
-              <Mark on={on} multi={q.multi} />
-              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-                <span className="block text-[13px] leading-5 text-fg">
-                  <Shown text={o.label} />
-                </span>
-                {o.description.trim() && (
-                  <span className="block text-[12px] leading-snug text-muted">
-                    <Shown text={o.description} />
-                  </span>
-                )}
-              </span>
-            </button>
-          );
-        })}
-        <div className={cx("flex items-center gap-2.5 px-3 py-1.5", picked.otherOn && "bg-accent-soft")}>
-          <button
-            type="button"
-            role={q.multi ? "checkbox" : "radio"}
-            aria-checked={picked.otherOn}
-            aria-label="Your own answer"
-            disabled={!picked.other.trim()}
-            onClick={() => onChange(toggleOther(q, picked))}
-            className="shrink-0 rounded-full disabled:cursor-default"
-          >
-            <Mark on={picked.otherOn} multi={q.multi} />
-          </button>
-          <input
-            data-choice
-            type="text"
-            value={picked.other}
-            onChange={(e) => onChange(type(q, picked, e.target.value))}
-            placeholder="Something else: type your own answer"
-            aria-label={`Your own answer to: ${q.question}`}
-            maxLength={4000}
-            className="h-7 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-faint"
-          />
-        </div>
-      </div>
-      {chosen?.preview && (
-        <pre className="mt-2 overflow-x-auto rounded-md bg-code p-3 font-mono text-[11.5px] leading-snug text-muted ring-1 ring-inset ring-line" aria-label={`Preview of ${chosen.label}`} data-preview>
-          <Shown text={chosen.preview} />
-        </pre>
-      )}
-    </fieldset>
+    <button type="button" aria-label={label} title={label} onClick={onClick} className="grid size-6 place-items-center rounded text-muted hover:bg-panel-2 hover:text-fg">
+      {children}
+    </button>
   );
 }
 
-/** A radio dot or a checkbox tick, in the app's own style. */
-function Mark({ on, multi }: { on: boolean; multi: boolean }) {
+/** An option's key: its letter, or a tick once it is chosen. */
+function Letter({ on, children }: { on: boolean; children: React.ReactNode }) {
   return (
     <span
       aria-hidden
       className={cx(
-        "mt-[3px] grid size-3.5 shrink-0 place-items-center ring-1 ring-inset transition-colors",
-        multi ? "rounded-[4px]" : "rounded-full",
-        on ? "bg-accent text-accent-fg ring-accent" : "bg-panel ring-line-strong",
+        "mt-px grid size-[18px] shrink-0 place-items-center rounded text-[10.5px] font-medium ring-1 ring-inset transition-colors",
+        on ? "bg-accent text-accent-fg ring-accent" : "bg-panel-2 text-muted ring-line-strong",
       )}
     >
-      {on && (multi ? <Check className="size-2.5" strokeWidth={3} /> : <span className="size-1.5 rounded-full bg-accent-fg" />)}
+      {on ? <Check className="size-3" strokeWidth={3} /> : children}
+    </span>
+  );
+}
+
+/** In the feed, while a question waits: where to answer it. */
+export function Asking({ questions }: { questions: Question[] }) {
+  return (
+    <span data-asking>
+      <span className="font-medium text-s-needs">{questions.length === 1 ? "Claude is asking a question." : `Claude is asking ${questions.length} questions.`}</span>{" "}
+      <span className="text-faint">Answer {questions.length === 1 ? "it" : "them"} in the panel above the message box.</span>
     </span>
   );
 }
@@ -193,8 +333,16 @@ export function Answered({ questions, decision, detail }: { questions: Question[
       </div>
     );
   }
-  const count = questions?.length ?? 1;
-  const what = count === 1 ? "Claude's question" : `Claude's ${count} questions`;
-  const label = detail?.clarify ? `You chose to talk about ${what} first` : decision === "deny" ? `You did not answer ${what}` : decision === "cancelled" ? `${what} was withdrawn` : decision === "allow" ? `${what}: sent on with no answer` : `${what} expired`;
-  return <span className="text-faint">{label.replace("questions was", "questions were")}</span>;
+  const many = (questions?.length ?? 1) > 1;
+  const what = many ? `Claude's ${questions!.length} questions` : "Claude's question";
+  const label = detail?.clarify
+    ? `You chose to talk about ${what} first`
+    : decision === "deny"
+      ? `You did not answer ${what}`
+      : decision === "cancelled"
+        ? `${what} ${many ? "were" : "was"} withdrawn`
+        : decision === "allow"
+          ? `${what}: sent on with no answer`
+          : `${what} expired`;
+  return <span className="text-faint">{label}</span>;
 }

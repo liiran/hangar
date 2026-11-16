@@ -2,7 +2,8 @@
 // be approved before all of it has been on screen.
 
 import { ChevronRight } from "lucide-react";
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import type { Session } from "../api";
 import { hiddenParts } from "../safe";
 import { cx } from "./ui";
 
@@ -36,6 +37,18 @@ export const PREVIEW_HEIGHT = 288;
  * first, or the second half of a double-click, must not land on it.
  */
 export const ARM_MS = 600;
+
+/** Whether the session's requests take clicks yet (see [`ARM_MS`]). */
+export function useArmed(session: Session): boolean {
+  const [armed, setArmed] = useState(false);
+  const waiting = session.pending.map((p) => p.request_id).join(" ");
+  useEffect(() => {
+    setArmed(false);
+    const t = setTimeout(() => setArmed(true), ARM_MS);
+    return () => clearTimeout(t);
+  }, [waiting]);
+  return armed;
+}
 
 export const countLines = (...texts: string[]) => texts.reduce((n, t) => n + t.split("\n").length, 0);
 

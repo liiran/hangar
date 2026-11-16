@@ -13,7 +13,7 @@
 //! * `long tool`: like `use tool`, but the command is 60 harmless lines, then one
 //!   that is not, with a direction-override character in it;
 //! * `ask question`: asks two questions with `AskUserQuestion` (one choice, then
-//!   several) and answers `answers: <what came back>`; `ask preview` asks one
+//!   several) and replies with what came back, one line a question; `ask preview` asks one
 //!   whose options carry previews; `ask hostile` asks one with markup and
 //!   invisible characters in it;
 //! * `make plan`: presents a plan with `ExitPlanMode`. Approved, it switches to
@@ -295,7 +295,23 @@ fn main() {
                                 format!("Your questions have been answered: {}. You can now continue with these answers in mind.", said.join(", "))
                             };
                             fake.tool_result(&id, &told, false, json!({"questions": input["questions"], "answers": answers}));
-                            fake.done(&format!("answers: {}", Value::Object(answers)));
+                            // What a real reply does: says in words what it took from the answers.
+                            let chosen: Vec<String> = input["questions"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|q| {
+                                    let answer = answers.get(q["question"].as_str()?)?.as_str()?;
+                                    let name =
+                                        q["header"].as_str().filter(|h| h.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '-')).unwrap_or("Answer");
+                                    Some(format!("- {name}: {answer}"))
+                                })
+                                .collect();
+                            fake.done(&if chosen.is_empty() {
+                                "No answers came back, so I will ask in plain words.".to_string()
+                            } else {
+                                format!("Thanks. Going with:\n\n{}", chosen.join("\n"))
+                            });
                         }
                         Decision::Deny { message, interrupt } => {
                             fake.tool_result(&id, &message, true, json!(format!("Error: {message}")));

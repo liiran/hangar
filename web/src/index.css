@@ -282,6 +282,16 @@ body {
     transform: translateX(100%);
   }
 }
+/* A panel that comes up out of the message box. */
+@keyframes hangar-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+.animate-rise {
+  animation: hangar-rise 0.18s ease-out;
+}
 .animate-pop {
   animation: hangar-pop 0.14s ease-out;
 }
@@ -299,6 +309,7 @@ body {
   .animate-soft-pulse,
   .animate-spin-slow,
   .animate-pop,
+  .animate-rise,
   .animate-fade,
   .animate-slide-left,
   .animate-slide-right {

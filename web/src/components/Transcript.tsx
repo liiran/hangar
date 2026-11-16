@@ -27,11 +27,11 @@ import { report } from "../store";
 import { useNow } from "../ui";
 import { rightToLeft, sessionRules, visible } from "../safe";
 import { needsSignIn, PAGE, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
-import { ApprovalBox, ARM_MS, countLines, Shown } from "./approval";
+import { ApprovalBox, countLines, Shown, useArmed } from "./approval";
 import { DiffStat, DiffView } from "./Diff";
 import { Markdown } from "./Markdown";
 import { PlanCard, PlanOutcome } from "./Plan";
-import { Answered, QuestionCard } from "./Question";
+import { Answered, Asking } from "./Question";
 import { Button, cx, Guard } from "./ui";
 
 /** Statuses in which a tool call without a result is still running. */
@@ -495,15 +495,9 @@ const DECISIONS: Record<string, string> = {
 
 function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission" }>; session: Session }) {
   const [busy, setBusy] = useState(false);
-  const [armed, setArmed] = useState(false);
+  const armed = useArmed(session);
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
-  const waiting = session.pending.map((p) => p.request_id).join(" ");
-  useEffect(() => {
-    setArmed(false);
-    const t = setTimeout(() => setArmed(true), ARM_MS);
-    return () => clearTimeout(t);
-  }, [waiting]);
   const pending = row.decision == null && !row.superseded ? session.pending.find((p) => p.request_id === row.requestId) : undefined;
   const decide = async (behavior: "allow" | "allow_always" | "deny") => {
     setBusy(true);
@@ -522,7 +516,14 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
   // A question or a plan in a shape hangar does not know falls through to the plain request below.
   const questions = row.tool === ASK_TOOL ? questionsOf(row.input) : null;
   const plan = row.tool === PLAN_TOOL ? planOf(row.input) : null;
-  if (pending && questions) return <QuestionCard session={session} requestId={row.requestId} questions={questions} armed={armed} />;
+  // A question is answered in the panel on top of the message box (see SessionPane); the feed says so.
+  if (pending && questions) {
+    return (
+      <Activity icon={<CircleHelp className="size-3" />}>
+        <Asking questions={questions} />
+      </Activity>
+    );
+  }
   if (pending && plan) return <PlanCard session={session} requestId={row.requestId} plan={plan.plan} file={plan.file} armed={armed} />;
   if (!pending && row.tool === ASK_TOOL) {
     return (

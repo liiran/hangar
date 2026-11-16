@@ -1,11 +1,13 @@
 import { ArrowLeft, ArrowUp, ChevronRight, Copy, Ellipsis, Folder, PanelRight, Pause, Pencil, Play, Shield, Square, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type Session } from "../api";
+import { ASK_TOOL, questionsOf } from "../ask";
 import { basename, bytes, PERMISSION_MODES, usd } from "../format";
 import { report, setPermissionMode, useStore } from "../store";
 import { intent, useUI } from "../ui";
 import { ContextWheel } from "./ContextWheel";
 import { Properties } from "./Properties";
+import { QuestionPanel } from "./Question";
 import { Select } from "./Select";
 import { Transcript } from "./Transcript";
 import { Button, cx, IconButton, Kbd, StatusIcon, StatusLabel, useDismiss } from "./ui";
@@ -233,9 +235,13 @@ function Composer({ session }: { session: Session }) {
             ? "Queue a follow-up for when Claude finishes…"
             : "Reply to Claude…";
 
+  // Claude's question, if one is waiting: answered in a panel on top of the message box.
+  const asking = session.pending.map((p) => ({ id: p.request_id, questions: p.tool_name === ASK_TOOL ? questionsOf(p.input) : null })).find((p) => p.questions);
+
   return (
     <div className="shrink-0 px-4 pb-4 sm:px-8">
       <div className="mx-auto max-w-[760px]">
+        {asking?.questions && <QuestionPanel key={asking.id} session={session} requestId={asking.id} questions={asking.questions} />}
         <div className="flex items-end gap-2 rounded-lg bg-panel-2 p-1.5 pl-3 ring-1 ring-inset ring-line-strong transition-shadow focus-within:ring-faint/60">
           <textarea
             ref={ref}

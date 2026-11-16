@@ -102,58 +102,66 @@ try {
 
   // ================================================================ a question
   const askId = await start("ask question about signing in");
-  const card = main.locator("[data-question-card]");
+  const card = page.locator("[data-question-panel]");
   await card.waitFor();
-  check("a question shows as a card of its own, not as a tool to allow", (await card.innerText()).includes("Claude has 2 questions") && (await main.locator("text=Claude wants to use").count()) === 0);
-  check("…with no Allow or Deny on it", (await card.locator("button", { hasText: /^\s*(Allow|Deny)/ }).count()) === 0);
-  const first = card.locator('[role="radiogroup"]');
-  const second = card.locator('[role="group"]');
-  check("one choice is offered as radio rows, several as checkbox rows, each with a row for an own answer", (await first.locator('[role="radio"]').count()) === 4 && (await second.locator('[role="checkbox"]').count()) === 4);
-  check("each option shows its label and what it means", (await first.innerText()).includes("Email and password") && (await first.innerText()).includes("No passwords to store"));
-  const send = card.locator("button", { hasText: "Send answers" });
-  check("nothing can be sent before every question has an answer", (await send.isDisabled()) && (await card.innerText()).includes("0 of 2 answered"));
+  const option = (text) => card.locator("[data-option]", { hasText: text });
+  const onward = card.locator("[data-onward]");
+  const own = card.locator("input");
+  const marked = (text) => option(text).getAttribute("aria-checked");
+  const boxNow = () => page.locator("textarea[data-composer]").evaluate((el) => el.parentElement.getBoundingClientRect().toJSON());
+  await sleep(300); // it slides up into place
+  const [panelAt, under] = [await card.boundingBox(), await boxNow()];
+  const gap = under.top - (panelAt.y + panelAt.height);
+  check("a question comes up as a panel on top of the message box, as wide as it", gap >= 0 && gap < 12 && Math.abs(panelAt.x - under.left) < 2 && Math.abs(panelAt.width - under.width) < 2, `gap ${Math.round(gap)} px`);
+  check("the feed says where to answer it, and nothing offers Allow or Deny", (await main.locator("[data-asking]").innerText()).includes("Claude is asking 2 questions") && (await page.locator("button", { hasText: /^\s*(Allow|Deny)/ }).count()) === 0 && (await main.locator("text=Claude wants to use").count()) === 0);
+  const firstText = await card.innerText();
+  check("it shows one question at a time", firstText.includes("1 of 2") && firstText.includes("Which sign-in method should the app use?") && !firstText.includes("Which pages need"));
+  check("…with lettered options, what each means, and a row for an own answer", /^A\s+Email and password\s+Simple to build/.test(await option("Email and password").innerText()) && (await card.locator("[data-option]").count()) === 3 && (await own.getAttribute("placeholder")) === "Something else…");
+  check("nothing can be sent before the question has an answer", await onward.isDisabled());
   check("the session waits under Needs you", (await session(askId)).status === "needs_you" && (await page.locator('nav[aria-label="Main"] button', { hasText: "Needs you" }).innerText()).includes("1"));
-  await sleep(700); // pictures are taken once the buttons have woken up
+  await sleep(700); // a new request ignores clicks for its first moment (and pictures show it awake)
   await shot(page, "question-asked");
-  await shot(card, "question-card-empty");
+  await shot(card, "question-panel-first");
 
-  await first.locator('[role="radio"]', { hasText: "Google" }).click();
-  await first.locator('[role="radio"]', { hasText: "Both" }).click();
-  const checked = (group, role) => group.locator(`[role="${role}"][aria-checked="true"]`);
-  check("choosing another option replaces the first", (await checked(first, "radio").count()) === 1 && (await checked(first, "radio").innerText()).includes("Both"));
-  check("one of two answered: still not sendable", (await send.isDisabled()) && (await card.innerText()).includes("1 of 2 answered"));
-  await second.locator('[role="checkbox"]', { hasText: "Billing" }).click();
-  await second.locator('[role="checkbox"]', { hasText: "Dashboard" }).click();
-  await second.locator("input").fill("the admin page");
-  check("several options and an own answer add up", (await checked(second, "checkbox").count()) === 3);
-  // Up and down move between the rows of a question, as in the app's dropdowns.
-  await first.locator('[role="radio"]', { hasText: "Email and password" }).focus();
-  await page.keyboard.press("ArrowDown");
-  check("the arrow keys move between a question's rows", await first.locator('[role="radio"]', { hasText: "Google" }).evaluate((el) => el === document.activeElement));
-  await send.waitFor({ state: "visible" });
-  // A request ignores clicks for its first moment on screen (see ARM_MS), so "enabled" may take that long.
-  check("with every question answered it can be sent", (await card.innerText()).includes("2 of 2 answered") && (await enabled(send)));
-  await shot(card, "question-card-filled");
-  await send.click();
-  await main.locator("text=answers: {").waitFor();
+  await option("Google").click();
+  await card.getByText("2 of 2").waitFor();
+  check("choosing an option answers the question and moves on to the next", (await card.innerText()).includes("Which pages need a signed-in user?") && (await card.innerText()).includes("Choose any that apply"));
+  await option("Billing").click();
+  await option("Dashboard").click();
+  await own.fill("the admin page");
+  check("a question that takes several stays until you move on; options and an own answer add up", (await card.innerText()).includes("2 of 2") && (await marked("Billing")) === "true" && (await marked("Dashboard")) === "true" && (await marked("Settings")) === "false" && (await card.locator('[aria-label="Your own answer"]').getAttribute("aria-checked")) === "true");
+  check("with every question answered, the button sends", (await onward.innerText()).includes("Send answers") && (await enabled(onward)));
+  await shot(card, "question-panel-second");
+  // Any question can be opened again, in any order, and its answer changed.
+  await card.locator('[role="tab"]').first().click();
+  await card.getByText("1 of 2").waitFor();
+  check("an earlier question opens again with its answer still marked", (await marked("Google")) === "true" && (await marked("Both")) === "false");
+  await shot(card, "question-panel-back");
+  await option("Both").click();
+  await main.getByText("Protected: Dashboard, Billing, the admin page").waitFor();
+  check("once no question is left open, the answers go to Claude: as chosen, several joined in Claude's order, the typed one last", (await main.innerText()).includes("Sign-in: Both"));
   const answered = main.locator("[data-answered]").last();
   const answeredText = await answered.innerText();
-  check("the answers go to Claude as chosen, several joined in Claude's order with the typed one last", (await main.innerText()).includes('"Which pages need a signed-in user?":"Dashboard, Billing, the admin page"') && (await main.innerText()).includes('"Which sign-in method should the app use?":"Both"'));
-  check("the card becomes a record of what was answered", (await card.count()) === 0 && answeredText.includes("You answered") && answeredText.includes("Sign-in") && answeredText.includes("Both") && answeredText.includes("Dashboard, Billing, the admin page"), answeredText.replace(/\s+/g, " "));
+  check("the feed keeps a record of what was answered, and the panel is gone", (await card.count()) === 0 && (await main.locator("[data-asking]").count()) === 0 && answeredText.includes("You answered") && answeredText.includes("Sign-in") && answeredText.includes("Both") && answeredText.includes("Dashboard, Billing, the admin page"), answeredText.replace(/\s+/g, " "));
   await shot(page, "question-answered");
 
-  // A typed answer alone, sent with Ctrl+Enter.
+  // Out of order, by keyboard: the second question first, then an own answer to the first.
   await say("ask question once more");
   await card.waitFor();
-  await first.locator('[role="radio"]', { hasText: "Google" }).click();
-  await first.locator("input").fill("Magic links by email");
-  check("typing an own answer takes the place of the chosen option", (await checked(first, "radio").count()) === 1 && (await checked(first, "radio").getAttribute("aria-label")) === "Your own answer");
-  await second.locator('[role="checkbox"]', { hasText: "Settings" }).click();
-  await enabled(send);
-  await second.locator("input").focus();
-  await page.keyboard.press("Control+Enter");
-  await main.getByText('"Which sign-in method should the app use?":"Magic links by email"').waitFor();
-  check("an answer typed by the user reaches Claude word for word, and Ctrl+Enter sends", true);
+  await sleep(700);
+  await card.locator('button[aria-label="Next question"]').click();
+  await card.getByText("2 of 2").waitFor();
+  await page.keyboard.press("b");
+  check("a letter key chooses its option", (await marked("Settings")) === "true");
+  await page.keyboard.press("Enter");
+  await card.getByText("1 of 2").waitFor();
+  check("Enter moves on to the question still open", (await card.innerText()).includes("Which sign-in method"));
+  await page.keyboard.press("d");
+  check("the letter after the last option goes to the own-answer row", await own.evaluate((el) => el === document.activeElement));
+  await page.keyboard.type("Magic links by email");
+  await page.keyboard.press("Enter");
+  await main.getByText("Sign-in: Magic links by email").waitFor();
+  check("an answer typed by the user reaches Claude word for word, and questions can be answered in any order", (await main.innerText()).includes("Protected: Settings"));
 
   // An answer the daemon must refuse: nothing chosen, or a question Claude did not ask.
   await say("ask question a third time");
@@ -164,17 +172,22 @@ try {
   check("the daemon refuses to send a question on unanswered, or with an answer to another question", empty.status === 400 && forged.status === 400 && (await session(askId)).pending.length === 1, `${empty.data.error} / ${forged.data.error}`);
   await card.locator("button", { hasText: "Chat about this" }).click();
   await main.locator("text=declined: The user wants to clarify these questions.").waitFor();
-  check("“Chat about this” tells Claude to ask what needs clearing up, in Claude Code's own words", (await main.locator("[data-answered], span", { hasText: "You chose to talk about Claude's 2 questions first" }).count()) > 0);
+  check("“Chat about this” tells Claude to ask what needs clearing up, in Claude Code's own words", (await main.getByText("You chose to talk about Claude's 2 questions first").count()) === 1);
 
-  // Options that carry a preview.
+  // One question, whose options carry a preview.
   await say("ask preview of the settings page");
   await card.waitFor();
-  check("one question reads as one", (await card.innerText()).includes("Claude has a question") && (await card.locator("button", { hasText: "Send answer" }).count()) === 1);
-  await card.locator('[role="radio"]', { hasText: "Tabs" }).click();
-  check("the chosen option's preview is shown", (await card.locator("[data-preview]").innerText()).includes("[ Profile ][ Billing ][ Team ]"));
-  await shot(card, "question-card-preview");
-  await card.locator("button", { hasText: "Send answer" }).click();
-  await main.getByText('"Which layout should the settings page use?":"Tabs"').waitFor();
+  check("one question reads as one, with no pager", (await card.innerText()).includes("Claude has a question") && (await card.locator('[role="tab"]').count()) === 0);
+  const seen = () => card.locator("[data-preview] pre:not(.invisible)").innerText();
+  const heightBefore = (await card.boundingBox()).height;
+  check("an option's preview shows beside the options: the first one's to begin with", (await seen()).includes("| Profile |"));
+  await option("Tabs").hover();
+  check("…and the one under the pointer while it is there, without the panel changing size", (await seen()).includes("[ Profile ][ Billing ][ Team ]") && (await card.boundingBox()).height === heightBefore);
+  await sleep(700);
+  await shot(card, "question-panel-preview");
+  await option("Tabs").click();
+  await main.getByText("Layout: Tabs").waitFor();
+  check("with a single question, choosing an option sends it", (await card.count()) === 0);
 
   // ================================================================ a plan
   const planId = await start("make plan for the auth module", "plan");
@@ -260,12 +273,12 @@ try {
   await card.waitFor();
   const pwned = () => page.evaluate(() => window.pwned);
   check("markup in a question is shown as text and never runs", (await card.locator("b, img, script, a").count()) === 0 && (await card.innerText()).includes("<b>backup</b>") && (await card.innerText()).includes("<script>window.pwned = 1</script>") && (await pwned()) === undefined);
-  const marked = await card.locator("mark").allInnerTexts();
-  check("invisible characters in a question and its options are written out", marked.includes("⟨U+202E⟩") && marked.includes("⟨U+200B⟩"), marked.join(" "));
-  await shot(card, "question-card-hostile");
-  await card.locator('[role="radio"]', { hasText: "No" }).click();
-  await card.locator("button", { hasText: "Send answer" }).click();
-  await main.getByText('":"No"}').waitFor();
+  const written = await card.locator("mark").allInnerTexts();
+  check("invisible characters in a question and its options are written out", written.includes("⟨U+202E⟩") && written.includes("⟨U+200B⟩"), written.join(" "));
+  await sleep(700);
+  await shot(card, "question-panel-hostile");
+  await option("No").click();
+  await main.getByText("Answer: No").waitFor();
   check("…and it can still be answered", true);
 
   await start("hostile plan please", "plan");
