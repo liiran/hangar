@@ -6,8 +6,11 @@
 // Three sessions (Sonnet and Haiku; a few cents of usage) build and fix small
 // projects in a throwaway home folder, so the app shows no personal folders,
 // and Claude gets only the two MCP servers set up here (Playwright and
-// Context7, shared through hangar's pool). Waiting for Claude is sped up in
-// the video; everything else plays at its real speed.
+// Context7, shared through hangar's pool). One of them starts in "Plan only":
+// its plan is approved in the video. Waiting for Claude is sped up in the
+// video; everything else plays at its real speed.
+//
+// E2E_PROFILE picks the build, as for the tests (default: release).
 //
 // HANGAR_MEDIA_DIR picks the throwaway folder. It must not exist yet, and it
 // must be outside your home folder, because its path is in the pictures (the
@@ -131,7 +134,7 @@ if (process.argv[2] === "--encode") {
 // ------------------------------------------------------------ the demo setup
 
 if (process.platform !== "win32") throw new Error("the recording script is written for Windows for now");
-const exe = (name) => path.join(root, "target", "release", `${name}.exe`);
+const exe = (name) => path.join(root, "target", process.env.E2E_PROFILE ?? "release", `${name}.exe`);
 const [hangar, shim] = [exe("hangar"), exe("hangar-shim")];
 for (const f of [hangar, shim]) if (!fs.existsSync(f)) throw new Error(`${f} is missing: run cargo build --release first`);
 
@@ -225,10 +228,17 @@ fs.writeFileSync(
   mcpConfig,
   JSON.stringify({ mcpServers: Object.fromEntries(Object.entries(servers).map(([name, cmd]) => [name, { command: shim, args: ["--name", name, "--", ...cmd] }])) }, null, 2),
 );
+// Claude Code saves a plan under the real home folder unless told otherwise, and the plan card
+// shows where. Kept in the project, the path shown has no user name in it.
+const settings = path.join(work, "settings.json");
+fs.writeFileSync(settings, JSON.stringify({ plansDirectory: ".claude/plans" }));
 // hangar starts this instead of claude: Claude keeps the real home (its
 // sign-in lives there) and sees only the servers above.
 const wrapper = path.join(work, "claude.cmd");
-fs.writeFileSync(wrapper, `@echo off\r\nset "USERPROFILE=${os.homedir()}"\r\nset "HOME=${os.homedir()}"\r\n"${findClaude()}" %* --strict-mcp-config --mcp-config "${mcpConfig}"\r\n`);
+fs.writeFileSync(
+  wrapper,
+  `@echo off\r\nset "USERPROFILE=${os.homedir()}"\r\nset "HOME=${os.homedir()}"\r\n"${findClaude()}" %* --strict-mcp-config --mcp-config "${mcpConfig}" --settings "${settings}"\r\n`,
+);
 
 const env = { ...process.env, HANGAR_HOME: state, HANGAR_CLAUDE: wrapper, USERPROFILE: home, HOME: home };
 const up = () => execFileSync(hangar, ["up", "--no-open"], { env, encoding: "utf8" }).trim().split(/\r?\n/).pop();
@@ -266,6 +276,22 @@ await context.addInitScript((dark) => {
     pointer.style.transform = "translate(960px,540px)";
     document.documentElement.append(pointer);
     addEventListener("mousemove", (e) => (pointer.style.transform = `translate(${e.clientX}px,${e.clientY}px)`), true);
+    // A click shows as a ring that spreads from the pointer.
+    addEventListener(
+      "mousedown",
+      (e) => {
+        const ring = document.createElement("div");
+        ring.dataset.demoOverlay = "";
+        ring.style.cssText = `position:fixed;left:${e.clientX - 18}px;top:${e.clientY - 18}px;width:36px;height:36px;border-radius:50%;z-index:99998;pointer-events:none;border:3px solid ${dark ? "rgba(255,255,255,.9)" : "rgba(24,24,27,.8)"};transform:scale(.3);opacity:1;transition:transform .45s ease-out,opacity .45s ease-out`;
+        document.documentElement.append(ring);
+        requestAnimationFrame(() => {
+          ring.style.transform = "scale(1.5)";
+          ring.style.opacity = "0";
+        });
+        setTimeout(() => ring.remove(), 520);
+      },
+      true,
+    );
     const keys = document.createElement("div");
     keys.dataset.demoOverlay = "";
     keys.style.cssText =
@@ -275,11 +301,11 @@ await context.addInitScript((dark) => {
     keys.style.color = dark ? "#18181b" : "#fff";
     document.documentElement.append(keys);
     let hide;
-    window.__showKeys = (text) => {
+    window.__showKeys = (text, ms = 1100) => {
       keys.textContent = text;
       keys.style.opacity = "1";
       clearTimeout(hide);
-      hide = setTimeout(() => (keys.style.opacity = "0"), 1100);
+      hide = setTimeout(() => (keys.style.opacity = "0"), ms);
     };
   });
 }, THEME === "dark");
@@ -314,6 +340,8 @@ async function press(key, label = key) {
   await sleep(250);
   await page.keyboard.press(key);
 }
+/** A line of words at the foot of the picture, where a pressed key shows: what is about to happen. */
+const caption = (on, text, ms = 2600) => on.evaluate(([t, ms]) => window.__showKeys?.(t, ms), [text, ms]);
 /** Waits for Claude; the wait plays sped up in the video. */
 async function waitClaude(check, timeout) {
   const start = Date.now();
@@ -335,8 +363,10 @@ async function shot(name) {
 const dialog = page.locator('[role="dialog"]');
 const option = (list, text) => page.locator(`[role="listbox"][aria-label="${list}"] [role="option"]`, { hasText: text }).first();
 const row = (text) => page.locator('nav[aria-label="Sessions"]').getByText(text).first();
-const allow = page.getByRole("button", { name: "Allow", exact: true });
+// A session can have two requests waiting at once (two lookups asked for together): the first is answered first.
+const allow = page.getByRole("button", { name: "Allow", exact: true }).first();
 
+/** Fills in the new-session dialog and starts the session. With `picture`, it takes that still and closes the dialog instead. */
 async function newSession({ query, folder, prompt, model, mode, picture }) {
   await press("c", "C");
   await dialog.waitFor();
@@ -360,26 +390,66 @@ async function newSession({ query, folder, prompt, model, mode, picture }) {
     await sleep(250);
   }
   await sleep(500);
-  if (picture) await shot(picture);
-  await press("Control+Enter", "Ctrl Enter");
+  if (picture) {
+    await sleep(2200); // the 2 s system tick delivers the memory numbers
+    await shot(picture);
+    await page.keyboard.press("Escape");
+  } else {
+    await press("Control+Enter", "Ctrl Enter");
+  }
   await dialog.waitFor({ state: "detached" });
 }
 
-/** Approves what `dir`'s session asks for until its turn ends. */
+const planCard = page.locator("[data-plan-card]");
+const questions = page.locator("[data-question-panel]");
+
+/**
+ * Answers what `dir`'s session asks until its turn ends: a request to run or edit is allowed, a
+ * plan is approved into auto-accept edits, and a question gets its first option.
+ */
 async function approveUntilDone(dir, picture) {
-  for (let i = 0; i < 10; i++) {
+  let pictured = false;
+  for (let i = 0; i < 12; i++) {
     const s = await waitClaude(async () => {
       const s = await session(dir);
       return ["needs_you", "idle", "error"].includes(s?.status) && s;
     });
     if (s.status !== "needs_you") return s;
-    await allow.waitFor();
-    await sleep(1600);
-    if (picture && i === 0) await shot(picture);
-    await clickOn(allow, 400);
+    const asks = s.pending[0]?.tool_name;
+    if (asks === "ExitPlanMode") {
+      // The plan from its top, then down to the choices under it.
+      await planCard.waitFor();
+      await planCard.evaluate((el) => el.scrollIntoView({ block: "start", behavior: "smooth" }));
+      await sleep(3200);
+      const choices = planCard.locator("[data-plan-choices]");
+      await choices.evaluate((el) => el.scrollIntoView({ block: "end", behavior: "smooth" }));
+      await sleep(1600);
+      await clickOn(planCard.locator("button", { hasText: "Yes, auto-accept edits" }), 500);
+    } else if (asks === "AskUserQuestion") {
+      await questions.waitFor();
+      await sleep(1800);
+      for (let n = 0; n < 8 && (await questions.count()) > 0; n++) {
+        await clickOn(questions.locator("[data-option]").first(), 400);
+        await sleep(700);
+        const onward = questions.locator("[data-onward]");
+        if ((await onward.count()) > 0 && (await onward.isEnabled())) {
+          await clickOn(onward, 300);
+          await sleep(600);
+        }
+      }
+    } else {
+      await allow.waitFor();
+      await sleep(1600);
+      // The still shows the whole window at work: the plan limits and the context ring too.
+      if (picture && !pictured && (await page.locator("[data-plan-limits]").count()) > 0 && (await page.locator("[data-context-wheel]").count()) > 0) {
+        await shot(picture);
+        pictured = true;
+      }
+      await clickOn(allow, 400);
+    }
     await sleep(900);
   }
-  throw new Error("too many approvals");
+  throw new Error("too many requests");
 }
 
 // ------------------------------------------------------------ the demo
@@ -391,14 +461,13 @@ try {
   await rec.attach(page);
   await sleep(1800);
 
-  // Three agents, three projects, three models and permission levels.
+  // Three agents, three projects, three models and permission levels. The first one plans before it builds.
   await newSession({
     query: "recipe",
     folder: "recipe-site",
     prompt: "Build a one-page recipe site in index.html for lemon pasta: a hero, an ingredient checklist and numbered steps. Plain HTML and CSS in one file.",
     model: "Sonnet",
-    mode: "Auto-accept edits",
-    picture: "new-session",
+    mode: "Plan only",
   });
   await sleep(1500);
   await newSession({
@@ -417,21 +486,18 @@ try {
   });
   await sleep(2500);
 
-  // Moving between them with the keyboard.
-  await press("k", "K");
-  await sleep(1600);
-  await press("k", "K");
-  await sleep(2000);
-  await press("j", "J");
-  await sleep(800);
+  // A look at each of them: the pointer goes to a session's row and clicks it.
+  await clickOn(row("Build a one-page recipe"), 800);
+  await sleep(2200);
 
   // The bug fix asks before it edits and before it runs the tests.
-  await clickOn(row("test_budget.py fails"));
+  await clickOn(row("test_budget.py fails"), 800);
   await approveUntilDone(budget, "session");
   await sleep(2200);
 
-  // The recipe site, then a follow-up on a faster model.
-  await clickOn(row("Build a one-page recipe"));
+  // The recipe site: its plan is waiting. Approved, it is built with edits accepted. Then a
+  // follow-up on a faster model.
+  await clickOn(row("Build a one-page recipe"), 800);
   await approveUntilDone(recipe);
   await sleep(2200);
   await clickOn(page.locator('aside[aria-label="Properties"] button[aria-label^="Model:"]'));
@@ -456,10 +522,14 @@ try {
   await approveUntilDone(notes);
   await sleep(2600);
 
-  // What the agents built.
+  // What the agents built. hangar does not open files: the page is opened in a browser tab, as a
+  // double-click on the file would, and a caption says so.
+  await caption(page, "Opening the page Claude built: recipe-site/index.html");
+  await sleep(2400);
   const site = await context.newPage();
   await site.goto(pathToFileURL(path.join(recipe, "index.html")).href);
   await rec.attach(site);
+  await caption(site, "recipe-site/index.html, in a browser tab", 3200);
   await sleep(1500);
   for (let i = 0; i < 6; i++) {
     await site.mouse.wheel(0, 160);
@@ -468,6 +538,8 @@ try {
   await sleep(1400);
   await page.bringToFront();
   await rec.attach(page);
+  await caption(page, "Back in hangar", 1600);
+  await sleep(900);
 
   // The pool: one Playwright and one Context7 for all three sessions.
   await clickOn(page.locator('nav[aria-label="Main"]').getByText("MCP pool"));
@@ -483,6 +555,26 @@ try {
     const s = await session(dir);
     console.log(`  ${path.basename(dir)}: ${s.status}, ${s.turns} turns, $${s.cost_usd.toFixed(3)}`);
   }
+
+  // The new-session still, taken last and outside the video. By now Claude Code has reported the
+  // plan limits, so the sidebar shows them, as it does in daily use. The sessions are removed
+  // first: the window behind the dialog is the empty one a new user sees.
+  for (const dir of [recipe, budget, notes]) {
+    const s = await session(dir);
+    if (s) await api("DELETE", `/sessions/${s.id}`).catch(() => {});
+  }
+  await until(async () => (await api("GET", "/state")).sessions.length === 0, 30_000);
+  await clickOn(page.locator('nav[aria-label="Main"]').getByText("Sessions"));
+  await page.waitForSelector("text=Run all your agents from one place");
+  await newSession({
+    query: "recipe",
+    folder: "recipe-site",
+    prompt: "Build a one-page recipe site in index.html for lemon pasta: a hero, an ingredient checklist and numbered steps. Plain HTML and CSS in one file.",
+    model: "Sonnet",
+    mode: "Plan only",
+    picture: "new-session",
+  });
+
   if (hasFfmpeg()) {
     encode(rec.dir);
     fs.rmSync(rec.dir, { recursive: true, force: true });
