@@ -20,8 +20,15 @@
 - **Approvals inline.** When Claude wants to run a command or edit a file, you see the exact command, file contents or diff, with *Allow*, *Allow for session* and *Deny*. Whatever you type in the reply box steers Claude instead.
   - Nothing in a request can hide: long ones must be opened in full before Allow works, and invisible characters are written out.
   - *Allow for session* shows the rule it adds.
+- **Questions and plans, answered in the app.** These are Claude Code's own two dialogs, and they work as they do in its terminal.
+  - **A question:** when Claude asks you something, each question shows with its options. Pick one, pick several where that is allowed, or type your own answer. For example, to "Which sign-in method?" you can choose *Google*, or type *magic links by email*. Claude gets exactly that.
+  - **A plan:** in *Plan only*, Claude's finished plan shows formatted, with Claude Code's three choices: *Yes, auto-accept edits*, *Yes, manually approve edits*, or *No, keep planning*. With "No" you can type what to change and Claude plans again; with nothing typed, the turn stops so you can say it in a message.
 - **Settings per session.** Each session gets a folder, a model (Opus, Sonnet or Haiku) and a permission level: ask first, accept edits, plan only or full access. Both the model and the permission level can be changed mid-session.
 - **A feed per session.** It shows messages, tool calls you can expand, and each turn's time and cost. A properties panel shows the session's status, model, memory, cost and MCP servers. A long session opens at its newest entries and stays fast; the earlier ones are drawn when you ask for them.
+  - **Every edit shows what it changed:** the file's own line numbers, removed lines in red, added lines in green, and a few unchanged lines around them. This is so even when edits are accepted without asking. A long change opens folded.
+- **Context and plan limits in view.** Every number is Claude Code's own, as of Claude's last reply; hangar works none of them out.
+  - **Context:** a ring under the reply box fills as Claude's context window does, for example `42%`. It turns orange at 75% and red at 90%. Hover it to see what fills the window.
+  - **Limits:** the sidebar shows how much of your Claude plan's 5-hour and 7-day limits is used and when each starts over. They appear once a session has talked to Claude, and update as sessions run.
 - **History that lasts.** Sessions outlive restarts. A stopped or paused session carries on in the same conversation when you send your next message. The conversation is Claude Code's own, so `claude --resume <id>` in a terminal can continue it too.
 - **Light or dark.** hangar follows your system. To pin one, press `Ctrl K` and type *theme*.
 - **Keyboard first:**
@@ -34,6 +41,9 @@
 | `R` | reply to the open session |
 | `Esc` | stop the running turn |
 | `Ctrl \` | show or hide the sidebar |
+| `Ctrl Enter` | send your answers to Claude's questions |
+
+*Stop hangar* in the command palette does what `hangar stop` does, after asking. The window then says that hangar is stopped and how to start it again.
 
 <p align="center">
   <img src="docs/img/new-session.png" alt="The new session dialog: the recipe-site folder, the task, Sonnet and Auto-accept edits" width="49%">
@@ -122,7 +132,7 @@ cargo build --release
 | Command | What it does |
 |---|---|
 | `hangar up` | Starts hangar if needed and opens the app. `--no-open` prints a one-time sign-in link instead. |
-| `hangar stop` | Stops hangar, every session and every MCP server it runs. Sessions resume from where they were next time. |
+| `hangar stop` | Stops hangar, every session and every MCP server it runs. Sessions resume from where they were next time. In the app: `Ctrl K`, then *Stop hangar*. |
 | `hangar status` | Shows the shared MCP servers: how they are shared, how many sessions use each, memory, requests, cache hits and restarts. |
 | `hangar wrap` | Sends your local MCP servers through hangar's pool. `--dry-run` previews the change. |
 | `hangar unwrap` | Undoes `wrap` exactly. |
@@ -331,7 +341,7 @@ hangar can start agents that run commands, so only your own hangar window may us
   - Requests must be addressed to `127.0.0.1:<port>` exactly, and anything a browser marks as coming from another site is refused.
   - The page runs under a strict Content-Security-Policy and cannot be framed.
 - **Replies cannot act.** Claude's output is rendered as text and Markdown, never HTML. Images are not loaded, and only web links are links.
-- **You approve what really runs.** Requests show everything, cannot hide content below a fold or behind invisible characters, and "Allow for session" shows its rule.
+- **You approve what really runs.** Requests show everything, cannot hide content below a fold or behind invisible characters, and "Allow for session" shows its rule. An answer can carry only what its request takes: answers go with a question Claude asked, and a plan continues in one of the two modes its card offers.
 - **Folders ask first.** A folder's hooks, pre-approved tools, MCP servers and other settings are listed in full before its first session, and again whenever they change.
 - **No shell.** Programs are started with separate arguments, and values passed to `claude` are checked. A project folder cannot supply its own `npx` or `node` in place of yours.
 - **A shared secret between shim and daemon.** Each proves it knows the secret in `~/.hangar/daemon.json` before the shim sends its command and environment.
@@ -347,7 +357,8 @@ cargo test --workspace                      # Rust: unit, pool, sessions, API an
 cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all --check
 cd web && npm test                          # UI logic
 cargo build --workspace && npm run e2e      # the app in a real browser against a real daemon (fake Claude, no network)
-cargo build --release && npm run e2e:claude # one real Claude Code (Haiku) session through the API; costs well under a cent
+cargo build --workspace && npm run e2e:parity # questions, plans, edits, context, limits and stopping, in a real browser (fake Claude)
+cargo build --release && npm run e2e:claude # real Claude Code (Haiku) sessions through the API; costs a few cents
 cargo build --workspace && npm run e2e:attack # attacks a throwaway hangar from outside (Windows; fake Claude, no network)
 cargo build --release && npm run media      # re-records the README's pictures and video with real sessions (needs ffmpeg and HANGAR_MEDIA_DIR)
 npm run dev                                 # UI dev server on :5173, proxied to a daemon on :7317
@@ -358,10 +369,10 @@ On Windows with the GNU toolchain, put a MinGW `bin` folder (for `dlltool` and `
 The integration tests run real shim processes against an in-process daemon. They use a scriptable fake MCP server (stdio and HTTP) and a fake `claude` that speaks the stream-json protocol. They cover:
 - **Routing:** concurrent overlapping ids, progress isolation, caching, subscriptions and roots safety.
 - **Failure handling:** crash restart, idle shutdown, fallback, reconnecting after a daemon restart, and impostor daemons.
-- **Sessions:** approvals and withdrawn approvals, the budget queue, idle reclaim, resume, model switching, workspace trust and hostile paths.
+- **Sessions:** approvals and withdrawn approvals, answered questions, approved and returned plans, the changed lines of an edit, the budget queue, idle reclaim, resume, model switching, workspace trust and hostile paths.
 - **The API:** pairing, and its token, Host, Origin, cross-site and CSP checks.
 
-`npm run e2e` drives the app in a real browser: hostile replies and links, long and disguised permission requests, the trust notice, sign-in and sign-out.
+`npm run e2e` drives the app in a real browser: hostile replies and links, long and disguised permission requests, the trust notice, sign-in and sign-out. `npm run e2e:parity` does the same for the parts that stand in for Claude Code's own dialogs and read-outs. The fake `claude` sends what Claude Code 2.1.325 was recorded sending, and `npm run e2e:claude` checks the same paths against the real one.
 
 | Path | |
 |---|---|
@@ -380,7 +391,8 @@ The integration tests run real shim processes against an in-process daemon. They
 - **Windows is the tested platform.** The Unix code passes `cargo clippy` for `x86_64-unknown-linux-gnu` and `x86_64-apple-darwin`, but has never been run. `hangar bench` refuses to run there, because it relies on Windows job accounting to count every process.
 - **Claude Code only** for now.
 - **Sharing has to be turned on** (the button on the MCP pool page, or `hangar wrap`), and covers the servers in `~/.claude.json`. Servers defined in a project's `.mcp.json` start the usual way.
-- **Headless Claude Code.** Sessions have Claude Code's models, tools and settings, but not the terminal's own screens, such as its `/` command menus. hangar has its own controls for the model, the permission level and stopping a turn.
+- **Headless Claude Code.** Sessions have Claude Code's models, tools and settings, but not the terminal's own screens, such as its `/` command menus. hangar has its own controls for the model, the permission level and stopping a turn, and its own cards for Claude's questions and plans.
+- **Numbers as of the last reply.** The context ring and the plan limits change when Claude says so, not in between. Claude Code reports the limits when they change, so a quiet account shows the last figures it reported, and a window whose reset time has passed shows as started over.
 - **A newer handshake.** Claude Code 2.1.3xx first probes servers with `server/discover`, from a newer MCP revision. hangar answers the way today's servers do (method not found), and Claude falls back to `initialize`.
 - **The fast path can lag.** Between real npx runs (at most a day apart), the fast path starts the version of an `@latest` package that npx cached last. Set `fast_npx = false` to check the registry on every start.
 - **No orphan savings.** In the benchmark, killing Claude Code left no orphaned server processes, pooled or not, so that is not claimed as a win. hangar's job objects guarantee it either way.

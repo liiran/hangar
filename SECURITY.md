@@ -61,6 +61,11 @@ Text that Claude reads can try to steer it, for example a web page that says "no
 - **"Allow for session" shows the rule it adds.** It can only add "allow" rules for that one session. It cannot change the permission mode or write to your settings files.
 - **A request ignores clicks for a moment** after it appears, and after another request of the same session is answered. Answering one request moves the next one up, so a click meant for the first, or the second half of a double-click, cannot land on it.
 - **A request ends with its process.** Once the Claude process that asked has stopped, the request cannot be approved.
+- **An answer fits its request, or is refused.** Two requests take more than Allow or Deny, and the daemon checks what comes with each:
+  - *A question from Claude* is allowed only with an answer to at least one of the questions Claude asked. For example, answers attached to a `Bash` request are refused: they would replace the command.
+  - *A plan* can continue in one of two modes, "auto-accept edits" or "ask before each edit". Any other mode, full access included, is refused.
+  - What you type (an answer, or what to change in a plan) is cut at 8,000 characters before Claude gets it.
+- **Questions and plans are text too.** Markup in them is shown, not run. A plan is rendered like Claude's replies (no images, only web links), and says so when it holds invisible characters, with a switch to see it as plain text with them written out.
 
 ### 5. A folder cannot run things before you agree
 
