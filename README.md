@@ -28,6 +28,12 @@
 - **Settings per session.** Each session gets a folder, a model (Opus, Sonnet or Haiku) and a permission level: ask first, accept edits, plan only or full access. Both the model and the permission level can be changed mid-session. The level a session is in shows under its message box, bottom left, and can be changed there.
 - **A feed per session.** It shows messages, tool calls you can expand, and each turn's time and cost. A properties panel shows the session's status, model, memory, cost and MCP servers. A long session opens at its newest entries and stays fast; the earlier ones are drawn when you ask for them.
   - **Every edit shows what it changed:** the file's own line numbers, removed lines in red, added lines in green, and a few unchanged lines around them. This is so even when edits are accepted without asking. A long change opens folded.
+  - **Helper agents show what they are doing.** Claude can hand part of a job to a helper agent (its Agent tool), for example "find where the tests are" while it goes on with something else. The agent's row in the feed updates as the agent works:
+    - While it runs, the row shows what Claude Code's terminal shows: "Initializing…", then its newest three lines, with reads and searches in a row as one line ("Searching for 1 pattern, reading 2 files…") and "+3 more tool uses" for what came before. When it has ended, it reads "Done (8 tool uses · 30k tokens · 10s)", "Failed" or "Stopped". The counts are Claude Code's own.
+    - Click the row to see the prompt Claude gave the agent, every step it took (an edit shows its changed lines) and its report.
+    - An agent *in the background* works on after Claude's reply has ended. The session counts as working until the agent is done, so it is never paused in the middle. A strip at the foot of the feed says what each such agent is doing now, and a message you send meanwhile is answered at once.
+    - Each running agent has a *Stop* of its own. The session's *Stop*, with only agents running, stops them all.
+    - A request that comes from an agent says so and names the agent: "An agent wants to use Edit".
 - **Context and plan limits in view.** Every number is Claude Code's own, as of Claude's last reply; hangar works none of them out.
   - **Context:** a ring under the message box, bottom right, fills as Claude's context window does, for example `42%`. It warms as it fills: yellow from 50%, orange from 70%, red at the end. Hover it to see what fills the window.
   - **Limits:** the sidebar shows how much of your Claude plan's 5-hour and 7-day limits is used and when each starts over, with bars colored the same way. They appear once a session has talked to Claude, and update as sessions run.
@@ -360,7 +366,7 @@ cargo test --workspace                      # Rust: unit, pool, sessions, API an
 cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all --check
 cd web && npm test                          # UI logic
 cargo build --workspace && npm run e2e      # the app in a real browser against a real daemon (fake Claude, no network)
-cargo build --workspace && npm run e2e:parity # questions, plans, edits, context, limits and stopping, in a real browser (fake Claude)
+cargo build --workspace && npm run e2e:parity # questions, plans, edits, helper agents, context, limits and stopping, in a real browser (fake Claude)
 cargo build --release && npm run e2e:claude # real Claude Code (Haiku) sessions through the API; costs a few cents
 cargo build --workspace && npm run e2e:attack # attacks a throwaway hangar from outside (Windows; fake Claude, no network)
 cargo build --release && npm run media      # re-records the README's pictures and video with real sessions (needs ffmpeg and HANGAR_MEDIA_DIR)
@@ -372,10 +378,10 @@ On Windows with the GNU toolchain, put a MinGW `bin` folder (for `dlltool` and `
 The integration tests run real shim processes against an in-process daemon. They use a scriptable fake MCP server (stdio and HTTP) and a fake `claude` that speaks the stream-json protocol. They cover:
 - **Routing:** concurrent overlapping ids, progress isolation, caching, subscriptions and roots safety.
 - **Failure handling:** crash restart, idle shutdown, fallback, reconnecting after a daemon restart, and impostor daemons.
-- **Sessions:** approvals and withdrawn approvals, answered questions, approved and returned plans, the changed lines of an edit, the budget queue, idle reclaim, resume, model switching, workspace trust and hostile paths.
+- **Sessions:** approvals and withdrawn approvals, answered questions, approved and returned plans, the changed lines of an edit, helper agents (in the background, in the foreground, asking, stopped, failing), the budget queue, idle reclaim, resume, model switching, workspace trust and hostile paths.
 - **The API:** pairing, and its token, Host, Origin, cross-site and CSP checks.
 
-`npm run e2e` drives the app in a real browser: hostile replies and links, long and disguised permission requests, the trust notice, sign-in and sign-out. `npm run e2e:parity` does the same for the parts that stand in for Claude Code's own dialogs and read-outs. The fake `claude` sends what Claude Code 2.1.325 was recorded sending, and `npm run e2e:claude` checks the same paths against the real one.
+`npm run e2e` drives the app in a real browser: hostile replies and links, long and disguised permission requests, the trust notice, sign-in and sign-out. `npm run e2e:parity` does the same for the parts that stand in for Claude Code's own dialogs and read-outs. The fake `claude` sends what Claude Code was recorded sending (2.1.325; the helper agents 2.1.329), and `npm run e2e:claude` checks the same paths against the real one.
 
 | Path | |
 |---|---|

@@ -60,6 +60,7 @@ Text that Claude reads can try to steer it, for example a web page that says "no
 - **Right-to-left letters are pointed out.** Hebrew and Arabic letters are ordinary text, but the screen can show what stands next to them in a different order than it is written. A request that contains them says so.
 - **"Allow for session" shows the rule it adds.** It can only add "allow" rules for that one session. It cannot change the permission mode or write to your settings files.
 - **A request ends with its process.** Once the Claude process that asked has stopped, the request cannot be approved.
+- **A request from a helper agent says so.** When an agent Claude started asks, the card reads "An agent wants to use Edit" and names the agent. It gets the same checks as a request of Claude's own. What an agent writes (its steps, its report) is shown as text, like Claude's.
 - **An answer fits its request, or is refused.** Two requests take more than Allow or Deny, and the daemon checks what comes with each:
   - *A question from Claude* is allowed only with an answer to at least one of the questions Claude asked. For example, answers attached to a `Bash` request are refused: they would replace the command.
   - *A plan* can continue in one of two modes, "auto-accept edits" or "ask before each edit". Any other mode, full access included, is refused.
