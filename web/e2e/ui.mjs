@@ -23,7 +23,9 @@ const home = path.join(tmp, "home");
 const proj = path.join(tmp, "proj");
 fs.mkdirSync(home);
 fs.mkdirSync(path.join(proj, ".claude"), { recursive: true });
-fs.writeFileSync(path.join(home, "config.toml"), '[servers.fake]\nshare = "global"\n');
+// The fake sessions are tiny. The budget is told so: otherwise, on a PC that is short of free
+// memory at the moment, a new session waits "for memory" and the test times out.
+fs.writeFileSync(path.join(home, "config.toml"), '[servers.fake]\nshare = "global"\n\n[budget]\nreserve_mb = 64\ninitial_estimate_mb = 8\n');
 fs.writeFileSync(
   path.join(proj, ".claude", "settings.json"),
   JSON.stringify({
