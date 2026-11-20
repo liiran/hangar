@@ -45,7 +45,12 @@
 //!   next step (N steps); `helper finish` ends the turn, then the oldest helper
 //!   reports and Claude starts a turn by itself to say so; `helper fail` is the
 //!   same with a helper that failed; `helper vanish` ends the oldest helper with
-//!   no turn after it;
+//!   no turn after it; `helper midfinish` has the oldest helper report while the
+//!   turn still runs, so that the turn about it comes after this one. A turn
+//!   Claude Code starts by itself begins 0.6 s after what caused it, so that a
+//!   test can see what the session is in between;
+//! * `helper lost`: a helper in the foreground whose end is never announced: the
+//!   turn just ends; `helper refuse`: an Agent call that fails outright;
 //! * `background command`: starts a shell command in the background, which is
 //!   listed like a helper but is not one;
 //! * `edit files`: edits and writes files without asking, with the line-by-line
@@ -325,11 +330,20 @@ impl Fake {
         let mut i = 0;
         while i < self.helpers.len() {
             if only.is_none_or(|t| t == self.helpers[i].task) {
-                self.helper_end(i, "killed");
+                let h = self.helper_end(i, "killed");
+                // A last word from a helper can still arrive after it was stopped.
+                self.inside(&h, "assistant", json!([{"type": "text", "text": "(stopped)"}]), None);
             } else {
                 i += 1;
             }
         }
+    }
+
+    /// A turn Claude Code starts by itself, a moment after what caused it.
+    fn follow_up(&self, reply: &str) {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        self.init();
+        self.done(reply);
     }
 
     fn assistant(&self, content: Value) {
@@ -480,8 +494,7 @@ fn main() {
                 }
                 // A helper stopped by itself: Claude Code starts a turn in which Claude hears of it.
                 if fake.helpers.len() < before {
-                    fake.init();
-                    fake.done("The agent was stopped before it reported.");
+                    fake.follow_up("The agent was stopped before it reported.");
                 }
             }
             "user" => {
@@ -586,8 +599,16 @@ fn main() {
                         }
                     }
                     if std::mem::take(&mut fake.stopped_alone) {
-                        fake.init();
-                        fake.done("The agent was stopped before it reported.");
+                        fake.follow_up("The agent was stopped before it reported.");
+                    }
+                    continue;
+                }
+                if text.contains("helper midfinish") {
+                    // The helper reports while this turn runs. The turn about it comes after this one.
+                    let ended = (!fake.helpers.is_empty()).then(|| fake.helper_end(0, "completed"));
+                    fake.done("Noted.");
+                    if let Some(h) = ended {
+                        fake.follow_up(&format!("The helper is done: {}.", h.description));
                     }
                     continue;
                 }
@@ -597,10 +618,33 @@ fn main() {
                         let h = fake.helper_end(0, if text.contains("helper fail") { "failed" } else { "completed" });
                         // Claude Code starts a turn by itself, in which Claude reads the report.
                         if !text.contains("helper vanish") {
-                            fake.init();
-                            fake.done(&format!("The helper is done: {}.", h.description));
+                            fake.follow_up(&format!("The helper is done: {}.", h.description));
                         }
                     }
+                    continue;
+                }
+                if text.contains("helper lost") {
+                    // A helper in the foreground whose end nothing announces.
+                    fake.helper_start("Tidy the notes", false);
+                    let i = fake.helpers.len() - 1;
+                    if matches!(fake.helper_step(&mut lines, i), Went::Gone) {
+                        return;
+                    }
+                    let h = fake.helpers.remove(i);
+                    fake.tool_result(&h.tool_use, "[Request interrupted by user for tool use]", true, json!("Error: interrupted"));
+                    fake.stopped();
+                    continue;
+                }
+                if text.contains("helper refuse") {
+                    let input = json!({"description": "Audit the billing code", "subagent_type": "auditor", "prompt": "Audit it."});
+                    fake.tool_use("toolu_refused", "Agent", &input);
+                    fake.tool_result(
+                        "toolu_refused",
+                        "Agent type 'auditor' not found. Available agents: general-purpose, Explore, Plan",
+                        true,
+                        json!("Error: Agent type 'auditor' not found."),
+                    );
+                    fake.done("I could not start that agent.");
                     continue;
                 }
                 if text.contains("background command") {

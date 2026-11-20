@@ -1056,8 +1056,14 @@ async fn a_helper_that_is_stopped_or_ends_without_a_report_leaves_the_session_id
     let before = std::time::Instant::now();
     m.interrupt(&a).unwrap();
     let s = wait_status(&m, &a, Status::Idle).await;
-    assert!(before.elapsed() < Duration::from_secs(3), "idle as soon as the helper is stopped");
+    assert!(before.elapsed() < Duration::from_millis(500), "idle as soon as the helper is stopped");
     assert!(s.agents.is_empty());
+    // A last word from the stopped helper arrives after that. Nothing runs: the session stays idle.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(get(&m, &a).meta.status, Status::Idle);
+    let late =
+        m.events(&a, 0).unwrap().into_iter().any(|e| matches!(&e.body, EventBody::Claude { msg } if msg["message"]["content"][0]["text"] == "(stopped)"));
+    assert!(late);
     assert_eq!(task_events(&m, &a, "task_updated")[0]["status"], "killed");
 
     // Two helpers, stopped one at a time.
@@ -1075,8 +1081,18 @@ async fn a_helper_that_is_stopped_or_ends_without_a_report_leaves_the_session_id
     let s = get(&m, &a);
     assert_eq!((s.agents.len(), s.agents[0].id.as_str(), s.meta.status), (1, "agent3", Status::Working), "the other helper works on");
     // The last one stopped: Claude Code starts a turn in which Claude hears of it. The session
-    // is idle after that turn, not before it.
+    // is idle after that turn, not before it. This is so even right after a Stop of the whole
+    // session (the first thing this test did).
     m.stop_helper(&a, "agent3").unwrap();
+    for _ in 0..200 {
+        if get(&m, &a).agents.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let s = get(&m, &a);
+    assert!(s.agents.is_empty());
+    assert_eq!(s.meta.status, Status::Working, "the turn about the stop is waited for");
     wait_status(&m, &a, Status::Idle).await;
     assert_eq!(texts(&m, &a).iter().filter(|t| *t == "The agent was stopped before it reported.").count(), 2, "a turn followed each stop");
 
@@ -1097,9 +1113,27 @@ async fn a_helper_that_is_stopped_or_ends_without_a_report_leaves_the_session_id
     let s = wait_status(&m, &a, Status::Idle).await;
     assert!(s.agents.is_empty());
 
+    // A helper reports while a turn of Claude's is running. Claude Code starts the turn about
+    // it after that one: the session is not idle in between.
+    m.send(&a, "helper start").unwrap();
+    wait_turns(&m, &a, 7).await;
+    m.send(&a, "helper midfinish").unwrap();
+    let s = wait_turns(&m, &a, 8).await;
+    assert!(s.agents.is_empty());
+    assert_eq!(s.meta.status, Status::Working, "the turn about the report comes next");
+    wait_turns(&m, &a, 9).await;
+    wait_status(&m, &a, Status::Idle).await;
+    assert_eq!(texts(&m, &a).last().unwrap(), "The helper is done: Tidy the notes.");
+
+    // A helper in the foreground whose end is never announced: it cannot outlive its turn.
+    m.send(&a, "helper lost").unwrap();
+    let s = wait_turns(&m, &a, 10).await;
+    assert!(s.agents.is_empty());
+    assert_eq!(s.meta.status, Status::Idle);
+
     // The process ends with a helper running: no helper is listed as running.
     m.send(&a, "helper start").unwrap();
-    let s = wait_turns(&m, &a, 7).await;
+    let s = wait_turns(&m, &a, 11).await;
     assert_eq!(s.agents.len(), 1);
     m.stop(&a).unwrap();
     let s = wait_status(&m, &a, Status::Stopped).await;

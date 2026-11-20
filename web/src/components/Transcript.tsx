@@ -230,7 +230,7 @@ function RunningAgents({ session, rows }: { session: Session; rows: Row[] }) {
             ? readSearchSummary(newest.searches, newest.reads, newest.active)
             : newest.kind === "text"
               ? visible(newest.text.trim().split("\n")[0]).slice(0, 200)
-              : `${newest.row.name.replace(/^mcp__/, "").replace(/__/g, " · ")} ${toolSummary(newest.row.name, newest.row.input, session.cwd)}`;
+              : `${visible(newest.row.name.replace(/^mcp__/, "").replace(/__/g, " · "))} ${toolSummary(newest.row.name, newest.row.input, session.cwd)}`;
         const used = agentUsage(row?.agent, false);
         return (
           <button
@@ -513,7 +513,7 @@ function ToolRow({ row, cwd, live }: { row: Extract<Row, { kind: "tool" }>; cwd:
   return (
     <Activity icon={<Icon className="size-3" />} tone={failed ? "error" : undefined}>
       <button onClick={() => setOpen(!open)} aria-expanded={open} className="group flex w-full min-w-0 items-center gap-2 text-left">
-        <span className="shrink-0 font-medium text-fg">{TOOL_NAMES[row.name] ?? row.name.replace(/^mcp__/, "").replace(/__/g, " · ")}</span>
+        <span className="shrink-0 font-medium text-fg">{TOOL_NAMES[row.name] ?? visible(row.name.replace(/^mcp__/, "").replace(/__/g, " · "))}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint group-hover:text-muted">{summary}</span>
         {diff && !failed && (row.result?.patch as { type?: unknown } | undefined)?.type === "create" && <span className="shrink-0 text-[11px] text-faint">new file</span>}
         {diff && !failed && <DiffStat diff={diff} />}
@@ -557,7 +557,12 @@ function agentOutcome(row: ToolRowData, state: string): string {
     const used = agentUsage(row.agent, true);
     return used ? `Done (${used})` : "Done";
   }
-  return state === "failed" ? "Failed" : state === "stopped" ? "Stopped" : state === "unfinished" ? "Did not finish" : "";
+  if (state === "failed") {
+    // Why the Agent call itself failed (an unknown kind of agent, a refusal), in Claude Code's words.
+    const why = row.result?.isError ? visible(row.result.text.trim().split("\n")[0]).slice(0, 200) : "";
+    return why ? `Failed: ${why}` : "Failed";
+  }
+  return state === "stopped" ? "Stopped" : state === "unfinished" ? "Did not finish" : "";
 }
 
 /**
@@ -640,7 +645,7 @@ function AgentRow({ row, session }: { row: ToolRowData; session: Session }) {
                     </p>
                   ) : (
                     <p key={l.row.key} className="flex min-w-0 items-center gap-1.5">
-                      <span className="shrink-0 text-fg">{l.row.name.replace(/^mcp__/, "").replace(/__/g, " · ")}</span>
+                      <span className="shrink-0 text-fg">{visible(l.row.name.replace(/^mcp__/, "").replace(/__/g, " · "))}</span>
                       <span className="min-w-0 truncate font-mono text-[11.5px] text-faint">{toolSummary(l.row.name, l.row.input, session.cwd)}</span>
                       {!l.row.result && <span className="size-1 shrink-0 animate-soft-pulse rounded-full bg-s-working" />}
                     </p>

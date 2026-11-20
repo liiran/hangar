@@ -160,6 +160,8 @@ try {
   await card.getByText("1 of 2").waitFor();
   check("Enter moves on to the question still open", (await card.innerText()).includes("Which sign-in method"));
   await page.keyboard.press("d");
+  // The box takes the keyboard once the key has been handled, which on a busy PC is not at once.
+  for (let i = 0; i < 40 && !(await own.evaluate((el) => el === document.activeElement)); i++) await sleep(50);
   check("the letter after the last option goes to the own-answer row", await own.evaluate((el) => el === document.activeElement));
   await page.keyboard.type("Magic links by email");
   await page.keyboard.press("Enter");
@@ -547,11 +549,20 @@ try {
   check("the report's frame, written for Claude, is not shown", !(await main.innerText()).includes("Subagent hand-back"));
 
   // An agent that fails says so.
-  await start("helper start, to fail", "acceptEdits");
+  const failId = await start("helper start, to fail", "acceptEdits");
   await main.locator('[data-agent-state="running"]').waitFor();
   await say("helper fail");
   await main.locator('[data-agent-state="failed"]').waitFor();
   check("an agent that failed reads Failed", (await main.locator("[data-agent-outcome]").innerText()) === "Failed");
+  // Claude then says so in a turn of its own; the session is idle after it.
+  for (let i = 0; i < 200 && (await session(failId)).status !== "idle"; i++) await sleep(50);
+  check("…and the session is idle once Claude has said so", (await session(failId)).status === "idle");
+
+  // An Agent call that fails outright says why, in Claude Code's words.
+  await start("helper refuse, no such agent");
+  await main.locator('[data-agent-state="failed"]').waitFor();
+  check("an Agent call that fails says why", (await main.locator("[data-agent-outcome]").innerText()) === "Failed: Agent type 'auditor' not found. Available agents: general-purpose, Explore, Plan", await main.locator("[data-agent-outcome]").innerText());
+  check("…and names the kind of agent that was asked for", (await main.locator("[data-agent]").innerText()).includes("auditor"));
 
   // One that is at work when hangar stops (see "stopping hangar" below).
   await start("helper start, for the restart");
@@ -576,7 +587,7 @@ try {
   await confirm.waitFor();
   const confirmText = (await confirm.innerText()).replace(/\s+/g, " ");
   // Two sessions are at work: the one whose request waits, and the one whose agent is running.
-  check("it asks first, and says what stopping does", confirmText.includes("2 sessions are in the middle of a turn") && confirmText.includes("keeps its history") && confirmText.includes("hangar up"), confirmText);
+  check("it asks first, and says what stopping does", confirmText.includes("2 sessions are in the middle of a turn") && confirmText.includes("keeps its history") && confirmText.includes("hangar up"), (await api("GET", "/state")).data.sessions.filter((s) => ["working", "starting", "needs_you"].includes(s.status)).map((s) => `${s.title}: ${s.status}`).join("; "));
   await shot(page, "stop-confirm");
   await page.keyboard.press("Escape");
   await confirm.waitFor({ state: "detached" });

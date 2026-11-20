@@ -150,7 +150,8 @@ export function agentUsage(agent: AgentRun | undefined, withTime: boolean): stri
   const tokens = agent?.tokens ?? 0;
   const ms = agent?.durationMs ?? 0;
   const k = (n: number) => (n < 1000 ? String(n) : `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`);
-  const time = ms >= 60_000 ? `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s` : `${Math.round(ms / 1000)}s`;
+  const seconds = Math.round(ms / 1000);
+  const time = seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
   return [uses > 0 && `${uses} ${uses === 1 ? "tool use" : "tool uses"}`, tokens > 0 && `${k(tokens)} tokens`, withTime && ms >= 1000 && time].filter(Boolean).join(" · ");
 }
 

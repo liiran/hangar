@@ -200,6 +200,8 @@ describe("helper agents", () => {
     expect(agentOf([call, started, sys("task_updated", { task_id: "task1", status: "killed" }), sys("task_notification", { task_id: "task1", tool_use_id: "a1", status: "stopped" })]).agent.ended).toBe("stopped");
     expect(agentOf([call, started, sys("task_notification", { task_id: "task1", tool_use_id: "a1", status: "failed" })]).agent.ended).toBe("failed");
     expect(agentUsage({ background: false, steps: [], rev: 0, toolUses: 1, tokens: 999, durationMs: 83_000 }, true)).toBe("1 tool use · 999 tokens · 1m 23s");
+    // Rounded as a whole, so that 119.6 s is not "1m 60s".
+    expect(agentUsage({ background: false, steps: [], rev: 0, toolUses: 1, durationMs: 119_600 }, true)).toBe("1 tool use · 2m 0s");
     expect(agentUsage(undefined, true)).toBe("");
   });
 

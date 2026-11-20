@@ -272,6 +272,16 @@ pub struct Helper {
     pub description: String,
     /// Runs beside the conversation: Claude's turn can end while it works.
     pub background: bool,
+    /// 1 for a helper Claude started, 2 for one that a helper started.
+    #[serde(skip)]
+    depth: u64,
+}
+
+/// How a helper ended.
+struct Ended {
+    /// It was stopped, not finished.
+    stopped: bool,
+    background: bool,
 }
 
 /// What the UI sees for one session.
@@ -535,6 +545,12 @@ struct Run {
     /// When the user last stopped the session's turn. Helpers that end
     /// because of that are not followed by a turn.
     interrupted: Option<Instant>,
+    /// The helpers the user stopped one by one. Each is followed by a turn
+    /// in which Claude hears of it, whatever else was stopped around then.
+    stopped_alone: BTreeSet<String>,
+    /// A helper in the background ended while a turn was running: Claude
+    /// Code starts the turn about it once that one has ended.
+    report_due: bool,
 }
 
 /// How long a session stays "working" after its last helper ended, waiting
@@ -556,9 +572,9 @@ impl Run {
         self.interrupted.is_some_and(|t| t.elapsed() < Duration::from_secs(10))
     }
 
-    /// Notes what a task message says about a helper. Returns whether a
-    /// helper ended, and whether it was stopped rather than finished.
-    fn track(&mut self, subtype: &str, msg: &Value) -> (bool, bool) {
+    /// Notes what a task message says about a helper. Returns how a helper
+    /// ended, if the message says that one did.
+    fn track(&mut self, subtype: &str, msg: &Value) -> Option<Ended> {
         let id = msg["task_id"].as_str().unwrap_or_default();
         match subtype {
             "task_started" if msg["task_type"] == "local_agent" && !id.is_empty() && id.len() <= 64 => {
@@ -569,26 +585,32 @@ impl Run {
                     tool_use_id: msg["tool_use_id"].as_str().unwrap_or_default().to_string(),
                     description: truncate(msg["description"].as_str().unwrap_or_default(), 200),
                     background: msg["is_backgrounded"] == true,
+                    depth: msg["spawn_depth"].as_u64().unwrap_or(1),
                 });
                 self.settle = None;
-                (false, false)
+                None
             }
             // `task_updated` reports every change; only an end counts here.
             "task_updated" | "task_notification" => {
                 let status = if subtype == "task_updated" { &msg["patch"]["status"] } else { &msg["status"] };
                 let status = status.as_str().unwrap_or_default();
                 if matches!(status, "" | "running" | "pending") {
-                    return (false, false);
+                    return None;
                 }
-                let before = self.helpers.len();
-                self.helpers.retain(|h| h.id != id);
-                (self.helpers.len() < before, matches!(status, "killed" | "stopped"))
+                let at = self.helpers.iter().position(|h| h.id == id)?;
+                let helper = self.helpers.remove(at);
+                Some(Ended { stopped: matches!(status, "killed" | "stopped"), background: helper.background })
             }
             // The whole list of what runs in the background, whenever it changes.
             "background_tasks_changed" => {
                 let listed: Vec<&Value> = msg["tasks"].as_array().map(|a| a.iter().filter(|t| t["task_type"] == "local_agent").collect()).unwrap_or_default();
                 let before = self.helpers.len();
                 self.helpers.retain(|h| !h.background || listed.iter().any(|t| t["task_id"] == h.id.as_str()));
+                // With nothing in the background and no turn running, nothing
+                // can be running: a helper inside a helper has no turn to run in.
+                if listed.is_empty() && !self.turn {
+                    self.helpers.clear();
+                }
                 let ended = self.helpers.len() < before;
                 for t in listed {
                     let Some(id) = t["task_id"].as_str().filter(|i| !i.is_empty() && i.len() <= 64) else { continue };
@@ -602,13 +624,14 @@ impl Run {
                                 tool_use_id: String::new(),
                                 description: truncate(t["description"].as_str().unwrap_or_default(), 200),
                                 background: true,
+                                depth: 1,
                             });
                         }
                     }
                 }
-                (ended, false)
+                ended.then_some(Ended { stopped: false, background: true })
             }
-            _ => (false, false),
+            _ => None,
         }
     }
 
@@ -995,12 +1018,13 @@ impl Manager {
 
     /// Stops one helper agent of a session. What else is running carries on.
     pub fn stop_helper(&self, id: &str, helper: &str) -> Result<()> {
-        let inner = self.inner.locked();
-        let s = inner.sessions.get(id).context("no such session")?;
-        let run = s.run.as_ref().context("session is not running")?;
+        let mut inner = self.inner.locked();
+        let s = inner.sessions.get_mut(id).context("no such session")?;
+        let run = s.run.as_mut().context("session is not running")?;
         if !run.helpers.iter().any(|h| h.id == helper) {
             bail!("that helper is not running");
         }
+        run.stopped_alone.insert(helper.to_string());
         run.driver.stop_task(helper);
         Ok(())
     }
@@ -1236,6 +1260,8 @@ impl Manager {
                     turn: false,
                     settle: None,
                     interrupted: None,
+                    stopped_alone: BTreeSet::new(),
+                    report_due: false,
                 });
                 s.stopping = None;
                 s.idle_since = None;
@@ -1307,24 +1333,31 @@ impl Manager {
                 // itself when a helper has reported back.
                 run.turn = true;
                 run.settle = None;
+                run.report_due = false;
                 if matches!(s.meta.status, Status::Starting | Status::Idle) {
                     status = Some(Status::Working);
                 }
                 run.ask_context();
             }
             ("system", "task_started" | "task_updated" | "task_notification" | "background_tasks_changed") => {
-                let (ended, stopped) = run.track(&subtype, &msg);
-                if ended && run.at_rest() {
-                    if stopped && run.just_interrupted() {
-                        // Stop ended the helpers with everything else: nothing follows.
-                        if s.meta.status == Status::Working {
-                            s.idle_since = Some(Instant::now());
-                            status = Some(Status::Idle);
+                let alone = msg["task_id"].as_str().is_some_and(|t| run.stopped_alone.remove(t));
+                if let Some(ended) = run.track(&subtype, &msg) {
+                    // Stop ended this helper with everything else: nothing follows.
+                    let with_the_rest = ended.stopped && !alone && run.just_interrupted();
+                    if run.at_rest() {
+                        if with_the_rest {
+                            if s.meta.status == Status::Working {
+                                s.idle_since = Some(Instant::now());
+                                status = Some(Status::Idle);
+                            }
+                        } else {
+                            // Claude Code now starts a turn in which Claude reads the
+                            // report, or hears that the helper was stopped by itself.
+                            run.settle = Some(Instant::now());
                         }
-                    } else {
-                        // Claude Code now starts a turn in which Claude reads the
-                        // report, or hears that the helper was stopped by itself.
-                        run.settle = Some(Instant::now());
+                    } else if run.turn && ended.background && !with_the_rest {
+                        // The same turn, once the one that is running has ended.
+                        run.report_due = true;
                     }
                 }
             }
@@ -1342,7 +1375,9 @@ impl Manager {
                 if own && let Some(text) = first_text(&msg) {
                     s.meta.preview = truncate(&text, 160);
                 }
-                if matches!(s.meta.status, Status::Starting | Status::Idle) {
+                // A late message from a helper that has ended does not mean that anything runs.
+                let at_work = own || run.helpers.iter().any(|h| msg["parent_tool_use_id"] == h.tool_use_id.as_str());
+                if at_work && matches!(s.meta.status, Status::Starting | Status::Idle) {
                     status = Some(Status::Working);
                 }
                 if own {
@@ -1372,13 +1407,20 @@ impl Manager {
                     s.meta.preview = truncate(msg["result"].as_str().unwrap_or(if stopped { "Stopped" } else { "the turn failed" }), 160);
                 }
                 run.turn = false;
-                // A helper in the background works on after Claude's turn has
-                // ended: the session is not done, and must not be paused.
-                if run.helpers.is_empty() {
+                // A helper in the foreground runs inside the turn: it cannot
+                // have outlived it, whatever was or was not said about its end.
+                run.helpers.retain(|h| h.background || h.depth > 1);
+                if !run.helpers.is_empty() {
+                    // A helper in the background works on after Claude's turn has
+                    // ended: the session is not done, and must not be paused.
+                    status = Some(Status::Working);
+                } else if std::mem::take(&mut run.report_due) {
+                    // A helper reported while this turn ran: the turn about it comes next.
+                    run.settle = Some(Instant::now());
+                    status = Some(Status::Working);
+                } else {
                     s.idle_since = Some(Instant::now());
                     status = Some(Status::Idle);
-                } else {
-                    status = Some(Status::Working);
                 }
                 run.ask_context();
             }
