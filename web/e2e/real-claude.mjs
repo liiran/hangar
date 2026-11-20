@@ -150,10 +150,25 @@ check("sent back with what to change, Claude plans again with it", /bye\.txt/.te
 check("…and nothing was written while planning", !fs.existsSync(path.join(work, "hello.txt")));
 // Approved with a note, which Claude must read with the approval: before its first step, not after it.
 await decide(planned.id, secondPlan.pending[0].request_id, { behavior: "allow", mode: "acceptEdits", feedback: "Name the first file hello-b.txt, not hello.txt." });
-const built = await waitFor(planned.id, (s) => s.status === "idle" || (s.status === "needs_you" && !isPlan(s)), "the plan to be carried out");
+// Auto-accept covers edits, not commands: Claude sometimes looks around with one first (a
+// listing, say). That is allowed here; being asked about an edit is what must not happen.
+const askedWhileBuilding = [];
+let built;
+for (const end = Date.now() + 180000; Date.now() < end; await sleep(500)) {
+  built = await session(planned.id);
+  if (built.status === "idle" || isPlan(built)) break;
+  for (const p of built.pending) {
+    askedWhileBuilding.push(p.tool_name);
+    await decide(planned.id, p.request_id, { behavior: "allow" });
+  }
+}
 const builtEvents = await eventsOf(planned.id);
 const wrote = (name) => fs.existsSync(path.join(work, name)) && fs.readFileSync(path.join(work, name), "utf8").trim();
-check("approved with auto-accept, Claude carries the plan out without asking about the edits", built.status === "idle" && wrote("hello-b.txt") === "hi" && wrote("bye.txt") === "bye", `${built.status}; hello-b.txt=${wrote("hello-b.txt")}; bye.txt=${wrote("bye.txt")}`);
+check(
+  "approved with auto-accept, Claude carries the plan out without asking about the edits",
+  built.status === "idle" && !askedWhileBuilding.some((tool) => ["Write", "Edit", "MultiEdit"].includes(tool)) && wrote("hello-b.txt") === "hi" && wrote("bye.txt") === "bye",
+  `${built.status}; asked about: ${askedWhileBuilding.join(", ") || "nothing"}; hello-b.txt=${wrote("hello-b.txt")}; bye.txt=${wrote("bye.txt")}`,
+);
 const approvedAt = builtEvents.find((e) => e.kind === "decision" && e.behavior === "allow")?.seq ?? Infinity;
 const oldName = builtEvents
   .filter((e) => e.seq > approvedAt && e.kind === "claude" && e.msg.type === "assistant")
@@ -269,7 +284,9 @@ for (const end = Date.now() + 60000; Date.now() < end; await sleep(400)) {
   }
 }
 check("a message sent while only the agent works is answered at once", /still here/i.test(lastResult(answered?.events ?? [])?.result ?? ""), (lastResult(answered?.events ?? [])?.result ?? "").slice(0, 60));
-check("…and the agent works on behind it: the session is still working", answered?.s.status === "working" && answered.s.agents.length === 1, `${answered?.s.status}, ${answered?.s.agents.length} agent(s)`);
+// (The agent may be asking for something at this moment: then the session needs you, with the agent still listed.)
+check("…and the agent works on behind it: the session is not idle", ["working", "needs_you"].includes(answered?.s.status) && answered.s.agents.length === 1, `${answered?.s.status}, ${answered?.s.agents.length} agent(s)`);
+for (const p of (await session(helped.id)).pending) await decide(helped.id, p.request_id, { behavior: "allow" });
 
 // The agent is stopped by itself.
 const stopAt = Date.now();
