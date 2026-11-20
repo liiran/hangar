@@ -9,6 +9,7 @@ import {
   FileText,
   Globe,
   Hammer,
+  RotateCcw,
   Search,
   Shield,
   ShieldAlert,
@@ -25,7 +26,8 @@ import { ASK_TOOL, ENTER_PLAN_TOOL, PLAN_TOOL, planOf, questionsOf } from "../as
 import { diffOf } from "../diff";
 import { ago, duration, usd } from "../format";
 import { report } from "../store";
-import { useNow } from "../ui";
+import { fileNames } from "../rewind";
+import { useNow, useUI } from "../ui";
 import { rightToLeft, sessionRules, visible } from "../safe";
 import { AGENT_TOOLS, agentLines, agentUsage, needsSignIn, PAGE, readSearchSummary, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
 import { ApprovalBox, countLines, OtherFields, Shown } from "./approval";
@@ -339,7 +341,24 @@ const DrawnRow = memo(
 function RowView({ row, session }: { row: Row; session: Session }) {
   switch (row.kind) {
     case "user":
-      return <UserMessage text={row.text} ts={row.ts} />;
+      return <UserMessage text={row.text} ts={row.ts} seq={row.seq} canRewind={row.canRewind} />;
+    case "rewind": {
+      const what = row.code && row.conversation ? "Code and conversation restored" : row.code ? "Code restored" : "Conversation restored";
+      const files = row.code?.files ?? [];
+      return (
+        <Activity icon={<RotateCcw className="size-3" />}>
+          <span className="text-faint" data-rewound>
+            {what} to before <span className="text-muted">“{visible(row.text.trim().split("\n")[0]).slice(0, 90)}”</span>
+            {files.length > 0 && (
+              <span className="font-mono text-[11.5px]">
+                {" "}
+                +{row.code?.insertions ?? 0} -{row.code?.deletions ?? 0} in {visible(fileNames(files))}
+              </span>
+            )}
+          </span>
+        </Activity>
+      );
+    }
     case "text":
       return (
         <div className="flex gap-3 py-1">
@@ -387,16 +406,26 @@ function RowView({ row, session }: { row: Row; session: Session }) {
   }
 }
 
-function UserMessage({ text, ts }: { text: string; ts: number }) {
+function UserMessage({ text, ts, seq, canRewind }: { text: string; ts: number; seq: number; canRewind: boolean }) {
   const now = useNow();
   return (
-    <div className="rounded-lg bg-panel-2/70 px-4 py-3 ring-1 ring-inset ring-line">
+    <div className="group/message rounded-lg bg-panel-2/70 px-4 py-3 ring-1 ring-inset ring-line">
       <div className="mb-1.5 flex items-center gap-2 text-[12px]">
         <Avatar />
         <span className="font-medium">You</span>
         <span className="text-faint" title={new Date(ts).toLocaleString()}>
           {ago(ts, now)}
         </span>
+        {canRewind && (
+          <button
+            data-rewind-to={seq}
+            onClick={() => useUI.getState().openRewind(seq)}
+            title="Rewind: restore the code, the conversation or both to before this message"
+            className="ml-auto flex items-center gap-1 rounded px-1.5 py-px text-[11px] text-faint opacity-0 ring-1 ring-inset ring-transparent group-hover/message:opacity-100 hover:text-fg hover:ring-line-strong focus-visible:opacity-100"
+          >
+            <RotateCcw className="size-3" /> Rewind
+          </button>
+        )}
       </div>
       <div className="text-[13.5px] leading-relaxed whitespace-pre-wrap">{text}</div>
     </div>

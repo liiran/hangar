@@ -1,4 +1,4 @@
-import { Check, Copy, Download, Inbox, Layers, Monitor, Moon, PanelLeft, PanelRight, Play, Power, Search, Server, Square, SquarePen, Sun } from "lucide-react";
+import { Check, Copy, Download, Inbox, Layers, Monitor, Moon, PanelLeft, PanelRight, Play, Power, RotateCcw, Search, Server, Square, SquarePen, Sun } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { basename } from "../format";
@@ -55,6 +55,8 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         actions.unshift({ id: "stop", group: "Actions", label: "Stop the turn", detail: s.title, icon: <Square className="size-3.5" />, shortcut: "Esc", run: () => api.interrupt(s.id).catch(report) });
       if (s.status === "queued")
         actions.unshift({ id: "start", group: "Actions", label: "Start now", detail: s.title, icon: <Play className="size-4" />, run: () => api.startNow(s.id).catch(report) });
+      // Claude Code's /rewind: "Restore earlier code, conversation, or both".
+      actions.push({ id: "rewind", group: "Actions", label: "Rewind", detail: "restore earlier code, conversation, or both", icon: <RotateCcw className="size-4" />, shortcut: "Esc Esc", run: () => ui.openRewind(null) });
       actions.push({ id: "copy", group: "Actions", label: "Copy folder path", detail: basename(s.cwd), icon: <Copy className="size-4" />, run: () => navigator.clipboard?.writeText(s.cwd) });
     }
     const all = Object.values(sessions).sort((a, b) => b.updated_ms - a.updated_ms);

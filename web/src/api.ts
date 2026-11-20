@@ -99,7 +99,8 @@ export interface DecisionExtra {
 }
 
 export type EventBody =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; uuid?: string; mode?: string }
+  | { kind: "rewind"; to: number; code?: RewindRestored | null; conversation: boolean }
   | { kind: "claude"; msg: any }
   | { kind: "permission"; request_id: string; tool_name: string; input: any; suggestions?: unknown; description?: string | null; agent_id?: string | null }
   | { kind: "decision"; request_id: string; behavior: Decision; detail?: DecisionDetail | null }
@@ -107,6 +108,31 @@ export type EventBody =
   | { kind: "error"; message: string };
 
 export type SessionEvent = { seq: number; ts: number } & EventBody;
+
+/** What a restore put back in the files, as Claude Code's preview of it said. */
+export interface RewindRestored {
+  files?: string[];
+  insertions?: number;
+  deletions?: number;
+  skipped?: number;
+}
+
+/** What going back to before a message would change in the files (Claude Code's dry run). */
+export interface RewindPreview {
+  can_restore: boolean;
+  files: string[];
+  /** Lines the restore adds and removes: undoing two added lines is two deletions. */
+  insertions: number;
+  deletions: number;
+  /** Why the code cannot be restored, in Claude Code's words. */
+  error: string | null;
+}
+
+/** How a restore went. A part that was not asked for is absent. */
+export interface RewindDone {
+  code?: { ok: boolean; skipped?: number; error?: string };
+  conversation?: { ok: boolean; prefill?: string | null; mode?: string; error?: string; reason?: string };
+}
 
 export interface RunningAgent {
   /** Claude Code's id for it. A request the agent makes carries it. */
@@ -248,6 +274,9 @@ export const api = {
   decide: (id: string, requestId: string, behavior: "allow" | "allow_always" | "deny", extra: DecisionExtra = {}) =>
     call("POST", `/sessions/${id}/permissions/${q(requestId)}`, { behavior, ...extra }),
   interrupt: (id: string) => call("POST", `/sessions/${id}/interrupt`),
+  /** Claude Code's rewind for the user's message `seq`: a preview, or a restore of the code, the conversation or both. */
+  rewindPreview: (id: string, seq: number) => call<RewindPreview>("POST", `/sessions/${id}/rewind`, { seq, action: "preview" }),
+  rewind: (id: string, seq: number, action: "code" | "conversation" | "both") => call<RewindDone>("POST", `/sessions/${id}/rewind`, { seq, action }),
   /** Stops one helper agent; the rest of the session carries on. */
   stopAgent: (id: string, agent: string) => call("POST", `/sessions/${id}/agents/${q(agent)}/stop`),
   stop: (id: string) => call("POST", `/sessions/${id}/stop`),

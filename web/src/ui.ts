@@ -6,7 +6,7 @@ import { create } from "zustand";
 import { saved, useStore } from "./store";
 import { type View, visible } from "./views";
 
-type Overlay = null | "new" | "palette" | "stop";
+type Overlay = null | "new" | "palette" | "stop" | "rewind";
 
 interface UI {
   view: View;
@@ -17,6 +17,12 @@ interface UI {
   /** The session properties panel (remembered). */
   props: boolean;
   overlay: Overlay;
+  /** The message the Rewind dialog opens on (its number in the history), or null for the list of messages. */
+  rewindAt: number | null;
+  /** Text to put in a session's message box: a message taken back by a rewind. */
+  prefill: { session: string; text: string } | null;
+  openRewind: (at: number | null) => void;
+  setPrefill: (p: { session: string; text: string } | null) => void;
   setView: (v: View) => void;
   toggleNav: () => void;
   closeDrawer: () => void;
@@ -34,6 +40,10 @@ export const useUI = create<UI>((set) => ({
   navDrawer: false,
   props: saved.get("hangar.props") !== "0",
   overlay: null,
+  rewindAt: null,
+  prefill: null,
+  openRewind: (rewindAt) => set({ overlay: "rewind", rewindAt, navDrawer: false }),
+  setPrefill: (prefill) => set({ prefill }),
   setView: (view) => set({ view, navDrawer: false }),
   toggleNav: () =>
     set((s) => {

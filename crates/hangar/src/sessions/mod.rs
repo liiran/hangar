@@ -516,6 +516,7 @@ struct RewindTarget {
     uuid: String,
     newest: Option<String>,
     mode: Option<String>,
+    text: String,
 }
 
 /// What to do with Claude Code's rewind for a message (see [`Manager::rewind`]).
@@ -1122,9 +1123,15 @@ impl Manager {
     fn rewind_target(&self, id: &str, seq: u64) -> Result<RewindTarget> {
         // The user's messages that Claude still has, oldest first: (seq, id, a message of the feed, its mode).
         let mut kept: Vec<(u64, Option<String>, bool, Option<String>)> = Vec::new();
+        let mut text = String::new();
         for e in self.events(id, 0)? {
             match e.body {
-                EventBody::User { uuid, mode, .. } => kept.push((e.seq, uuid, true, mode)),
+                EventBody::User { uuid, mode, text: said } => {
+                    if e.seq == seq {
+                        text = said;
+                    }
+                    kept.push((e.seq, uuid, true, mode));
+                }
                 // A note typed with a plan's approval went to Claude as a message.
                 EventBody::Decision { detail: Some(d), .. } if d["note_id"].is_string() => {
                     kept.push((e.seq, d["note_id"].as_str().map(String::from), false, None))
@@ -1138,7 +1145,7 @@ impl Manager {
             bail!("that message is not in the conversation any more");
         };
         let uuid = uuid.context("this message was sent before hangar could rewind; only later ones can be gone back to")?;
-        Ok(RewindTarget { newest: newest.filter(|n| *n != uuid), uuid, mode })
+        Ok(RewindTarget { newest: newest.filter(|n| *n != uuid), uuid, mode, text })
     }
 
     /// Makes sure the session has a process, starting one if it is stopped
@@ -1172,7 +1179,7 @@ impl Manager {
     /// skipped, for the conversation the message's text to put back in the
     /// message box. A part that failed carries Claude Code's own `error`.
     pub async fn rewind(self: &Arc<Self>, id: &str, seq: u64, what: Rewind) -> Result<Value> {
-        let RewindTarget { uuid, newest, mode } = self.rewind_target(id, seq)?;
+        let RewindTarget { uuid, newest, mode, text } = self.rewind_target(id, seq)?;
         self.wake(id)?;
         if what == Rewind::Preview {
             let answer = self.answer(id, json!({"subtype": "rewind_files", "user_message_id": uuid, "dry_run": true})).await?;
@@ -1262,6 +1269,10 @@ impl Manager {
                 });
                 if let Some(run) = s.run.as_mut() {
                     run.ask_context();
+                }
+                if conversation {
+                    // The reply the session list showed is gone with the rest.
+                    s.meta.preview = truncate(&format!("Rewound to before: {text}"), 160);
                 }
                 self.push_event(&mut inner, id, EventBody::Rewind { to: seq, code: restored, conversation });
                 self.save(&inner, id);

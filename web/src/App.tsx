@@ -6,6 +6,7 @@ import { PoolView } from "./components/PoolView";
 import { SessionList } from "./components/SessionList";
 import { SessionPane } from "./components/SessionPane";
 import { Sidebar } from "./components/Sidebar";
+import { Rewind } from "./components/Rewind";
 import { StopHangar, StoppedScreen } from "./components/StopHangar";
 import { Button, cx, Kbd, Logo, useDialog } from "./components/ui";
 import { canStop, stopTurn, useStore } from "./store";
@@ -29,7 +30,10 @@ export function App() {
   const navHidden = useUI((s) => s.navHidden);
   const navDrawer = useUI((s) => s.navDrawer);
   const overlay = useUI((s) => s.overlay);
+  const rewindAt = useUI((s) => s.rewindAt);
   const open = useUI((s) => s.open);
+  // When Esc was last pressed with nothing to stop: twice in a row opens Rewind, as in Claude Code.
+  const lastEsc = useRef(0);
   const toggleNav = useUI((s) => s.toggleNav);
   const closeDrawer = useUI((s) => s.closeDrawer);
   const list = useVisible();
@@ -75,6 +79,14 @@ export function App() {
         if (next) select(next);
       } else if (e.key === "Escape" && session && canStop(session) && view.kind !== "pool") {
         stopTurn(session);
+      } else if (e.key === "Escape" && session && view.kind !== "pool") {
+        // Esc twice with an empty message box opens Rewind, as in Claude Code's terminal.
+        const typed = document.querySelector<HTMLTextAreaElement>("textarea[data-composer]")?.value ?? "";
+        const now = Date.now();
+        if (!typed && now - lastEsc.current < 800) {
+          lastEsc.current = 0;
+          useUI.getState().openRewind(null);
+        } else lastEsc.current = typed ? 0 : now;
       }
     };
     window.addEventListener("keydown", onKey);
@@ -132,6 +144,7 @@ export function App() {
       {overlay === "new" && <NewSession onClose={() => open(null)} />}
       {overlay === "palette" && <CommandPalette onClose={() => open(null)} />}
       {overlay === "stop" && <StopHangar onClose={() => open(null)} />}
+      {overlay === "rewind" && session && <Rewind key={`${session.id}-${rewindAt}`} session={session} at={rewindAt} onClose={() => open(null)} />}
       {conn === "offline" && (
         <div className="fixed top-3 left-1/2 z-50 -translate-x-1/2 rounded-full bg-panel px-3 py-1 text-[12px] text-s-needs shadow-pop" role="status">
           Lost the daemon. Reconnecting…

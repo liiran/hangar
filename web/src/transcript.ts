@@ -1,11 +1,22 @@
 // Turns a session's event log into rows to render.
 
-import type { DecisionDetail, SessionEvent } from "./api";
+import type { DecisionDetail, RewindRestored, SessionEvent } from "./api";
 import { ASK_TOOL, PLAN_TOOL } from "./ask";
 import { visible } from "./safe";
 
 export type Row =
-  | { kind: "user"; key: string; text: string; ts: number }
+  | {
+      kind: "user";
+      key: string;
+      text: string;
+      ts: number;
+      /** Its number in the session's history: what a rewind to it is asked for by. */
+      seq: number;
+      /** It went to Claude with an id, so Claude Code can go back to before it. */
+      canRewind: boolean;
+    }
+  /** The user went back to before a message: what was restored, and the message's text. */
+  | { kind: "rewind"; key: string; text: string; code?: RewindRestored; conversation: boolean }
   | { kind: "text"; key: string; text: string }
   | { kind: "thinking"; key: string; text: string }
   | { kind: "tool"; key: string; id: string; name: string; input: any; result?: ToolResult; agent?: AgentRun }
@@ -159,6 +170,8 @@ export function toRows(events: SessionEvent[]): Row[] {
   const rows: Row[] = [];
   const tools = new Map<string, ToolRow>();
   const perms = new Map<string, Extract<Row, { kind: "permission" }>>();
+  // The user's messages by their number, for the row that says which one was gone back to.
+  const prompts = new Map<number, string>();
   // A helper agent's steps are kept with the Agent call that started it.
   const owner = new Map<string, ToolRow>();
   const byTask = new Map<string, ToolRow>();
@@ -171,8 +184,19 @@ export function toRows(events: SessionEvent[]): Row[] {
     const key = String(e.seq);
     switch (e.kind) {
       case "user":
-        rows.push({ kind: "user", key, text: e.text, ts: e.ts });
+        rows.push({ kind: "user", key, text: e.text, ts: e.ts, seq: e.seq, canRewind: typeof e.uuid === "string" });
+        prompts.set(e.seq, e.text);
         break;
+      case "rewind": {
+        // The conversation went back: the message and all after it are gone, as in Claude
+        // Code's terminal. Every row's key starts with the number of the event it came from.
+        if (e.conversation) {
+          const cut = rows.findIndex((r) => Number(r.key.split(".")[0]) >= e.to);
+          if (cut >= 0) rows.length = cut;
+        }
+        rows.push({ kind: "rewind", key, text: prompts.get(e.to) ?? "", code: e.code ?? undefined, conversation: !!e.conversation });
+        break;
+      }
       case "claude": {
         const m = e.msg;
         if (m.type === "assistant") {

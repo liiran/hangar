@@ -1,6 +1,6 @@
 // End-to-end check, in a real browser against a real daemon, of the parts of the app that stand
 // in for Claude Code's own dialogs and read-outs: answering a question, approving a plan, the
-// changed lines of an edit, the context wheel, the plan limits, helper agents, and stopping hangar.
+// changed lines of an edit, the context wheel, the plan limits, helper agents, rewind, and stopping hangar.
 // Claude is the scriptable fake from crates/testkit, which sends what Claude Code sends (recorded
 // from 2.1.325, the helper agents from 2.1.329).
 //
@@ -569,6 +569,183 @@ try {
   await main.locator('[data-agent-state="running"]').waitFor();
   await say("helper step");
   await main.locator("[data-agent-live] >> text=In progress… · 1 tool use").waitFor();
+
+  // ================================================================ rewind
+  // Claude Code's /rewind: go back to before one of your messages. The words are its terminal's.
+  const idle = async (id) => {
+    for (let i = 0; i < 200 && (await session(id)).status !== "idle"; i++) await sleep(50);
+    return (await session(id)).status === "idle";
+  };
+  const rwId = await start("change cart.ts first", "acceptEdits");
+  await main.locator("text=changed cart.ts").waitFor();
+  await say("change notes.md too");
+  await main.locator("text=changed notes.md").waitFor();
+  await say("recall, what do you remember?");
+  await main.locator("text=/I remember: change cart/").waitFor();
+  await idle(rwId);
+  const dialog = page.locator("[data-rewind]");
+  const composer = page.locator("textarea[data-composer]");
+  const points = dialog.locator("[data-rewind-point]");
+  const choiceTexts = async () => (await dialog.locator("[data-rewind-choice]").allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim());
+  const chosenChoice = () => dialog.locator('[data-rewind-choice][aria-selected="true"]').getAttribute("data-rewind-choice");
+  const rwLines = async () => flat(dialog.locator("[data-rewind-lines]"));
+  const userMessages = () => main.locator("[data-rewind-to]").count();
+
+  // Esc twice, with nothing typed, opens it on the list of your messages, as in Claude Code.
+  await composer.focus();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor();
+  check("Esc twice opens Rewind on the list of your messages", (await dialog.getAttribute("data-rewind")) === "list" && (await dialog.innerText()).includes("Restore the code and/or conversation to the point before…"));
+  check(
+    "the list has your messages oldest first, with what Claude edited for each, and ends in (current)",
+    JSON.stringify((await points.allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim())) === JSON.stringify(["change cart.ts first Edited cart.ts", "change notes.md too Edited notes.md", "recall, what do you remember? No edits"]) &&
+      (await dialog.locator("[data-rewind-current]").getAttribute("aria-selected")) === "true",
+    (await points.allInnerTexts()).join(" / "),
+  );
+  await shot(dialog, "rewind-list");
+  // Choosing "(current)" changes nothing.
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "detached" });
+  check("choosing (current) closes it with nothing changed", (await userMessages()) === 3 && (await composer.inputValue()) === "");
+
+  // By keyboard to the second message. Picking it asks Claude Code what restoring the code would change.
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  check("the arrow keys move through the list", (await points.nth(1).getAttribute("aria-selected")) === "true");
+  await page.keyboard.press("Enter");
+  await dialog.locator("[data-rewind-choice]").first().waitFor();
+  check(
+    "a picked message shows with Claude Code's question",
+    (await dialog.innerText()).includes("Restore to the point before you sent this message:") && (await dialog.locator("[data-rewind-message]").innerText()) === "change notes.md too",
+  );
+  check(
+    "with code to restore, the choices are Claude Code's, in its order, starting on both",
+    JSON.stringify(await choiceTexts()) === JSON.stringify(["1 Restore code and conversation", "2 Restore conversation", "3 Restore code", "4 Never mind"]) && (await chosenChoice()) === "both",
+    (await choiceTexts()).join(" / "),
+  );
+  check("it says what the highlighted choice does, with Claude Code's own count", (await rwLines()) === "The conversation goes back to before this message. The code will be restored +1 -1 in notes.md.", await rwLines());
+  check("…and warns as Claude Code does", (await dialog.innerText()).includes("Restored files go back whole, losing later changes by anyone. Bash changes to other files are not undone."));
+  await shot(dialog, "rewind-choices");
+  await page.keyboard.press("ArrowDown");
+  check("Restore conversation leaves the code", (await chosenChoice()) === "conversation" && (await rwLines()) === "The conversation goes back to before this message. The code will be unchanged.", await rwLines());
+  await page.keyboard.press("ArrowDown");
+  check("Restore code leaves the conversation", (await chosenChoice()) === "code" && (await rwLines()) === "The conversation will be unchanged. The code will be restored +1 -1 in notes.md.", await rwLines());
+  // Esc goes back to the list; picking again lands on the same choices.
+  await page.keyboard.press("Escape");
+  check("Esc on the choices goes back to the list", (await dialog.getAttribute("data-rewind")) === "list");
+  await points.nth(1).click();
+  await dialog.locator('[data-rewind-choice="code"]').waitFor();
+
+  // Restore code: the files go back, the conversation stays.
+  await dialog.locator('[data-rewind-choice="code"]').click();
+  await dialog.waitFor({ state: "detached" });
+  await main.locator("[data-rewound]").waitFor();
+  check(
+    "Restore code puts the files back and says so in the feed; the conversation is as it was",
+    (await flat(main.locator("[data-rewound]"))) === "Code restored to before “change notes.md too” +1 -1 in notes.md" && (await userMessages()) === 3 && (await composer.inputValue()) === "",
+    await flat(main.locator("[data-rewound]")),
+  );
+
+  // The same message again, from its own Rewind button. There is no code left to restore.
+  await main.locator("[data-rewind-to]").nth(1).click();
+  await dialog.locator("[data-rewind-choice]").first().waitFor();
+  check(
+    "with nothing to restore in the files, only the conversation is offered",
+    JSON.stringify(await choiceTexts()) === JSON.stringify(["1 Restore conversation", "2 Never mind"]) &&
+      (await dialog.innerText()).includes("Restore the conversation to the point before you sent this message:") &&
+      (await rwLines()) === "The conversation goes back to before this message. The code has not changed (nothing will be restored).",
+    `${(await choiceTexts()).join(" / ")} | ${await rwLines()}`,
+  );
+  await shot(dialog, "rewind-conversation-only");
+  // Restore conversation: the message and all after it are gone, and its text is back in the box.
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "detached" });
+  for (let i = 0; i < 40 && (await composer.inputValue()) === ""; i++) await sleep(50);
+  check("Restore conversation puts the message back in the message box, to change and send again", (await composer.inputValue()) === "change notes.md too");
+  check(
+    "…and removes it and all after it from the feed",
+    (await userMessages()) === 1 && (await main.locator("text=/I remember: change cart/").count()) === 0 && (await flat(main.locator("[data-rewound]"))) === "Conversation restored to before “change notes.md too”",
+    await flat(main.locator("[data-rewound]").first()),
+  );
+  await shot(page, "rewind-done");
+  await say("recall again");
+  await main.locator("text=/I remember: /").waitFor();
+  check("Claude no longer has the messages that were taken back", (await main.locator("text=I remember: change cart.ts first | recall again").count()) === 1);
+  await idle(rwId);
+
+  // The feed is the same after a reload: what was taken back stays gone.
+  await page.reload();
+  await page.click(`${sessions} >> text=change cart.ts first`);
+  await main.locator("[data-rewound]").waitFor();
+  check("after a reload, what was taken back is still gone", (await userMessages()) === 2 && (await main.locator("text=changed notes.md").count()) === 0);
+
+  // A restore Claude Code cannot do fully: its own words are shown, and what did work is kept.
+  await say("change locked.txt please");
+  await main.locator("text=changed locked.txt").waitFor();
+  await idle(rwId);
+  await main.locator("[data-rewind-to]").last().click();
+  await dialog.locator('[data-rewind-choice="both"]').waitFor();
+  await dialog.locator('[data-rewind-choice="both"]').click();
+  await dialog.locator("[data-rewind-problems]").waitFor();
+  check(
+    "when the code cannot be restored, Claude Code's reason is shown",
+    (await flat(dialog.locator("[data-rewind-problems]"))) === "Failed to restore the code: Failed to rewind: No files were restored: 1 file(s) failed (backup missing, or the file could not be updated)",
+    await flat(dialog.locator("[data-rewind-problems]")),
+  );
+  await shot(dialog, "rewind-problem");
+  await dialog.locator("button", { hasText: "Close" }).click();
+  check("…and the conversation still went back, as in Claude Code", (await composer.inputValue()) === "change locked.txt please" && (await main.locator("text=changed locked.txt").count()) === 0);
+  await composer.fill("");
+
+  // From the command palette too, under Claude Code's description of it.
+  await page.keyboard.press("Control+k");
+  await page.keyboard.type("rewind");
+  const rewindItem = page.locator('[role="option"]', { hasText: "Rewind" });
+  check("Rewind is in the command palette", (await rewindItem.count()) === 1 && (await rewindItem.innerText()).includes("restore earlier code, conversation, or both"));
+  await page.keyboard.press("Enter");
+  await dialog.waitFor();
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  check("Esc on the list closes it", (await page.locator("[data-rewind]").count()) === 0);
+
+  // A stopped session: Claude Code is started on the same conversation to be asked. Nothing is sent.
+  const pausedId = await start("change paused.ts here", "acceptEdits");
+  await main.locator("text=changed paused.ts").waitFor();
+  await idle(pausedId);
+  await api("POST", `/sessions/${pausedId}/stop`);
+  for (let i = 0; i < 100 && (await session(pausedId)).status !== "stopped"; i++) await sleep(50);
+  await main.locator("[data-rewind-to]").first().click();
+  await dialog.locator('[data-rewind-choice="both"]').waitFor();
+  const woken = await session(pausedId);
+  check(
+    "rewinding a stopped session starts it again to ask Claude Code, without sending anything",
+    (await rwLines()) === "The conversation goes back to before this message. The code will be restored +1 -1 in paused.ts." && woken.pid != null && (await userMessages()) === 1,
+    `${await rwLines()} | ${woken.status}`,
+  );
+  await dialog.locator('[data-rewind-choice="nevermind"]').click();
+  await dialog.waitFor({ state: "detached" });
+  check("Never mind, on a dialog opened from a message, closes it; the session is idle", (await idle(pausedId)) && (await composer.inputValue()) === "");
+
+  // A turn is running (its request waits). A restore stops it first, as Claude Code does.
+  await say("use tool and then rewind");
+  await main.locator("text=Claude wants to use Bash").waitFor();
+  await main.locator("[data-rewind-to]").last().click();
+  await dialog.locator('[data-rewind-choice="conversation"]').waitFor();
+  check("with a turn running, the dialog says that it is stopped first", (await dialog.locator("[data-rewind-stops]").innerText()) === "The turn that is running is stopped first.");
+  await dialog.locator('[data-rewind-choice="conversation"]').click();
+  await dialog.waitFor({ state: "detached" });
+  for (let i = 0; i < 40 && (await composer.inputValue()) === ""; i++) await sleep(50);
+  const stoppedTurn = await session(pausedId);
+  check(
+    "…the turn is stopped, its request is over, and the message is back in the box",
+    stoppedTurn.pending.length === 0 && (await idle(pausedId)) && (await composer.inputValue()) === "use tool and then rewind" && (await main.locator("button", { hasText: /^\s*Allow$/ }).count()) === 0,
+    `${stoppedTurn.status}, ${stoppedTurn.pending.length} pending`,
+  );
+  await composer.fill("");
 
   // ================================================================ stopping hangar
   const other = await ctx.newPage(); // a second window on the same daemon

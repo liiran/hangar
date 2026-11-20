@@ -200,6 +200,14 @@ function Composer({ session }: { session: Session }) {
       ref.current?.focus();
     }
   }, [session.id]);
+  // A message taken back by a rewind returns to the box, to be changed and sent again.
+  const prefill = useUI((s) => s.prefill);
+  useEffect(() => {
+    if (!prefill || prefill.session !== session.id) return;
+    setText(prefill.text);
+    useUI.getState().setPrefill(null);
+    ref.current?.focus();
+  }, [prefill, session.id]);
   useEffect(() => {
     if (text) drafts.set(session.id, text);
     else drafts.delete(session.id);
