@@ -78,6 +78,17 @@ export function needsSignIn(text: string): boolean {
 export const PAGE = 300;
 
 /**
+ * Where drawing starts, given where it started when the session opened (`opened`), how many
+ * rows there are now and how many earlier ones were asked for. It never moves down while rows
+ * are only added, so nothing on screen goes away while you read. A rewind takes rows away: then
+ * it moves down to the newest page, so that what is left is drawn and not an empty feed.
+ */
+export function drawFrom(opened: number, rows: number, earlier: number): { opened: number; from: number } {
+  const start = opened > Math.max(0, rows - PAGE) ? Math.max(0, rows - PAGE) : opened;
+  return { opened: start, from: Math.max(0, start - earlier) };
+}
+
+/**
  * What can still change about a row after it first appears: a tool's result and a request's
  * outcome. Everything else about a row is fixed once written, so a row whose state is the same
  * as before does not need drawing again.

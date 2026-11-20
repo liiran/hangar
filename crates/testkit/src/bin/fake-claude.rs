@@ -614,7 +614,13 @@ fn main() {
         prompts: Vec::new(),
         waiting: false,
     };
-    fake.recollect();
+    // Only a conversation that is resumed remembers its messages. A fresh one starts clean,
+    // whatever a run long ago left under the same name (process ids are used again).
+    if args.iter().any(|a| a.starts_with("--resume=")) {
+        fake.recollect();
+    } else {
+        let _ = std::fs::remove_file(fake.memory());
+    }
     let file = path;
 
     let mut lines: Lines = std::io::stdin().lines();

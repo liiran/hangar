@@ -29,7 +29,7 @@ import { report } from "../store";
 import { fileNames } from "../rewind";
 import { useNow, useUI } from "../ui";
 import { rightToLeft, sessionRules, visible } from "../safe";
-import { AGENT_TOOLS, agentLines, agentUsage, needsSignIn, PAGE, readSearchSummary, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
+import { AGENT_TOOLS, agentLines, agentUsage, drawFrom, needsSignIn, PAGE, readSearchSummary, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
 import { ApprovalBox, countLines, OtherFields, Shown } from "./approval";
 import { DiffStat, DiffView } from "./Diff";
 import { Markdown } from "./Markdown";
@@ -90,7 +90,9 @@ export function Transcript({ session, events, header }: { session: Session; even
   const opened = useRef<number | null>(null);
   if (opened.current === null && events !== undefined) opened.current = Math.max(0, rows.length - PAGE);
   const [earlier, setEarlier] = useState(0);
-  const from = Math.max(0, (opened.current ?? 0) - earlier);
+  const drawn_ = drawFrom(opened.current ?? 0, rows.length, earlier);
+  if (opened.current !== null) opened.current = drawn_.opened;
+  const from = drawn_.from;
   const drawn = from > 0 ? rows.slice(from) : rows;
   const lastError = useMemo(() => {
     for (let i = rows.length - 1; i >= 0; i--) {

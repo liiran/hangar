@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "./api";
-import { agentLines, agentUsage, needsSignIn, readSearchSummary, relative, rowState, toRows, toolSummary } from "./transcript";
+import { agentLines, agentUsage, drawFrom, needsSignIn, readSearchSummary, relative, rowState, toRows, toolSummary } from "./transcript";
 
 let seq = 0;
 const ev = (body: Record<string, unknown>): SessionEvent => ({ seq: ++seq, ts: 1000 + seq, ...body }) as SessionEvent;
@@ -14,6 +14,21 @@ describe("needsSignIn", () => {
     expect(needsSignIn("I added a /login route to the server.")).toBe(false);
     expect(needsSignIn("Please run npm test")).toBe(false);
     expect(needsSignIn("Not logged in. " + "x".repeat(300) + " /login")).toBe(false);
+  });
+});
+
+describe("drawFrom", () => {
+  it("keeps where drawing starts while rows are added, and moves it down when a rewind took rows away", () => {
+    // Opened with 1000 rows: the newest 300 are drawn.
+    expect(drawFrom(700, 1000, 0)).toEqual({ opened: 700, from: 700 });
+    // New rows come in: nothing on screen goes away.
+    expect(drawFrom(700, 1050, 0)).toEqual({ opened: 700, from: 700 });
+    // "Show 300 more".
+    expect(drawFrom(700, 1050, 300)).toEqual({ opened: 700, from: 400 });
+    // A rewind leaves 500 rows: the newest 300 of them are drawn, not nothing.
+    expect(drawFrom(700, 500, 0)).toEqual({ opened: 200, from: 200 });
+    // It leaves 40: all of them.
+    expect(drawFrom(700, 40, 0)).toEqual({ opened: 0, from: 0 });
   });
 });
 
