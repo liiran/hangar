@@ -81,12 +81,14 @@ export function App() {
         stopTurn(session);
       } else if (e.key === "Escape" && session && view.kind !== "pool") {
         // Esc twice with an empty message box opens Rewind, as in Claude Code's terminal.
+        // With text typed, Esc twice clears it instead, as there too.
         const typed = document.querySelector<HTMLTextAreaElement>("textarea[data-composer]")?.value ?? "";
         const now = Date.now();
-        if (!typed && now - lastEsc.current < 800) {
+        if (now - lastEsc.current < 800) {
           lastEsc.current = 0;
-          useUI.getState().openRewind(null);
-        } else lastEsc.current = typed ? 0 : now;
+          if (typed) useUI.getState().setPrefill({ session: session.id, text: "" });
+          else useUI.getState().openRewind(null);
+        } else lastEsc.current = now;
       }
     };
     window.addEventListener("keydown", onKey);

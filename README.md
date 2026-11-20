@@ -43,7 +43,7 @@
   - **Restore conversation** takes that message and everything after it out of the conversation, and puts the message's text back in the message box, so you can change it and send it again.
   - **Restore code** puts files back as they were before the message. This covers what Claude changed with its own edit tools: a file it created is deleted, a file it edited goes back whole. It does not cover what a command did (`rm`, `npm install`), or, normally, what a helper agent edited. Claude Code keeps the copies it needs under `~/.claude/file-history`.
   - A stopped or paused session is started again to be asked. A running turn is stopped first, and so are agents still at work when the conversation goes back.
-  - Messages you sent before hangar had rewind cannot be gone back to: the list shows them dimmed. Claude Code's two *Summarize* choices are not offered: they only exist inside its terminal.
+  - Messages you sent before hangar had rewind cannot be gone back to: the list shows them dimmed. Claude Code's two *Summarize* choices are not offered: of all the requests Claude Code takes, none summarizes part of a conversation, so hangar cannot ask for it.
 - **History that lasts.** Sessions outlive restarts. A stopped or paused session carries on in the same conversation when you send your next message. The conversation is Claude Code's own, so `claude --resume <id>` in a terminal can continue it too.
 - **Light or dark.** hangar follows your system. To pin one, press `Ctrl K` and type *theme*.
 - **Keyboard first:**

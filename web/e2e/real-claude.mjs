@@ -418,6 +418,31 @@ check("both at once: the code and the conversation go back to before the first m
 await api("POST", `/sessions/${rewound.id}/messages`, { text: "How many messages did I send you before this one? Answer with a number only." });
 const fresh = lastResult(await turnEnds(5))?.result ?? "";
 check("after that, the conversation starts over for Claude", /\b(0|zero|none)\b/i.test(fresh), fresh.slice(0, 80));
+
+// While a turn runs: Claude has edited a file and is in the middle of a slow command. hangar
+// stops the turn first, as Claude Code's terminal does, then restores both.
+await api("POST", `/sessions/${rewound.id}/messages`, {
+  text: "Use the Edit tool to change the word alpha to OMEGA in a.txt. Then run this exact Bash command, which takes a while: node -e \"setTimeout(() => console.log('slow'), 40000)\" . Then reply DONE.",
+});
+let midTurn;
+for (const end = Date.now() + 120000; Date.now() < end; await sleep(400)) {
+  const s = await session(rewound.id);
+  const bash = (await eventsOf(rewound.id)).some((e) => e.kind === "claude" && e.msg.type === "assistant" && e.msg.message.content.some((b) => b.type === "tool_use" && b.name === "Bash"));
+  if (s.in_turn && bash && files()["a.txt"] === "OMEGA") {
+    midTurn = s;
+    break;
+  }
+}
+const busyAt = (await eventsOf(rewound.id)).filter((e) => e.kind === "user").at(-1).seq;
+const startedAt = Date.now();
+const mid = await rewind(rewound.id, busyAt, "both");
+const afterMid = await session(rewound.id);
+check(
+  "while a turn runs, a restore stops it first and then puts back the code and the conversation",
+  !!midTurn && mid.code?.ok === true && mid.conversation?.ok === true && files()["a.txt"] === "alpha" && !afterMid.in_turn,
+  `${midTurn ? "the turn was running" : "the turn never got to its command"}; ${JSON.stringify(mid).slice(0, 160)}; a.txt=${files()["a.txt"]}; took ${Date.now() - startedAt} ms`,
+);
+check("…and the session is idle afterwards, not still working", (await waitFor(rewound.id, (s) => s.status === "idle", "idle after the restore", 30000)).status === "idle");
 await api("DELETE", `/sessions/${rewound.id}`);
 
 await api("DELETE", `/sessions/${id}`);

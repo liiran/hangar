@@ -17,7 +17,8 @@ const firstLine = (text: string) => visible(text.trim().split("\n")[0]).slice(0,
  * Claude Code's rewind, as its terminal lays it out (/rewind, or Esc twice): a list of your
  * messages, oldest first, ending in "(current)"; pick one and it works out what restoring the
  * code would change, then offers to restore the code, the conversation, or both. The words are
- * Claude Code's. Its two "Summarize" choices are not here: they exist only inside its terminal.
+ * Claude Code's. Its two "Summarize" choices are not here: of all the requests Claude Code takes
+ * (2.1.329), none summarizes part of a conversation; they are done inside its terminal.
  *
  * `at` opens the dialog on one message, past the list.
  */
@@ -114,6 +115,10 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
         if (picked || next === points.length || points[next].canRewind) break;
       }
       setFocus(next);
+    } else if (picked && !asking && /^[1-9]$/.test(e.key) && Number(e.key) <= choices.length) {
+      // A number chooses that line, as in Claude Code's lists.
+      e.preventDefault();
+      run(choices[Number(e.key) - 1].value);
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (!picked) listAt === points.length ? onClose() : pick(points[listAt]);

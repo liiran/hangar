@@ -55,7 +55,7 @@ export type RewindChoice = "both" | "conversation" | "code" | "nevermind";
 /** Whether the preview found files a restore would change: only then does Claude Code offer the two "code" choices. */
 export const canRestoreCode = (preview: RewindPreview | null) => !!preview && preview.can_restore && preview.files.length > 0;
 
-/** The choices, in Claude Code's order. Its two "Summarize" choices need its terminal and are not here. */
+/** The choices, in Claude Code's order. Its two "Summarize" choices are left out: no request of Claude Code's does them. */
 export function rewindChoices(preview: RewindPreview | null): { value: RewindChoice; label: string }[] {
   const code = canRestoreCode(preview);
   return [

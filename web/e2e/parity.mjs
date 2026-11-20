@@ -640,8 +640,8 @@ try {
   await points.nth(1).click();
   await dialog.locator('[data-rewind-choice="code"]').waitFor();
 
-  // Restore code: the files go back, the conversation stays.
-  await dialog.locator('[data-rewind-choice="code"]').click();
+  // Restore code, by its number: the files go back, the conversation stays.
+  await page.keyboard.press("3");
   await dialog.waitFor({ state: "detached" });
   await main.locator("[data-rewound]").waitFor();
   check(
@@ -699,7 +699,12 @@ try {
   await shot(dialog, "rewind-problem");
   await dialog.locator("button", { hasText: "Close" }).click();
   check("…and the conversation still went back, as in Claude Code", (await composer.inputValue()) === "change locked.txt please" && (await main.locator("text=changed locked.txt").count()) === 0);
-  await composer.fill("");
+  // With text typed, Esc twice clears the box instead of opening Rewind, as in Claude Code.
+  await composer.focus();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await sleep(200);
+  check("with text typed, Esc twice clears it and does not open Rewind", (await composer.inputValue()) === "" && (await page.locator("[data-rewind]").count()) === 0);
 
   // From the command palette too, under Claude Code's description of it.
   await page.keyboard.press("Control+k");
