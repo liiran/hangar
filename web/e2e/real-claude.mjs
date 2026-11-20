@@ -3,8 +3,8 @@
 // conversation intact; then a question answered, a plan sent back and
 // approved with a note, Claude entering plan mode by itself, an edit's
 // changed lines, the context and limit figures checked against Claude's
-// own, and a helper agent in the background and in the foreground. Costs a
-// few cents.
+// own, a helper agent in the background and in the foreground, and Claude
+// Code's rewind (preview, code, conversation, both). Costs a few cents.
 //
 //   cargo build --release && cd web && npm run e2e:claude
 import { execFileSync } from "node:child_process";
@@ -29,6 +29,13 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 };
 
+// However this script ends (a check that throws, a timeout), its daemon is stopped: one left
+// running keeps its sessions alive and its program file locked for the next build.
+process.on("exit", () => {
+  try {
+    execFileSync(hangar, ["stop"], { env, stdio: "ignore" });
+  } catch {}
+});
 const url = execFileSync(hangar, ["up", "--no-open"], { env, encoding: "utf8" }).trim().split(/\r?\n/).pop();
 const base = new URL(url).origin;
 const code = url.split("#pair=")[1];
@@ -320,6 +327,98 @@ check(
 );
 check("…and Claude goes on with the agent's report", /hi/i.test(lastResult(fgEvents)?.result ?? "") && fgDone.status === "idle", (lastResult(fgEvents)?.result ?? "").slice(0, 80));
 await api("DELETE", `/sessions/${helped.id}`);
+
+// ---------------------------------------------------------------- rewind
+// Claude Code's own rewind, asked for through hangar: a preview of what restoring the code would
+// change, the code alone, the conversation alone, and both on a session that was stopped.
+const rewindDir = path.join(proj, "rewind");
+fs.mkdirSync(rewindDir);
+fs.writeFileSync(path.join(rewindDir, "a.txt"), "alpha\n");
+const files = () => Object.fromEntries(["a.txt", "b.txt", "c.txt"].map((n) => [n, fs.existsSync(path.join(rewindDir, n)) ? fs.readFileSync(path.join(rewindDir, n), "utf8").trim() : null]));
+const rewind = (sid, seq, action) => api("POST", `/sessions/${sid}/rewind`, { seq, action });
+const names = (list) => list.map((f) => path.basename(f)).sort();
+const SECOND = "Use the Write tool to create b.txt containing the single line bee. Then run this exact Bash command: echo sea > c.txt . Then reply DONE.";
+const rewound = await api("POST", "/sessions", {
+  cwd: rewindDir,
+  prompt: "Use the Edit tool to change the word alpha to ALPHA in a.txt. Then reply DONE.",
+  model: "haiku",
+  permission_mode: "bypassPermissions",
+  trust: true,
+});
+const turnEnds = async (n) => {
+  for (const end = Date.now() + 180000; Date.now() < end; await sleep(500)) {
+    const events = await eventsOf(rewound.id);
+    if (events.filter((e) => e.kind === "claude" && e.msg.type === "result").length >= n && (await session(rewound.id)).status === "idle") return events;
+  }
+  throw new Error(`turn ${n} of the rewind session did not end`);
+};
+await turnEnds(1);
+await api("POST", `/sessions/${rewound.id}/messages`, { text: SECOND });
+await turnEnds(2);
+await api("POST", `/sessions/${rewound.id}/messages`, { text: "Remember the word CHERRY. Reply with the single word OK." });
+const threeTurns = await turnEnds(3);
+const sent = threeTurns.filter((e) => e.kind === "user");
+check("every message went to Claude with an id it can be rewound to", sent.length === 3 && sent.every((e) => /^[0-9a-f-]{36}$/.test(e.uuid ?? "")));
+check("three turns left the files as expected", JSON.stringify(files()) === JSON.stringify({ "a.txt": "ALPHA", "b.txt": "bee", "c.txt": "sea" }), JSON.stringify(files()));
+
+// Previews: what Claude Code says restoring the code would change. Nothing changes.
+const [seq1, seq2, seq3] = sent.map((e) => e.seq);
+const previewNewest = await rewind(rewound.id, seq3, "preview");
+const previewSecond = await rewind(rewound.id, seq2, "preview");
+const previewFirst = await rewind(rewound.id, seq1, "preview");
+check("a preview of the newest message finds nothing to restore", previewNewest.can_restore === true && previewNewest.files.length === 0, JSON.stringify(previewNewest));
+check(
+  "a preview names the files Claude's own edits changed since the message, with Claude Code's line counts",
+  JSON.stringify(names(previewSecond.files)) === '["b.txt"]' && previewSecond.insertions === 0 && previewSecond.deletions === 1 && JSON.stringify(names(previewFirst.files)) === '["a.txt","b.txt"]',
+  `${JSON.stringify(names(previewSecond.files))} +${previewSecond.insertions} -${previewSecond.deletions}; ${JSON.stringify(names(previewFirst.files))} +${previewFirst.insertions} -${previewFirst.deletions}`,
+);
+check("a preview changes nothing", JSON.stringify(files()) === JSON.stringify({ "a.txt": "ALPHA", "b.txt": "bee", "c.txt": "sea" }) && !(await eventsOf(rewound.id)).some((e) => e.kind === "rewind"));
+
+// The code alone, to before the second message.
+await rewind(rewound.id, seq2, "preview");
+const codeOnly = await rewind(rewound.id, seq2, "code");
+check("restoring the code answers that it went through", codeOnly.code?.ok === true && codeOnly.conversation === undefined, JSON.stringify(codeOnly));
+check(
+  "the file Claude created is gone, its edit from before stays, and what a command made is not undone",
+  JSON.stringify(files()) === JSON.stringify({ "a.txt": "ALPHA", "b.txt": null, "c.txt": "sea" }),
+  JSON.stringify(files()),
+);
+const codeRecord = (await eventsOf(rewound.id)).filter((e) => e.kind === "rewind").at(-1);
+check("the restore is in the history, with what the preview said it would change", codeRecord?.to === seq2 && codeRecord.conversation === false && JSON.stringify(names(codeRecord.code?.files ?? [])) === '["b.txt"]', JSON.stringify(codeRecord));
+
+// The conversation alone, to before the second message. A third came after it.
+const convOnly = await rewind(rewound.id, seq2, "conversation");
+check("restoring the conversation hands back the message's text for the message box", convOnly.conversation?.ok === true && convOnly.conversation.prefill === SECOND, JSON.stringify(convOnly).slice(0, 200));
+await api("POST", `/sessions/${rewound.id}/messages`, {
+  text: "Two short lines, from memory. Line 1: every word I asked you to remember so far, or NONE. Line 2: every file you created or edited so far in this conversation.",
+});
+const remembered = lastResult(await turnEnds(4))?.result ?? "";
+check("Claude no longer has the messages that were taken back", /NONE/.test(remembered) && !/CHERRY/i.test(remembered) && !/b\.txt/.test(remembered) && /a\.txt/.test(remembered), remembered.slice(0, 160));
+let goneRefused = false;
+try {
+  await rewind(rewound.id, seq3, "preview");
+} catch (e) {
+  goneRefused = /not in the conversation any more/.test(e.message);
+}
+check("a message that was taken back cannot be gone back to", goneRefused);
+
+// Both, on a stopped session: Claude Code is started on the same conversation to be asked.
+await api("POST", `/sessions/${rewound.id}/stop`);
+await waitFor(rewound.id, (s) => s.status === "stopped", "the rewind session to stop", 30000);
+const messagesBefore = (await eventsOf(rewound.id)).filter((e) => e.kind === "user").length;
+const wakePreview = await rewind(rewound.id, seq1, "preview");
+const both = await rewind(rewound.id, seq1, "both");
+const woke = await waitFor(rewound.id, (s) => s.status === "idle", "the rewound session to be idle", 60000);
+check(
+  "a stopped session is started again to be asked, and nothing is sent to it",
+  JSON.stringify(names(wakePreview.files)) === '["a.txt"]' && woke.pid != null && (await eventsOf(rewound.id)).filter((e) => e.kind === "user").length === messagesBefore,
+  `${JSON.stringify(names(wakePreview.files))}, pid ${woke.pid}`,
+);
+check("both at once: the code and the conversation go back to before the first message", both.code?.ok === true && both.conversation?.ok === true && files()["a.txt"] === "alpha", `${JSON.stringify(both).slice(0, 200)}; ${JSON.stringify(files())}`);
+await api("POST", `/sessions/${rewound.id}/messages`, { text: "How many messages did I send you before this one? Answer with a number only." });
+const fresh = lastResult(await turnEnds(5))?.result ?? "";
+check("after that, the conversation starts over for Claude", /\b(0|zero|none)\b/i.test(fresh), fresh.slice(0, 80));
+await api("DELETE", `/sessions/${rewound.id}`);
 
 await api("DELETE", `/sessions/${id}`);
 check("deleted", !(await session(id)));
