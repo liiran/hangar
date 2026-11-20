@@ -231,7 +231,7 @@ function Composer({ session }: { session: Session }) {
         ? "Send a message to resume this session…"
         : session.status === "queued"
           ? "Messages are sent when the session starts…"
-          : session.status === "working"
+          : session.status === "working" && session.in_turn !== false
             ? "Queue a follow-up for when Claude finishes…"
             : "Reply to Claude…";
 

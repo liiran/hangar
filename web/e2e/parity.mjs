@@ -1,7 +1,8 @@
 // End-to-end check, in a real browser against a real daemon, of the parts of the app that stand
 // in for Claude Code's own dialogs and read-outs: answering a question, approving a plan, the
-// changed lines of an edit, the context wheel, the plan limits, and stopping hangar.
-// Claude is the scriptable fake from crates/testkit, which sends what Claude Code 2.1.325 sends.
+// changed lines of an edit, the context wheel, the plan limits, helper agents, and stopping hangar.
+// Claude is the scriptable fake from crates/testkit, which sends what Claude Code sends (recorded
+// from 2.1.325, the helper agents from 2.1.329).
 //
 //   cargo build --workspace && cd web && npm run e2e:parity
 //
@@ -443,6 +444,121 @@ try {
   check("a used-up window reads 100%, in red", /^5-hour limit resets \S.* 100% /.test(await limitsText()) && (await bars())[0] === "var(--fill-4)");
   await shot(page, "limits-reached");
 
+  // ================================================================ helper agents
+  // Claude hands work to a helper agent in the background. Its turn ends; the agent works on.
+  const helpId = await start("helper start, then wait", "acceptEdits");
+  const agent = main.locator("[data-agent]").first();
+  const liveLines = agent.locator("[data-agent-live]");
+  const flat = async (el) => (await el.innerText()).replace(/\s+/g, " ").trim();
+  await main.locator('[data-agent-state="running"]').waitFor();
+  await main.locator("[data-working]", { hasText: "agent" }).waitFor();
+  check("with an agent at work after Claude's turn, the session is still working", (await session(helpId)).status === "working");
+  check("…and the feed says what is still running", (await main.locator("[data-working]").innerText()) === "1 agent running in the background…");
+  check("before its first step the row reads as in Claude Code: Initializing…", (await flat(liveLines)) === "Initializing…");
+  check("…and is marked as in the background", (await agent.innerText()).includes("in background"));
+  check("the launch text meant for Claude is not shown", !(await main.innerText()).includes("Async agent launched"));
+  await shot(page, "agent-initializing");
+
+  // Its steps show as they happen.
+  await say("helper step");
+  await liveLines.locator("text=In progress… · 1 tool use").waitFor();
+  check("a step shows as it happens, with Claude Code's own count", (await flat(liveLines)) === "Read src/app.ts In progress… · 1 tool use · 19.5k tokens", await flat(liveLines));
+  await say("helper step 2");
+  await liveLines.locator("text=In progress… · 3 tool uses").waitFor();
+  check("reads and searches in a row are one line, as in Claude Code", (await flat(liveLines)) === "Searching for 1 pattern, reading 2 files… In progress… · 3 tool uses · 22.5k tokens", await flat(liveLines));
+  await say("helper step 2");
+  await liveLines.locator("text=In progress… · 5 tool uses").waitFor();
+  check(
+    "an edit and a command are lines of their own",
+    (await flat(liveLines)) === "Searched for 1 pattern, read 2 files Edit notes.txt Bash npm test In progress… · 5 tool uses · 25.5k tokens",
+    await flat(liveLines),
+  );
+  await say("helper step 3");
+  await liveLines.locator("text=In progress… · 8 tool uses").waitFor();
+  check(
+    "only the newest three lines show; the tool uses above them are counted",
+    (await flat(liveLines)) === "Edit notes.txt Bash npm test Searching for 1 pattern, reading 2 files… +3 more tool uses In progress… · 8 tool uses · 30k tokens",
+    await flat(liveLines),
+  );
+  // By now the row is far up the feed. A strip at the foot keeps saying what the agent does.
+  const strip = main.locator("[data-running-agent]");
+  check(
+    "at the foot of the feed, each agent in the background shows what it is doing now",
+    (await strip.count()) === 1 && (await flat(strip)) === "Tidy the notes Searching for 1 pattern, reading 2 files… 8 tool uses · 30k tokens",
+    await flat(strip.first()),
+  );
+  check("with only an agent at work, a message would be read at once, and the box says so", (await page.getAttribute("textarea[data-composer]", "placeholder")) === "Reply to Claude…");
+  check("through all of it the session stayed working, with Claude's own turns in between", (await session(helpId)).status === "working" && (await main.locator("text=Noted.").count()) === 4);
+  await shot(page, "agent-live");
+
+  // Opened, the row shows everything the agent did.
+  await agent.locator("button[aria-expanded]").first().click();
+  const inside = agent.locator("[data-agent-steps]");
+  await inside.waitFor();
+  check("opened, the row shows the prompt", (await inside.innerText()).includes("Prompt") && (await inside.innerText()).includes("Tidy the notes. Report what you did."));
+  check("…and every step, each of which opens like a step of Claude's own", (await inside.locator("button[aria-expanded]").count()) === 8);
+  check("an edit the agent made shows its changed lines", (await inside.locator("[data-diff]").count()) === 1 && (await inside.locator('[data-diff] [data-sign="+"]').innerText()).includes("final"));
+  await shot(page, "agent-opened");
+  await agent.locator("button[aria-expanded]").first().click();
+
+  // The agent reports. Claude Code starts a turn by itself in which Claude reads the report.
+  await say("helper finish");
+  await main.locator("text=The helper is done: Tidy the notes.").waitFor();
+  await main.locator('[data-agent-state="completed"]').waitFor();
+  check("an agent that has reported reads Done, with Claude Code's totals", (await agent.locator("[data-agent-outcome]").innerText()) === "Done (8 tool uses · 30k tokens · 10s)", await agent.locator("[data-agent-outcome]").innerText());
+  const afterAgent = await session(helpId);
+  check("…and only now is the session idle", afterAgent.status === "idle" && afterAgent.agents.length === 0 && (await main.locator("[data-running-agents]").count()) === 0, afterAgent.status);
+  await agent.locator("button[aria-expanded]").first().click();
+  check("opened, its report is under Response", (await flat(inside)).includes("Response Done: 8 steps. The notes are tidy."));
+  await shot(page, "agent-done");
+
+  // Two agents at once; one is stopped by itself, then Stop ends the other.
+  const twoId = await start("two helpers at once");
+  await main.locator('[data-agent-state="running"]').nth(1).waitFor();
+  await main.locator("[data-working]", { hasText: "agents" }).waitFor();
+  check("two agents at work are both counted", (await main.locator("[data-working]").innerText()) === "2 agents running in the background…");
+  await say("helper step");
+  await main.locator("[data-agent-live] >> text=In progress… · 1 tool use").nth(1).waitFor();
+  await shot(page, "agents-two");
+  await main.locator("[data-agent]").first().locator("[data-agent-stop]").click();
+  await main.locator('[data-agent-state="stopped"]').waitFor();
+  const oneLeft = await session(twoId);
+  check(
+    "one agent can be stopped by itself: it reads Stopped, the other works on",
+    (await main.locator("[data-agent]").first().locator("[data-agent-outcome]").innerText()) === "Stopped" && oneLeft.status === "working" && oneLeft.agents.length === 1 && oneLeft.agents[0].description === "Check the tests",
+  );
+  check("a stopped agent has no Stop button left", (await main.locator("[data-agent-stop]").count()) === 1);
+  await page.locator("header button", { hasText: "Stop" }).click();
+  await main.locator('[data-agent-state="stopped"]').nth(1).waitFor();
+  for (let i = 0; i < 40 && (await session(twoId)).status !== "idle"; i++) await sleep(50);
+  check("Stop, with only agents running, stops them; the session is idle at once", (await session(twoId)).status === "idle" && (await main.locator('[data-agent-state="running"]').count()) === 0);
+
+  // An agent in the foreground asks before its edit. The request says who asks.
+  const fgId = await start("helper fg, asking first");
+  await main.locator("[data-asking-agent]").waitFor();
+  const asker = main.locator("div", { has: page.locator("[data-asking-agent]") }).last();
+  check("a request from an agent says that an agent asks, and which one", (await flat(asker)).includes("An agent wants to use Edit") && (await main.locator("[data-asking-agent]").innerText()).includes("Tidy the notes"));
+  check("the agent's row shows the step that waits", (await flat(main.locator("[data-agent-live]"))) === "Searched for 1 pattern, read 2 files Edit notes.txt In progress… · 4 tool uses · 24k tokens", await flat(main.locator("[data-agent-live]")));
+  check("an agent in the foreground is not marked as in the background", !(await main.locator("[data-agent]").innerText()).includes("in background") && (await main.locator("[data-running-agents]").count()) === 0);
+  await shot(page, "agent-asks");
+  await main.locator("button", { hasText: /^\s*Allow$/ }).click();
+  await main.locator("text=The helper tidied the notes.").waitFor();
+  check("allowed, it runs to its end", (await main.locator("[data-agent-outcome]").innerText()) === "Done (5 tool uses · 25.5k tokens · 6s)" && (await session(fgId)).status === "idle");
+  check("the report's frame, written for Claude, is not shown", !(await main.innerText()).includes("Subagent hand-back"));
+
+  // An agent that fails says so.
+  await start("helper start, to fail", "acceptEdits");
+  await main.locator('[data-agent-state="running"]').waitFor();
+  await say("helper fail");
+  await main.locator('[data-agent-state="failed"]').waitFor();
+  check("an agent that failed reads Failed", (await main.locator("[data-agent-outcome]").innerText()) === "Failed");
+
+  // One that is at work when hangar stops (see "stopping hangar" below).
+  await start("helper start, for the restart");
+  await main.locator('[data-agent-state="running"]').waitFor();
+  await say("helper step");
+  await main.locator("[data-agent-live] >> text=In progress… · 1 tool use").waitFor();
+
   // ================================================================ stopping hangar
   const other = await ctx.newPage(); // a second window on the same daemon
   watch(other);
@@ -459,7 +575,8 @@ try {
   const confirm = page.locator('[role="dialog"]', { hasText: "Stop hangar?" });
   await confirm.waitFor();
   const confirmText = (await confirm.innerText()).replace(/\s+/g, " ");
-  check("it asks first, and says what stopping does", confirmText.includes("1 session is in the middle of a turn") && confirmText.includes("keeps its history") && confirmText.includes("hangar up"), confirmText);
+  // Two sessions are at work: the one whose request waits, and the one whose agent is running.
+  check("it asks first, and says what stopping does", confirmText.includes("2 sessions are in the middle of a turn") && confirmText.includes("keeps its history") && confirmText.includes("hangar up"), confirmText);
   await shot(page, "stop-confirm");
   await page.keyboard.press("Escape");
   await confirm.waitFor({ state: "detached" });
@@ -494,6 +611,12 @@ try {
   await main.locator("text=/^(Expired|Withdrawn) Bash/").waitFor();
   check("a request that was waiting when hangar stopped is over, not left answerable", (await main.locator("button", { hasText: /^\s*Allow$/ }).count()) === 0);
   await shot(page, "after-restart");
+  await page.click(`${sessions} >> text=helper start, for the restart`);
+  await main.locator("[data-agent]").waitFor();
+  check(
+    "an agent that was at work when hangar stopped reads as not finished, and not as running",
+    (await main.locator("[data-agent]").getAttribute("data-agent-state")) === "unfinished" && (await main.locator("[data-agent-outcome]").innerText()) === "Did not finish" && (await main.locator("[data-agent-stop]").count()) === 0,
+  );
 
   // A daemon that dies without saying so is still "lost", not "stopped".
   const pid = JSON.parse(fs.readFileSync(path.join(home, "daemon.json"), "utf8")).pid;

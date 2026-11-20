@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Bot,
   Brain,
   Check,
   ChevronRight,
@@ -26,7 +27,7 @@ import { ago, duration, usd } from "../format";
 import { report } from "../store";
 import { useNow } from "../ui";
 import { rightToLeft, sessionRules, visible } from "../safe";
-import { needsSignIn, PAGE, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
+import { AGENT_TOOLS, agentLines, agentUsage, needsSignIn, PAGE, readSearchSummary, relative, rowState, toRows, toolSummary, type Row } from "../transcript";
 import { ApprovalBox, countLines, OtherFields, Shown } from "./approval";
 import { DiffStat, DiffView } from "./Diff";
 import { Markdown } from "./Markdown";
@@ -36,6 +37,14 @@ import { Button, cx, Guard } from "./ui";
 
 /** Statuses in which a tool call without a result is still running. */
 const LIVE = new Set(["working", "starting", "needs_you"]);
+
+type ToolRowData = Extract<Row, { kind: "tool" }>;
+
+/** Whether the helper agent an Agent call started is running now. The daemon says which are. */
+const agentRunning = (s: Session, row: ToolRowData) => (s.agents ?? []).some((a) => a.tool_use_id === row.id || (row.agent?.id !== undefined && a.id === row.agent.id));
+
+/** The agents running now, as one string: an Agent row is drawn again when it changes. */
+const agentsKey = (s: Session) => (s.agents ?? []).map((a) => a.id).join(" ");
 
 const TOOL_ICONS: Record<string, typeof Hammer> = {
   Bash: SquareTerminal,
@@ -50,6 +59,8 @@ const TOOL_ICONS: Record<string, typeof Hammer> = {
   [ASK_TOOL]: CircleHelp,
   [PLAN_TOOL]: ClipboardList,
   [ENTER_PLAN_TOOL]: ClipboardList,
+  Agent: Bot,
+  Task: Bot,
 };
 
 /** Claude Code's dialogs and its switch into plan mode, by what they are instead of by their tool names. */
@@ -156,9 +167,12 @@ export function Transcript({ session, events, header }: { session: Session; even
               </Guard>
             </div>
           ))}
+          <RunningAgents session={session} rows={rows} />
           {(session.status === "working" || session.status === "starting") && (
             <Activity icon={<Dots />}>
-              <span className="text-muted">{session.status === "starting" ? "Starting Claude…" : "Working…"}</span>
+              <span className="text-muted" data-working>
+                {session.status === "starting" ? "Starting Claude…" : waitingOnAgents(session)}
+              </span>
             </Activity>
           )}
           {session.status === "queued" && (
@@ -171,6 +185,68 @@ export function Transcript({ session, events, header }: { session: Session; even
           {(session.status === "error" || session.status === "stopped") && <Stopped session={session} shownError={lastError} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * What the line at the foot of the feed says while the session works. Claude's own turn can be
+ * over with helper agents still at work in the background: then it says so.
+ */
+function waitingOnAgents(session: Session): string {
+  const running = (session.agents ?? []).length;
+  if (running === 0 || session.in_turn !== false) return "Working…";
+  return running === 1 ? "1 agent running in the background…" : `${running} agents running in the background…`;
+}
+
+/** Every Agent call in the feed, also one made by an agent. */
+function agentRows(rows: Row[], out: ToolRowData[] = []): ToolRowData[] {
+  for (const r of rows) {
+    if (r.kind !== "tool" || !AGENT_TOOLS.has(r.name)) continue;
+    out.push(r);
+    if (r.agent) agentRows(r.agent.steps, out);
+  }
+  return out;
+}
+
+/**
+ * The agents at work in the background, at the foot of the feed: what each is doing right now.
+ * Their rows are where Claude started them, which the conversation soon scrolls away from.
+ * A click goes to the row.
+ */
+function RunningAgents({ session, rows }: { session: Session; rows: Row[] }) {
+  const background = (session.agents ?? []).filter((a) => a.background);
+  const found = useMemo(() => (background.length > 0 ? agentRows(rows) : []), [rows, background.length]);
+  if (background.length === 0) return null;
+  return (
+    <div data-running-agents className="space-y-1 rounded-lg border border-line px-3 py-2 text-[12px]">
+      {background.map((a) => {
+        const row = found.find((r) => r.id === a.tool_use_id || r.agent?.id === a.id);
+        const { lines } = agentLines(row?.agent ?? { background: true, steps: [], rev: 0 }, true);
+        const newest = lines[lines.length - 1];
+        const doing = !newest
+          ? "Initializing…"
+          : newest.kind === "summary"
+            ? readSearchSummary(newest.searches, newest.reads, newest.active)
+            : `${newest.row.name.replace(/^mcp__/, "").replace(/__/g, " · ")} ${toolSummary(newest.row.name, newest.row.input, session.cwd)}`;
+        const used = agentUsage(row?.agent, false);
+        return (
+          <button
+            key={a.id}
+            data-running-agent={a.id}
+            disabled={!row}
+            onClick={() => row && document.querySelector(`[data-agent="${CSS.escape(row.id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" })}
+            title="Show this agent in the feed"
+            className="flex w-full min-w-0 items-center gap-2 text-left text-muted enabled:hover:text-fg"
+          >
+            <span className="size-1.5 shrink-0 animate-soft-pulse rounded-full bg-s-working" />
+            <Bot className="size-3 shrink-0" />
+            <span className="shrink-0 font-medium text-fg">{visible(a.description) || "Agent"}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint">{doing}</span>
+            {used && <span className="shrink-0 text-[11px] text-faint">{used}</span>}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -249,7 +325,11 @@ const DrawnRow = memo(
   (a, b) => {
     if (a.row !== b.row) return false;
     if (a.row.kind === "permission") return a.session === b.session;
-    if (a.row.kind === "tool") return a.session.cwd === b.session.cwd && LIVE.has(a.session.status) === LIVE.has(b.session.status);
+    if (a.row.kind === "tool") {
+      if (a.session.cwd !== b.session.cwd || LIVE.has(a.session.status) !== LIVE.has(b.session.status)) return false;
+      // An Agent row also shows whether its helper runs, and can stop it.
+      return !AGENT_TOOLS.has(a.row.name) || (a.session.id === b.session.id && agentsKey(a.session) === agentsKey(b.session));
+    }
     return true;
   },
 );
@@ -276,7 +356,7 @@ function RowView({ row, session }: { row: Row; session: Session }) {
     case "thinking":
       return <Collapsible icon={<Brain className="size-3" />} label="Thinking" body={row.text} />;
     case "tool":
-      return <ToolRow row={row} cwd={session.cwd} live={LIVE.has(session.status)} />;
+      return AGENT_TOOLS.has(row.name) ? <AgentRow row={row} session={session} /> : <ToolRow row={row} cwd={session.cwd} live={LIVE.has(session.status)} />;
     case "permission":
       return <PermissionRow row={row} session={session} />;
     case "result":
@@ -469,6 +549,150 @@ function ToolRow({ row, cwd, live }: { row: Extract<Row, { kind: "tool" }>; cwd:
   );
 }
 
+/** Claude Code's words for how a helper agent ended. */
+function agentOutcome(row: ToolRowData, state: string): string {
+  if (state === "completed") {
+    const used = agentUsage(row.agent, true);
+    return used ? `Done (${used})` : "Done";
+  }
+  return state === "failed" ? "Failed" : state === "stopped" ? "Stopped" : state === "unfinished" ? "Did not finish" : "";
+}
+
+/**
+ * A helper agent Claude started with its Agent tool. While it runs, the row shows what Claude
+ * Code's terminal shows: "Initializing…", then its newest steps (a run of reads and searches as
+ * one line) and how many more there were. When it has ended, the row says how, with Claude
+ * Code's own totals. Opened, it shows the prompt, every step and the agent's report.
+ */
+function AgentRow({ row, session }: { row: ToolRowData; session: Session }) {
+  const [open, setOpen] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const agent = row.agent;
+  const running = agentRunning(session, row);
+  // Before Claude Code has announced the agent, the call is one more tool call that is running.
+  const starting = !running && !agent && !row.result && LIVE.has(session.status);
+  const state = running
+    ? "running"
+    : starting
+      ? "starting"
+      : (agent?.ended ?? (row.result && !agent?.background ? (row.result.isError ? "failed" : "completed") : agent?.id !== undefined || !row.result ? "unfinished" : "unknown"));
+  const active = state === "running" || state === "starting";
+  const type = typeof row.input?.subagent_type === "string" && row.input.subagent_type !== "general-purpose" ? visible(row.input.subagent_type).slice(0, 40) : null;
+  const prompt = typeof row.input?.prompt === "string" ? row.input.prompt : null;
+  const steps = agent?.steps ?? [];
+  // The agent's last words are its report.
+  const last = steps[steps.length - 1];
+  const answer = state === "completed" && last?.kind === "text" ? last : null;
+  const { lines, hidden } = agentLines(agent ?? { background: false, steps: [], rev: 0 }, running);
+  const used = agentUsage(agent, false);
+  const outcome = agentOutcome(row, state);
+  const stop = () => {
+    if (!agent?.id) return;
+    setStopping(true);
+    api
+      .stopAgent(session.id, agent.id)
+      .catch(report)
+      .finally(() => setStopping(false));
+  };
+  return (
+    <Activity icon={<Bot className="size-3" />} tone={state === "failed" ? "error" : undefined}>
+      <div data-agent={row.id} data-agent-state={state}>
+        <div className="flex w-full min-w-0 items-center gap-2">
+          <button onClick={() => setOpen(!open)} aria-expanded={open} className="group flex min-w-0 flex-1 items-center gap-2 text-left">
+            <span className="shrink-0 font-medium text-fg">Agent</span>
+            {type && <span className="shrink-0 rounded bg-raised px-1.5 py-px text-[11px] text-muted">{type}</span>}
+            <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint group-hover:text-muted">{toolSummary(row.name, row.input, session.cwd)}</span>
+          </button>
+          {active && agent?.background && <span className="shrink-0 text-[11px] text-faint">in background</span>}
+          {running && agent?.id && (
+            <button
+              data-agent-stop
+              disabled={stopping}
+              onClick={stop}
+              title="Stop this agent. Whatever else is running carries on."
+              className="shrink-0 rounded px-1.5 py-px text-[11px] text-muted ring-1 ring-inset ring-line-strong hover:text-fg disabled:opacity-50"
+            >
+              Stop
+            </button>
+          )}
+          {active && <span className="size-1.5 shrink-0 animate-soft-pulse rounded-full bg-s-working" title="Running" />}
+          <button onClick={() => setOpen(!open)} aria-label={open ? "Hide the agent's steps" : "Show the agent's steps"} className="shrink-0 text-faint hover:text-fg">
+            <ChevronRight className={cx("size-3 transition-transform", open && "rotate-90")} />
+          </button>
+        </div>
+        {!open && active && (
+          <div data-agent-live className="mt-1 space-y-0.5 border-l border-line-strong pl-3 text-[12px] text-muted">
+            {lines.length === 0 ? (
+              <p className="text-faint">Initializing…</p>
+            ) : (
+              <>
+                {lines.map((l) =>
+                  l.kind === "summary" ? (
+                    <p key={l.key} className="truncate">
+                      {readSearchSummary(l.searches, l.reads, l.active)}
+                    </p>
+                  ) : (
+                    <p key={l.row.key} className="flex min-w-0 items-center gap-1.5">
+                      <span className="shrink-0 text-fg">{l.row.name.replace(/^mcp__/, "").replace(/__/g, " · ")}</span>
+                      <span className="min-w-0 truncate font-mono text-[11.5px] text-faint">{toolSummary(l.row.name, l.row.input, session.cwd)}</span>
+                      {!l.row.result && <span className="size-1 shrink-0 animate-soft-pulse rounded-full bg-s-working" />}
+                    </p>
+                  ),
+                )}
+                {hidden > 0 && (
+                  <p className="text-faint">
+                    +{hidden} more {hidden === 1 ? "tool use" : "tool uses"}
+                  </p>
+                )}
+              </>
+            )}
+            {used && <p className="text-faint">In progress… · {used}</p>}
+          </div>
+        )}
+        {!open && !active && outcome && (
+          <p data-agent-outcome className={cx("mt-1 border-l border-line-strong pl-3 text-[12px]", state === "failed" ? "text-s-error" : "text-faint")}>
+            {outcome}
+          </p>
+        )}
+        {open && (
+          <div data-agent-steps className="mt-2 space-y-2.5 border-l border-line-strong pl-3">
+            {prompt && (
+              <div>
+                <p className="text-[11px] font-medium text-faint">Prompt</p>
+                <pre className="mt-1 max-h-60 overflow-auto rounded-md bg-code p-2.5 font-sans text-[12px] whitespace-pre-wrap text-muted ring-1 ring-inset ring-line">{visible(prompt)}</pre>
+              </div>
+            )}
+            {steps.length === 0 && active && <p className="text-[12px] text-faint">Initializing…</p>}
+            {steps.map((s) =>
+              s === answer ? null : s.kind === "tool" ? (
+                AGENT_TOOLS.has(s.name) ? (
+                  <AgentRow key={s.key} row={s} session={session} />
+                ) : (
+                  <ToolRow key={s.key} row={s} cwd={session.cwd} live={running} />
+                )
+              ) : s.kind === "text" ? (
+                <div key={s.key} className="text-[13px] text-muted">
+                  <Markdown text={s.text} />
+                </div>
+              ) : null,
+            )}
+            {answer && (
+              <div>
+                <p className="text-[11px] font-medium text-faint">Response</p>
+                <div className="mt-1 text-[13px]">
+                  <Markdown text={answer.text} />
+                </div>
+              </div>
+            )}
+            {active && used && <p className="text-[12px] text-faint">In progress… · {used}</p>}
+            {!active && outcome && <p className={cx("text-[12px]", state === "failed" ? "text-s-error" : "text-faint")}>{outcome}</p>}
+          </div>
+        )}
+      </div>
+    </Activity>
+  );
+}
+
 const DECISIONS: Record<string, string> = {
   allow: "Allowed",
   allow_always: "Allowed for the session",
@@ -492,6 +716,8 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
   };
   const summary = toolSummary(row.tool, row.input, session.cwd);
   const rules = pending ? sessionRules(pending.suggestions) : [];
+  // A helper agent asks for itself. Which one it is, is said with the request.
+  const asking = row.agentId ? (session.agents ?? []).find((a) => a.id === row.agentId) : undefined;
   // Allow waits until all of the request is showing.
   const unread = clipped && !expanded;
   const hold = busy || unread;
@@ -536,8 +762,13 @@ function PermissionRow({ row, session }: { row: Extract<Row, { kind: "permission
     <div className="rounded-lg bg-s-needs/[0.06] p-4 ring-1 ring-inset ring-s-needs/35">
       <div className="flex items-center gap-2 text-[13px] font-medium">
         <ShieldAlert className="size-4 text-s-needs" />
-        Claude wants to use {row.tool}
+        {row.agentId ? "An agent wants to use" : "Claude wants to use"} {row.tool}
       </div>
+      {row.agentId && (
+        <p data-asking-agent className="mt-1 text-[12px] [overflow-wrap:anywhere] text-muted">
+          Asked by the helper agent{asking ? <>: <span className="text-fg">{visible(asking.description)}</span></> : "."}
+        </p>
+      )}
       <PermissionPreview tool={row.tool} input={row.input} cwd={session.cwd} description={row.description} expanded={expanded} onExpand={() => setExpanded(true)} onClipped={setClipped} />
       {rightToLeft(JSON.stringify(row.input ?? "")) && (
         <p className="mt-2.5 text-[12px] text-s-needs">

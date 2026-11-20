@@ -24,6 +24,8 @@ const s = (status: Status, over: Partial<Session> = {}): Session => ({
   pending: [],
   queue_position: null,
   mcp: [],
+  agents: [],
+  in_turn: false,
   ...over,
 });
 

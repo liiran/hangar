@@ -988,6 +988,7 @@ async fn a_session_whose_helper_is_at_work_is_working_and_is_not_paused() {
     // Claude's turn is over ("I've started a helper"); the helper is not.
     let s = wait_turns(&m, &a, 1).await;
     assert_eq!(s.meta.status, Status::Working, "a helper is still at work");
+    assert!(!s.in_turn, "Claude's own turn is over");
     assert_eq!(s.agents.len(), 1);
     assert_eq!(
         (s.agents[0].id.as_str(), s.agents[0].tool_use_id.as_str(), s.agents[0].description.as_str(), s.agents[0].background),
@@ -1101,6 +1102,7 @@ async fn a_helpers_request_says_which_helper_asks_and_a_background_command_is_no
     // A helper in the foreground: it asks before its edit, inside Claude's turn.
     let a = m.create(new(&home, "helper fg")).unwrap().meta.id;
     let s = wait_status(&m, &a, Status::NeedsYou).await;
+    assert!(s.in_turn, "a helper in the foreground works inside Claude's turn");
     assert_eq!((s.pending[0].tool_name.as_str(), s.pending[0].agent_id.as_deref()), ("Edit", Some("agent1")));
     assert_eq!((s.agents.len(), s.agents[0].background), (1, false));
     let asked =

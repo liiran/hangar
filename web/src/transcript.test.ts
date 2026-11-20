@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "./api";
-import { needsSignIn, relative, rowState, toRows, toolSummary } from "./transcript";
+import { agentLines, agentUsage, needsSignIn, readSearchSummary, relative, rowState, toRows, toolSummary } from "./transcript";
 
 let seq = 0;
 const ev = (body: Record<string, unknown>): SessionEvent => ({ seq: ++seq, ts: 1000 + seq, ...body }) as SessionEvent;
@@ -112,9 +112,8 @@ describe("toRows", () => {
     expect(rows[0].kind === "tool" && rows[0].result).toBeUndefined();
   });
 
-  it("hides messages from inside subagents and empty text", () => {
-    const rows = toRows([assistant([{ type: "text", text: "inner" }], { parent_tool_use_id: "task1" }), assistant([{ type: "text", text: "   " }])]);
-    expect(rows).toEqual([]);
+  it("hides empty text", () => {
+    expect(toRows([assistant([{ type: "text", text: "   " }])])).toEqual([]);
   });
 
   it("records the decision on a permission request", () => {
@@ -155,5 +154,103 @@ describe("relative", () => {
     expect(relative("c:/CODE/app", "C:\\code\\app\\")).toBe(".");
     expect(relative("C:\\code\\application\\x", "C:\\code\\app")).toBe("C:\\code\\application\\x");
     expect(relative("/etc/hosts")).toBe("/etc/hosts");
+  });
+});
+
+describe("helper agents", () => {
+  const sys = (subtype: string, fields: Record<string, unknown>) => ev({ kind: "claude", msg: { type: "system", subtype, ...fields } });
+  const inside = (content: unknown[]) => assistant(content, { parent_tool_use_id: "a1", agent_id: "task1" });
+  const insideResult = (id: string, content: string, extra: Record<string, unknown> = {}) =>
+    ev({ kind: "claude", msg: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content }] }, parent_tool_use_id: "a1", ...extra } });
+  const call = assistant([{ type: "tool_use", id: "a1", name: "Agent", input: { description: "Tidy the notes", prompt: "Tidy them." } }]);
+  const started = sys("task_started", { task_id: "task1", tool_use_id: "a1", description: "Tidy the notes", is_backgrounded: true });
+  const use = (id: string, name: string, input: Record<string, unknown> = {}) => inside([{ type: "tool_use", id, name, input }]);
+  const agentOf = (events: SessionEvent[]) => {
+    const rows = toRows(events);
+    const row = rows[0];
+    if (row.kind !== "tool" || !row.agent) throw new Error("no agent on the first row");
+    return { rows, row, agent: row.agent };
+  };
+
+  it("keeps an agent's steps and words with the call that started it, not in the feed", () => {
+    const { rows, agent } = agentOf([call, started, use("s1", "Read", { file_path: "a.ts" }), insideResult("s1", "one"), inside([{ type: "text", text: "All tidy." }])]);
+    expect(rows).toHaveLength(1);
+    expect(agent.id).toBe("task1");
+    expect(agent.background).toBe(true);
+    expect(agent.steps.map((s) => s.kind)).toEqual(["tool", "text"]);
+    expect(agent.steps[0].kind === "tool" && agent.steps[0].result?.text).toBe("one");
+    // An edit inside an agent keeps its changed lines, like one of Claude's own.
+    const edited = agentOf([call, use("s2", "Edit", { file_path: "a.ts" }), insideResult("s2", "ok", { tool_use_result: { hunks: [] } })]);
+    expect(edited.agent.steps[0].kind === "tool" && edited.agent.steps[0].result?.patch).toEqual({ hunks: [] });
+  });
+
+  it("drops a message from inside an agent whose call is not in the log", () => {
+    expect(toRows([assistant([{ type: "text", text: "inner" }], { parent_tool_use_id: "gone" })])).toEqual([]);
+  });
+
+  it("takes how much an agent used, and how it ended, from Claude Code", () => {
+    const progress = sys("task_progress", { task_id: "task1", tool_use_id: "a1", description: "Reading a.ts", usage: { total_tokens: 20400, tool_uses: 2, duration_ms: 5600 } });
+    const running = agentOf([call, started, progress]).agent;
+    expect([running.toolUses, running.tokens, running.ended]).toEqual([2, 20400, undefined]);
+    expect(agentUsage(running, false)).toBe("2 tool uses · 20.4k tokens");
+    // `task_updated` names the task only by its id.
+    const done = agentOf([call, started, progress, sys("task_updated", { task_id: "task1", status: "completed" })]).agent;
+    expect(done.ended).toBe("completed");
+    expect(agentUsage(done, true)).toBe("2 tool uses · 20.4k tokens · 6s");
+    expect(agentOf([call, started, sys("task_updated", { task_id: "task1", status: "killed" }), sys("task_notification", { task_id: "task1", tool_use_id: "a1", status: "stopped" })]).agent.ended).toBe("stopped");
+    expect(agentOf([call, started, sys("task_notification", { task_id: "task1", tool_use_id: "a1", status: "failed" })]).agent.ended).toBe("failed");
+    expect(agentUsage({ background: false, steps: [], rev: 0, toolUses: 1, tokens: 999, durationMs: 83_000 }, true)).toBe("1 tool use · 999 tokens · 1m 23s");
+    expect(agentUsage(undefined, true)).toBe("");
+  });
+
+  it("reads the Agent tool's own result: the totals of one that ran to its end, the launch of one in the background", () => {
+    const result = (full: unknown, content = "[Subagent hand-back] …") =>
+      ev({ kind: "claude", msg: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "a1", content }] }, tool_use_result: full } });
+    const fg = agentOf([call, result({ agentId: "task1", status: "completed", totalDurationMs: 4818, totalTokens: 21758, totalToolUseCount: 2 })]);
+    expect([fg.agent.id, fg.agent.ended, fg.agent.background]).toEqual(["task1", "completed", false]);
+    expect(agentUsage(fg.agent, true)).toBe("2 tool uses · 21.8k tokens · 5s");
+    // The totals are not an edit's changed lines.
+    expect(fg.row.result?.patch).toBeUndefined();
+    const bg = agentOf([call, result({ agentId: "task1", status: "async_launched" }, "Async agent launched successfully.")]).agent;
+    expect([bg.background, bg.ended]).toEqual([true, undefined]);
+    // A log from before hangar kept these: the launch text alone says it went to the background.
+    expect(agentOf([call, result(undefined, "Async agent launched successfully. …")]).agent.background).toBe(true);
+  });
+
+  it("draws an Agent row again whenever the agent or one of its steps changes, also an agent inside an agent", () => {
+    const base = [call, started, use("s1", "Bash", { command: "npm test" })];
+    const state = (events: SessionEvent[]) => rowState(toRows(events)[0]);
+    expect(state(base)).not.toBe(state([call, started]));
+    expect(state([...base, insideResult("s1", "12 passed")])).not.toBe(state(base));
+    expect(state([...base, sys("task_progress", { task_id: "task1", tool_use_id: "a1", usage: { tool_uses: 1 } })])).not.toBe(state(base));
+    const nested = [call, use("a2", "Agent", { description: "inner" })];
+    const deeper = assistant([{ type: "tool_use", id: "d1", name: "Read", input: {} }], { parent_tool_use_id: "a2" });
+    expect(state([...nested, deeper])).not.toBe(state(nested));
+    const inner = agentOf([...nested, deeper]).agent.steps[0];
+    expect(inner.kind === "tool" && inner.agent?.steps.map((s) => s.kind)).toEqual(["tool"]);
+  });
+
+  it("shows the newest three lines of a running agent, with reads and searches in a row as one line", () => {
+    const steps = [use("s1", "Bash"), use("s2", "Read"), use("s3", "Grep"), use("s4", "Read"), use("s5", "Edit"), use("s6", "Glob"), use("s7", "Read")];
+    const shown = (n: number, running = true) => {
+      const { lines, hidden } = agentLines(agentOf([call, started, ...steps.slice(0, n)]).agent, running);
+      return { lines: lines.map((l) => (l.kind === "summary" ? readSearchSummary(l.searches, l.reads, l.active) : l.row.name)), hidden };
+    };
+    expect(shown(0)).toEqual({ lines: [], hidden: 0 });
+    // One read is a line of its own; two or more reads and searches in a row are one line.
+    expect(shown(2)).toEqual({ lines: ["Bash", "Read"], hidden: 0 });
+    expect(shown(4)).toEqual({ lines: ["Bash", "Searching for 1 pattern, reading 2 files…"], hidden: 0 });
+    expect(shown(5)).toEqual({ lines: ["Bash", "Searched for 1 pattern, read 2 files", "Edit"], hidden: 0 });
+    // Only the newest three lines show; the count is of tool calls, not of lines.
+    expect(shown(7)).toEqual({ lines: ["Searched for 1 pattern, read 2 files", "Edit", "Searching for 1 pattern, reading 1 file…"], hidden: 1 });
+    // Once the agent has stopped, nothing is still going on.
+    expect(shown(7, false).lines[2]).toBe("Searched for 1 pattern, read 1 file");
+    expect(readSearchSummary(2, 0, true)).toBe("Searching for 2 patterns…");
+    expect(readSearchSummary(0, 3, false)).toBe("Read 3 files");
+  });
+
+  it("says which agent asked for permission", () => {
+    const rows = toRows([ev({ kind: "permission", request_id: "p9", tool_name: "Edit", input: {}, agent_id: "task1" }), ev({ kind: "permission", request_id: "p10", tool_name: "Edit", input: {} })]);
+    expect(rows.map((r) => r.kind === "permission" && r.agentId)).toEqual(["task1", undefined]);
   });
 });

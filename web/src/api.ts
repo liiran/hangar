@@ -9,6 +9,8 @@ export interface Pending {
   suggestions: unknown[] | null;
   /** "Always allow" has session rules to remember. */
   can_remember: boolean;
+  /** The helper agent that asks, when it is not Claude itself. */
+  agent_id?: string;
 }
 
 export interface Session {
@@ -33,6 +35,10 @@ export interface Session {
   pending: Pending[];
   queue_position: number | null;
   mcp: { name: string; status: string }[];
+  /** The helper agents (Claude's Agent tool) running right now. */
+  agents: RunningAgent[];
+  /** A turn of Claude's own is running. Without one, a working session has only helper agents at work. */
+  in_turn: boolean;
   /** How full the context window was when Claude last said; absent until it has. */
   context?: ContextUsage | null;
 }
@@ -95,12 +101,22 @@ export interface DecisionExtra {
 export type EventBody =
   | { kind: "user"; text: string }
   | { kind: "claude"; msg: any }
-  | { kind: "permission"; request_id: string; tool_name: string; input: any; suggestions?: unknown; description?: string | null }
+  | { kind: "permission"; request_id: string; tool_name: string; input: any; suggestions?: unknown; description?: string | null; agent_id?: string | null }
   | { kind: "decision"; request_id: string; behavior: Decision; detail?: DecisionDetail | null }
   | { kind: "status"; status: Status; detail?: string | null }
   | { kind: "error"; message: string };
 
 export type SessionEvent = { seq: number; ts: number } & EventBody;
+
+export interface RunningAgent {
+  /** Claude Code's id for it. A request the agent makes carries it. */
+  id: string;
+  /** The Agent tool call that started it. */
+  tool_use_id: string;
+  description: string;
+  /** It runs beside the conversation: Claude's turn can end while it works. */
+  background: boolean;
+}
 
 export interface Usage {
   processes: number;
@@ -232,6 +248,8 @@ export const api = {
   decide: (id: string, requestId: string, behavior: "allow" | "allow_always" | "deny", extra: DecisionExtra = {}) =>
     call("POST", `/sessions/${id}/permissions/${q(requestId)}`, { behavior, ...extra }),
   interrupt: (id: string) => call("POST", `/sessions/${id}/interrupt`),
+  /** Stops one helper agent; the rest of the session carries on. */
+  stopAgent: (id: string, agent: string) => call("POST", `/sessions/${id}/agents/${q(agent)}/stop`),
   stop: (id: string) => call("POST", `/sessions/${id}/stop`),
   startNow: (id: string) => call("POST", `/sessions/${id}/start`),
   update: (id: string, b: { title?: string; permission_mode?: string; model?: string }) => call<Session>("PATCH", `/sessions/${id}`, b),

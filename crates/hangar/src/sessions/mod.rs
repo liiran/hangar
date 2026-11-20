@@ -290,17 +290,20 @@ pub struct SessionView {
     pub mcp: Vec<Value>,
     /// The helper agents running right now. Empty when the process is not running.
     pub agents: Vec<Helper>,
+    /// A turn of the conversation itself is running. A session can be
+    /// working without one: its helpers work on after Claude's turn.
+    pub in_turn: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiEvent {
     Session {
-        session: SessionView,
+        session: Box<SessionView>,
     },
     Event {
         session_id: String,
-        event: Event,
+        event: Box<Event>,
     },
     Removed {
         session_id: String,
@@ -1594,7 +1597,7 @@ impl Manager {
         if s.events.len() > MAX_EVENTS_IN_MEMORY {
             s.events.drain(..s.events.len() - MAX_EVENTS_IN_MEMORY);
         }
-        let _ = self.tx.send(UiEvent::Event { session_id: id.to_string(), event: ev });
+        let _ = self.tx.send(UiEvent::Event { session_id: id.to_string(), event: Box::new(ev) });
     }
 
     fn save(&self, inner: &Inner, id: &str) {
@@ -1605,7 +1608,7 @@ impl Manager {
 
     fn broadcast_session(&self, inner: &Inner, id: &str) {
         if let Some(s) = inner.sessions.get(id) {
-            let _ = self.tx.send(UiEvent::Session { session: view(s, &inner.queue) });
+            let _ = self.tx.send(UiEvent::Session { session: Box::new(view(s, &inner.queue)) });
         }
     }
 }
@@ -1630,6 +1633,7 @@ fn view(s: &Session, queue: &[String]) -> SessionView {
         queue_position: queue.iter().position(|q| *q == s.meta.id).map(|p| p + 1),
         mcp: s.mcp.clone(),
         agents: s.run.as_ref().map(|r| r.helpers.clone()).unwrap_or_default(),
+        in_turn: s.run.as_ref().is_some_and(|r| r.turn),
     }
 }
 
