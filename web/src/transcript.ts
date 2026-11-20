@@ -92,7 +92,10 @@ function resultText(content: unknown): string {
 }
 
 /** One line of what a helper agent is doing: a step, or a run of reads and searches as one line. */
-export type AgentLine = { kind: "step"; row: ToolRow } | { kind: "summary"; key: string; searches: number; reads: number; active: boolean };
+export type AgentLine =
+  | { kind: "step"; row: ToolRow }
+  | { kind: "text"; key: string; text: string }
+  | { kind: "summary"; key: string; searches: number; reads: number; active: boolean };
 
 const SEARCHES = new Set(["Grep", "Glob"]);
 
@@ -109,28 +112,36 @@ export function readSearchSummary(searches: number, reads: number, active: boole
 export const AGENT_LINES = 3;
 
 /**
- * An agent's tool calls as the lines to show while it runs: the newest `AGENT_LINES`, with two or
- * more reads and searches in a row folded into one line, and how many tool calls are not shown.
+ * What an agent has done, as the lines to show while it runs. This is how Claude Code's
+ * terminal builds them (read from its code, 2.1.329):
+ * - reads and searches are not lines of their own. They are counted, once each has finished,
+ *   into one line that stands for the whole run of them: "Searching for 1 pattern, reading 2
+ *   files…" while the run is the newest thing, "Searched for 1 pattern, read 2 files" after;
+ * - every other tool call is a line, and so is what the agent says;
+ * - the newest `AGENT_LINES` show. `hidden` is how many lines above them stand for tool calls.
  */
 export function agentLines(agent: AgentRun, running: boolean): { lines: AgentLine[]; hidden: number } {
-  const steps = agent.steps.filter((s): s is ToolRow => s.kind === "tool");
-  const all: { line: AgentLine; uses: number }[] = [];
-  for (let i = 0; i < steps.length; ) {
-    const quiet = (s: ToolRow) => s.name === "Read" || SEARCHES.has(s.name);
-    let j = i;
-    while (j < steps.length && quiet(steps[j])) j++;
-    if (j - i >= 2) {
-      const run = steps.slice(i, j);
-      const searches = run.filter((s) => SEARCHES.has(s.name)).length;
-      all.push({ line: { kind: "summary", key: run[0].key, searches, reads: run.length - searches, active: running && j === steps.length }, uses: run.length });
-      i = j;
-    } else {
-      all.push({ line: { kind: "step", row: steps[i] }, uses: 1 });
-      i++;
+  const all: AgentLine[] = [];
+  let run: { key: string; searches: number; reads: number } | null = null;
+  const close = (active: boolean) => {
+    if (run && run.searches + run.reads > 0) all.push({ kind: "summary", ...run, active });
+    run = null;
+  };
+  for (const s of agent.steps) {
+    if (s.kind === "tool" && (s.name === "Read" || SEARCHES.has(s.name))) {
+      run ??= { key: s.key, searches: 0, reads: 0 };
+      if (s.result) run[SEARCHES.has(s.name) ? "searches" : "reads"]++;
+    } else if (s.kind === "tool") {
+      close(false);
+      all.push({ kind: "step", row: s });
+    } else if (s.kind === "text") {
+      close(false);
+      all.push({ kind: "text", key: s.key, text: s.text });
     }
   }
+  close(running);
   const shown = all.slice(-AGENT_LINES);
-  return { lines: shown.map((s) => s.line), hidden: all.slice(0, all.length - shown.length).reduce((n, s) => n + s.uses, 0) };
+  return { lines: shown, hidden: all.slice(0, all.length - shown.length).filter((l) => l.kind !== "text").length };
 }
 
 /** "2 tool uses · 20.4k tokens": what an agent has used, in Claude Code's words. Empty when nothing is known. */

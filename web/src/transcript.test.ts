@@ -230,21 +230,30 @@ describe("helper agents", () => {
     expect(inner.kind === "tool" && inner.agent?.steps.map((s) => s.kind)).toEqual(["tool"]);
   });
 
-  it("shows the newest three lines of a running agent, with reads and searches in a row as one line", () => {
-    const steps = [use("s1", "Bash"), use("s2", "Read"), use("s3", "Grep"), use("s4", "Read"), use("s5", "Edit"), use("s6", "Glob"), use("s7", "Read")];
-    const shown = (n: number, running = true) => {
-      const { lines, hidden } = agentLines(agentOf([call, started, ...steps.slice(0, n)]).agent, running);
-      return { lines: lines.map((l) => (l.kind === "summary" ? readSearchSummary(l.searches, l.reads, l.active) : l.row.name)), hidden };
+  it("shows a running agent's newest three lines as Claude Code does: reads and searches counted into one line", () => {
+    const names = ["Bash", "Read", "Grep", "Read", "Edit", "Glob", "Read"];
+    // Each step is a tool call and its result.
+    const steps = names.flatMap((name, i) => [use(`s${i}`, name), insideResult(`s${i}`, "ok")]);
+    const say = inside([{ type: "text", text: "Halfway there.\nMore below." }]);
+    const shown = (events: SessionEvent[], running = true) => {
+      const { lines, hidden } = agentLines(agentOf([call, started, ...events]).agent, running);
+      return { lines: lines.map((l) => (l.kind === "summary" ? readSearchSummary(l.searches, l.reads, l.active) : l.kind === "text" ? l.text : l.row.name)), hidden };
     };
-    expect(shown(0)).toEqual({ lines: [], hidden: 0 });
-    // One read is a line of its own; two or more reads and searches in a row are one line.
-    expect(shown(2)).toEqual({ lines: ["Bash", "Read"], hidden: 0 });
-    expect(shown(4)).toEqual({ lines: ["Bash", "Searching for 1 pattern, reading 2 files…"], hidden: 0 });
-    expect(shown(5)).toEqual({ lines: ["Bash", "Searched for 1 pattern, read 2 files", "Edit"], hidden: 0 });
-    // Only the newest three lines show; the count is of tool calls, not of lines.
-    expect(shown(7)).toEqual({ lines: ["Searched for 1 pattern, read 2 files", "Edit", "Searching for 1 pattern, reading 1 file…"], hidden: 1 });
+    const first = (n: number) => steps.slice(0, 2 * n);
+    expect(shown([])).toEqual({ lines: [], hidden: 0 });
+    // A read that is still going on is not counted yet: nothing shows for it.
+    expect(shown([...first(1), steps[2]])).toEqual({ lines: ["Bash"], hidden: 0 });
+    // One finished read is already the summary line, not a line of its own.
+    expect(shown(first(2))).toEqual({ lines: ["Bash", "Reading 1 file…"], hidden: 0 });
+    expect(shown(first(4))).toEqual({ lines: ["Bash", "Searching for 1 pattern, reading 2 files…"], hidden: 0 });
+    // Another kind of step ends the run: it is then in the past.
+    expect(shown(first(5))).toEqual({ lines: ["Bash", "Searched for 1 pattern, read 2 files", "Edit"], hidden: 0 });
+    // Only the newest three lines show. What is counted above them is lines, not the tool calls inside a summary.
+    expect(shown(first(7))).toEqual({ lines: ["Searched for 1 pattern, read 2 files", "Edit", "Searching for 1 pattern, reading 1 file…"], hidden: 1 });
+    // What the agent says is a line too, ends a run, and is not counted as a tool use.
+    expect(shown([...first(4), say, ...steps.slice(8)])).toEqual({ lines: ["Halfway there.\nMore below.", "Edit", "Searching for 1 pattern, reading 1 file…"], hidden: 2 });
     // Once the agent has stopped, nothing is still going on.
-    expect(shown(7, false).lines[2]).toBe("Searched for 1 pattern, read 1 file");
+    expect(shown(first(7), false).lines[2]).toBe("Searched for 1 pattern, read 1 file");
     expect(readSearchSummary(2, 0, true)).toBe("Searching for 2 patterns…");
     expect(readSearchSummary(0, 3, false)).toBe("Read 3 files");
   });

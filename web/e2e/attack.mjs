@@ -161,6 +161,7 @@ try {
     ["POST", "/api/sessions/s000000000000/messages"],
     ["POST", "/api/sessions/s000000000000/permissions/x"],
     ["POST", "/api/sessions/s000000000000/interrupt"],
+    ["POST", "/api/sessions/s000000000000/agents/a1/stop"],
     ["POST", "/api/sessions/s000000000000/stop"],
     ["POST", "/api/sessions/s000000000000/start"],
     ["POST", "/api/servers/1/stop"],

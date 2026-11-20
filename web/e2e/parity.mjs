@@ -462,7 +462,7 @@ try {
   // Its steps show as they happen.
   await say("helper step");
   await liveLines.locator("text=In progress… · 1 tool use").waitFor();
-  check("a step shows as it happens, with Claude Code's own count", (await flat(liveLines)) === "Read src/app.ts In progress… · 1 tool use · 19.5k tokens", await flat(liveLines));
+  check("a step shows as it happens, with Claude Code's own count: a read is counted, as in Claude Code", (await flat(liveLines)) === "Reading 1 file… In progress… · 1 tool use · 19.5k tokens", await flat(liveLines));
   await say("helper step 2");
   await liveLines.locator("text=In progress… · 3 tool uses").waitFor();
   check("reads and searches in a row are one line, as in Claude Code", (await flat(liveLines)) === "Searching for 1 pattern, reading 2 files… In progress… · 3 tool uses · 22.5k tokens", await flat(liveLines));
@@ -476,8 +476,8 @@ try {
   await say("helper step 3");
   await liveLines.locator("text=In progress… · 8 tool uses").waitFor();
   check(
-    "only the newest three lines show; the tool uses above them are counted",
-    (await flat(liveLines)) === "Edit notes.txt Bash npm test Searching for 1 pattern, reading 2 files… +3 more tool uses In progress… · 8 tool uses · 30k tokens",
+    "only the newest three lines show; the lines above them are counted",
+    (await flat(liveLines)) === "Edit notes.txt Bash npm test Searching for 1 pattern, reading 2 files… +1 more tool use In progress… · 8 tool uses · 30k tokens",
     await flat(liveLines),
   );
   // By now the row is far up the feed. A strip at the foot keeps saying what the agent does.

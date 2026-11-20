@@ -228,7 +228,9 @@ function RunningAgents({ session, rows }: { session: Session; rows: Row[] }) {
           ? "Initializing…"
           : newest.kind === "summary"
             ? readSearchSummary(newest.searches, newest.reads, newest.active)
-            : `${newest.row.name.replace(/^mcp__/, "").replace(/__/g, " · ")} ${toolSummary(newest.row.name, newest.row.input, session.cwd)}`;
+            : newest.kind === "text"
+              ? visible(newest.text.trim().split("\n")[0]).slice(0, 200)
+              : `${newest.row.name.replace(/^mcp__/, "").replace(/__/g, " · ")} ${toolSummary(newest.row.name, newest.row.input, session.cwd)}`;
         const used = agentUsage(row?.agent, false);
         return (
           <button
@@ -560,9 +562,10 @@ function agentOutcome(row: ToolRowData, state: string): string {
 
 /**
  * A helper agent Claude started with its Agent tool. While it runs, the row shows what Claude
- * Code's terminal shows: "Initializing…", then its newest steps (a run of reads and searches as
- * one line) and how many more there were. When it has ended, the row says how, with Claude
- * Code's own totals. Opened, it shows the prompt, every step and the agent's report.
+ * Code's terminal shows: "Initializing…", then its newest lines (see `agentLines`) and how many
+ * more there were. Under them, hangar adds Claude Code's count of tool uses and tokens. When it
+ * has ended, the row says how, with Claude Code's own totals. Opened, it shows the prompt, every
+ * step and the agent's report, as the terminal's transcript view does.
  */
 function AgentRow({ row, session }: { row: ToolRowData; session: Session }) {
   const [open, setOpen] = useState(false);
@@ -631,6 +634,10 @@ function AgentRow({ row, session }: { row: ToolRowData; session: Session }) {
                     <p key={l.key} className="truncate">
                       {readSearchSummary(l.searches, l.reads, l.active)}
                     </p>
+                  ) : l.kind === "text" ? (
+                    <p key={l.key} className="truncate text-faint">
+                      {visible(l.text.trim().split("\n")[0]).slice(0, 200)}
+                    </p>
                   ) : (
                     <p key={l.row.key} className="flex min-w-0 items-center gap-1.5">
                       <span className="shrink-0 text-fg">{l.row.name.replace(/^mcp__/, "").replace(/__/g, " · ")}</span>
@@ -646,6 +653,7 @@ function AgentRow({ row, session }: { row: ToolRowData; session: Session }) {
                 )}
               </>
             )}
+            {/* Claude Code's terminal says this in place of the lines when its window is too small for them. */}
             {used && <p className="text-faint">In progress… · {used}</p>}
           </div>
         )}

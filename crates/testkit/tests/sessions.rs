@@ -1084,8 +1084,16 @@ async fn a_helper_that_is_stopped_or_ends_without_a_report_leaves_the_session_id
     m.send(&a, "helper start").unwrap();
     wait_turns(&m, &a, 5).await;
     m.send(&a, "helper vanish").unwrap();
-    let s = wait_turns(&m, &a, 6).await;
-    assert_ne!(s.meta.status, Status::Idle, "the turn Claude starts to read the report is waited for");
+    wait_turns(&m, &a, 6).await;
+    for _ in 0..200 {
+        if get(&m, &a).agents.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let s = get(&m, &a);
+    assert!(s.agents.is_empty() && !s.in_turn);
+    assert_eq!(s.meta.status, Status::Working, "with the last agent gone, the turn in which Claude reads its report is waited for");
     let s = wait_status(&m, &a, Status::Idle).await;
     assert!(s.agents.is_empty());
 
