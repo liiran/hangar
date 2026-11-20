@@ -62,6 +62,14 @@ pub enum DriverEvent {
         pid: u32,
         request_id: String,
     },
+    /// Claude Code's answer to a request made with [`Driver::request`]:
+    /// what it answered, or the text of its refusal.
+    Answer {
+        session_id: String,
+        pid: u32,
+        request_id: String,
+        answer: Result<Value, String>,
+    },
     McpStatus {
         session_id: String,
         pid: u32,
@@ -117,6 +125,10 @@ impl Driver {
         cmd.args(Self::args(&l))
             .current_dir(&l.cwd)
             .env(hangar_proto::ENV_SESSION, &l.session_id)
+            // Claude Code keeps a copy of each file before its first edit, so
+            // that its rewind can put files back. Driven like this it does so
+            // only when told to, and only for processes that were told.
+            .env("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "true")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -210,8 +222,17 @@ impl Driver {
         let _ = self.tx.send(control_line(request_id, request));
     }
 
-    pub fn send_user(&self, text: &str) {
-        self.write(&json!({"type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": null, "session_id": "default"}));
+    /// Sends a message of the user's. `uuid` is hangar's id for it: Claude
+    /// Code files its checkpoint under that id, and rewinds to it by it.
+    pub fn send_user(&self, uuid: &str, text: &str) {
+        self.write(&json!({"type": "user", "uuid": uuid, "message": {"role": "user", "content": text}, "parent_tool_use_id": null, "session_id": "default"}));
+    }
+
+    /// Asks Claude Code something whose answer the caller waits for. The
+    /// answer comes back as [`DriverEvent::Answer`] with the same id, which
+    /// must start with `ask-`.
+    pub fn request(&self, request_id: &str, request: Value) {
+        self.control(request_id, request);
     }
 
     /// Allows a tool call. `input` is what the tool runs with: the input
@@ -326,6 +347,13 @@ fn route(id: &str, pid: u32, msg: Value, ev: &mpsc::UnboundedSender<DriverEvent>
                 let servers = r["response"]["mcpServers"].as_array().cloned().unwrap_or_default();
                 let servers = servers.into_iter().map(|s| json!({"name": s["name"], "status": s["status"]})).collect();
                 let _ = ev.send(DriverEvent::McpStatus { session_id, pid, servers });
+            } else if request.starts_with("ask-") {
+                let answer = if r["subtype"] == "success" {
+                    Ok(r["response"].clone())
+                } else {
+                    Err(r["error"].as_str().unwrap_or("Claude Code refused the request").to_string())
+                };
+                let _ = ev.send(DriverEvent::Answer { session_id, pid, request_id: request.to_string(), answer });
             } else if request.starts_with("ctx-") {
                 // An older Claude Code answers with an error: that still ends the wait.
                 let usage = if r["subtype"] == "success" { r["response"].clone() } else { Value::Null };

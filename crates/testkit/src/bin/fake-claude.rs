@@ -18,6 +18,19 @@
 //!   no turn running is followed by a turn in which Claude says so; a stop by
 //!   interrupt is followed by nothing (recorded from 2.1.329).
 //!
+//! * rewind (recorded from 2.1.329). With `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`
+//!   set, every message that carries a `uuid` is a point files can go back to.
+//!   `rewind_files` with `dry_run` says which files that would change and by how
+//!   many lines (as the rewind changes them: undoing two added lines is two
+//!   deletions); without it, it puts them back. A refusal is a normal answer
+//!   with `canRewind: false` for a dry run and an error answer otherwise.
+//!   `rewind_conversation` drops a message and all after it and answers with
+//!   the message's text; it wants the newest message named
+//!   (`last_seen_user_message_uuid`) when it drops more than that one, and
+//!   refuses while a turn runs. A message with a `uuid` is also reported with
+//!   `command_lifecycle` lines. All of it outlives the process, as the real
+//!   CLI's does in its transcript: a `--resume` knows the earlier messages.
+//!
 //! Message text controls behavior:
 //! * `use tool`: asks permission for `Bash {command: "ls"}` first; an
 //!   interrupt while waiting withdraws the request (`control_cancel_request`);
@@ -53,6 +66,9 @@
 //!   turn just ends; `helper refuse`: an Agent call that fails outright;
 //! * `background command`: starts a shell command in the background, which is
 //!   listed like a helper but is not one;
+//! * `change NAME`: edits the file NAME (one line) without asking, which rewind can
+//!   undo. A file named `locked.txt` cannot be put back: rewinding it fails;
+//! * `recall`: replies with the messages still in the conversation;
 //! * `edit files`: edits and writes files without asking, with the line-by-line
 //!   changes the real CLI reports, one of them failing;
 //! * `context NN`: reports the context window NN% full from then on;
@@ -126,6 +142,22 @@ struct Fake {
     asking: Option<String>,
     /// A helper was stopped by itself (`stop_task`) while it asked.
     stopped_alone: bool,
+    /// Whether files can be rewound (the environment says).
+    checkpoints: bool,
+    /// The user's messages that carried an id, oldest first.
+    prompts: Vec<Prompt>,
+    /// A request is waiting: a turn is running.
+    waiting: bool,
+}
+
+/// A message of the user's, as rewinding sees it.
+struct Prompt {
+    uuid: String,
+    text: String,
+    /// The conversation was rewound to before it.
+    gone: bool,
+    /// The files changed while answering it, with lines added and removed. Emptied when they are put back.
+    changed: Vec<(String, u64, u64)>,
 }
 
 fn path(name: &str) -> String {
@@ -138,6 +170,11 @@ impl Fake {
     fn control(&mut self, msg: &Value) -> bool {
         let body = match msg["request"]["subtype"].as_str().unwrap_or_default() {
             "interrupt" => return false,
+            "rewind_files" => {
+                self.rewind_files(msg);
+                return true;
+            }
+            "rewind_conversation" => self.rewind_conversation(&msg["request"]),
             "mcp_status" => json!({"mcpServers": [{"name": "fake-server", "status": "connected"}]}),
             "set_model" => {
                 self.model = msg["request"]["model"].as_str().unwrap_or("fake-model").to_string();
@@ -152,6 +189,100 @@ impl Fake {
         };
         out(json!({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": body}}));
         true
+    }
+
+    /// Where what rewinding needs is kept between processes of one conversation.
+    fn memory(&self) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("fake-claude-{}.json", self.session_id))
+    }
+
+    fn remember(&self) {
+        let prompts: Vec<Value> = self.prompts.iter().map(|p| json!({"uuid": p.uuid, "text": p.text, "gone": p.gone, "changed": p.changed})).collect();
+        let _ = std::fs::write(self.memory(), serde_json::to_vec(&prompts).unwrap_or_default());
+    }
+
+    fn recollect(&mut self) {
+        let Ok(bytes) = std::fs::read(self.memory()) else { return };
+        let Ok(prompts) = serde_json::from_slice::<Vec<Value>>(&bytes) else { return };
+        self.prompts = prompts
+            .iter()
+            .map(|p| Prompt {
+                uuid: p["uuid"].as_str().unwrap_or_default().to_string(),
+                text: p["text"].as_str().unwrap_or_default().to_string(),
+                gone: p["gone"] == true,
+                changed: serde_json::from_value(p["changed"].clone()).unwrap_or_default(),
+            })
+            .collect();
+    }
+
+    /// Says what going back to before a message would change in the files, or changes it.
+    fn rewind_files(&mut self, msg: &Value) {
+        let request = &msg["request"];
+        let dry = request["dry_run"] == true;
+        let at = self.prompts.iter().position(|p| request["user_message_id"] == p.uuid.as_str());
+        let refusal = if !self.checkpoints {
+            Some("File rewinding is not enabled.".to_string())
+        } else if at.is_none() {
+            Some("No file checkpoint found for this message.".to_string())
+        } else if !dry && self.prompts[at.unwrap()..].iter().any(|p| p.changed.iter().any(|c| c.0 == "locked.txt")) {
+            Some("Failed to rewind: No files were restored: 1 file(s) failed (backup missing, or the file could not be updated)".to_string())
+        } else {
+            None
+        };
+        let answer = |response: Value| {
+            out(json!({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": response}}))
+        };
+        match (refusal, dry) {
+            (Some(error), true) => answer(json!({"canRewind": false, "error": error})),
+            (Some(error), false) => out(json!({"type": "control_response", "response": {"subtype": "error", "request_id": msg["request_id"], "error": error}})),
+            (None, true) => {
+                let after = &self.prompts[at.unwrap()..];
+                let mut files: Vec<String> = Vec::new();
+                for (name, ..) in after.iter().flat_map(|p| &p.changed) {
+                    if !files.contains(name) {
+                        files.push(name.clone());
+                    }
+                }
+                // As the rewind changes the files: what was added goes, what was removed comes back.
+                let (added, removed) = after.iter().flat_map(|p| &p.changed).fold((0, 0), |(a, r), c| (a + c.1, r + c.2));
+                answer(
+                    json!({"canRewind": true, "filesChanged": files.iter().map(|f| path(f)).collect::<Vec<_>>(), "insertions": removed, "deletions": added}),
+                );
+            }
+            (None, false) => {
+                for p in &mut self.prompts[at.unwrap()..] {
+                    p.changed.clear();
+                }
+                self.remember();
+                answer(json!({"canRewind": true, "skippedLinks": 0}));
+            }
+        }
+    }
+
+    /// Drops a message and all after it from the conversation.
+    fn rewind_conversation(&mut self, request: &Value) -> Value {
+        let refuse =
+            |reason: &str| json!({"rewound": false, "prefillText": null, "precedingAssistantUuid": null, "error": reason.replace('_', " "), "reason": reason});
+        // A helper that still runs counts as a running turn (seen on 2.1.329).
+        if self.waiting || !self.helpers.is_empty() {
+            return refuse("turn_running");
+        }
+        let Some(at) = self.prompts.iter().position(|p| !p.gone && request["target_message_uuid"] == p.uuid.as_str()) else {
+            return refuse("target_not_found");
+        };
+        let newest = self.prompts.iter().rposition(|p| !p.gone).unwrap_or(at);
+        if newest != at {
+            match request["last_seen_user_message_uuid"].as_str() {
+                None => return refuse("stale_target"),
+                Some(seen) if seen != self.prompts[newest].uuid => return refuse("unseen_later_turn"),
+                Some(_) => {}
+            }
+        }
+        for p in &mut self.prompts[at..] {
+            p.gone = true;
+        }
+        self.remember();
+        json!({"rewound": true, "targetMessageUuid": self.prompts[at].uuid, "prefillText": self.prompts[at].text, "precedingAssistantUuid": null})
     }
 
     /// What `/context` would show: a 200k window that fills by 4% a turn.
@@ -393,6 +524,13 @@ impl Fake {
             request["agent_id"] = json!(agent);
         }
         out(json!({"type": "control_request", "request_id": request_id, "request": request}));
+        self.waiting = true;
+        let decision = self.wait(lines, request_id);
+        self.waiting = false;
+        decision
+    }
+
+    fn wait(&mut self, lines: &mut Lines, request_id: &str) -> Decision {
         loop {
             let Some(Ok(l)) = lines.next() else { return Decision::Gone };
             let Ok(v) = serde_json::from_str::<Value>(&l) else { continue };
@@ -472,7 +610,11 @@ fn main() {
         shells: Vec::new(),
         asking: None,
         stopped_alone: false,
+        checkpoints: std::env::var("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING").is_ok(),
+        prompts: Vec::new(),
+        waiting: false,
     };
+    fake.recollect();
     let file = path;
 
     let mut lines: Lines = std::io::stdin().lines();
@@ -502,6 +644,11 @@ fn main() {
                 fake.held.clear();
                 let turn = fake.turn;
                 let text = msg["message"]["content"].as_str().unwrap_or_default().to_string();
+                if let Some(uuid) = msg["uuid"].as_str() {
+                    out(json!({"type": "command_lifecycle", "command_uuid": uuid, "state": "started", "session_id": fake.session_id}));
+                    fake.prompts.push(Prompt { uuid: uuid.to_string(), text: text.clone(), gone: false, changed: Vec::new() });
+                    fake.remember();
+                }
                 fake.init();
                 let numbers = |word: &str| -> Vec<u64> {
                     text.split_once(word).map(|(_, rest)| rest.split_whitespace().map_while(|w| w.parse().ok()).collect()).unwrap_or_default()
@@ -794,7 +941,42 @@ fn main() {
                     continue;
                 }
 
+                if text.contains("recall") {
+                    let kept: Vec<&str> = fake.prompts.iter().filter(|p| !p.gone).map(|p| p.text.as_str()).collect();
+                    fake.done(&format!("I remember: {}", kept.join(" | ")));
+                    continue;
+                }
+                if let Some(name) = text.split_once("change ").and_then(|(_, rest)| rest.split_whitespace().next()) {
+                    let id = format!("c{turn}");
+                    fake.tool_use(&id, "Edit", &json!({"file_path": file(name), "old_string": "old line", "new_string": "new line", "replace_all": false}));
+                    fake.tool_result(
+                        &id,
+                        "The file has been updated successfully.",
+                        false,
+                        json!({"filePath": file(name), "structuredPatch": [{"oldStart": 3, "oldLines": 1, "newStart": 3, "newLines": 1, "lines": ["-old line", "+new line"]}]}),
+                    );
+                    if let Some(p) = fake.prompts.last_mut() {
+                        p.changed.push((name.to_string(), 1, 1));
+                    }
+                    fake.remember();
+                    fake.done(&format!("changed {name}"));
+                    continue;
+                }
                 if text.contains("edit files") {
+                    if let Some(p) = fake.prompts.last_mut() {
+                        // What the edits below add and remove, file by file.
+                        p.changed.extend(
+                            [
+                                ("src/auth/session.ts", 2, 1),
+                                ("docs/sessions.md", 4, 0),
+                                ("config.json", 2, 1),
+                                ("src/auth/token.ts", 2, 2),
+                                ("src/auth/session.test.ts", 60, 0),
+                            ]
+                            .map(|(n, a, r)| (n.to_string(), a, r)),
+                        );
+                    }
+                    fake.remember();
                     fake.assistant(json!([{"type": "text", "text": "Making the changes now."}]));
                     // An edit in the middle of a file: unchanged lines around it, and real line numbers.
                     fake.tool_use("e1", "Edit", &json!({"file_path": file("src/auth/session.ts"), "old_string": "  const ttl = 3600;", "new_string": "  const ttl = config.sessionTtl ?? 3600;\n  const refresh = ttl / 2;", "replace_all": false}));

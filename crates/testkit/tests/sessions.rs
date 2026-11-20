@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use hangar::config::Config;
 use hangar::daemon::{Daemon, DaemonOptions};
-use hangar::sessions::{Answer, EventBody, Manager, NeedsTrust, NewSession, SessionView, Status};
+use hangar::sessions::{Answer, EventBody, Manager, NeedsTrust, NewSession, Rewind, SessionView, Status, Update};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
@@ -265,8 +265,8 @@ async fn a_plan_is_approved_into_a_mode_or_sent_back() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(&e.body, EventBody::Decision { detail: Some(d), .. } if d == &json!({"mode": "acceptEdits", "feedback": "skip step 4"}))),
-        "the note is kept with the decision"
+            .any(|e| matches!(&e.body, EventBody::Decision { detail: Some(d), .. } if d["mode"] == "acceptEdits" && d["feedback"] == "skip step 4" && d["note_id"].as_str().is_some_and(|i| i.len() == 36))),
+        "the note is kept with the decision, with the id it went to Claude under"
     );
 
     // Claude enters plan mode by itself: nothing is asked, and the session's mode follows.
@@ -1201,4 +1201,213 @@ async fn a_helpers_request_says_which_helper_asks_and_a_background_command_is_no
     assert_eq!(s.meta.status, Status::Idle);
     assert!(s.agents.is_empty());
     assert!(task_events(&m, &a, "task_started").iter().all(|t| t["task_id"] != "shell1"));
+}
+
+/// The numbers, in the session's history, of the messages the user sent.
+fn user_seqs(m: &Manager, id: &str) -> Vec<u64> {
+    m.events(id, 0).unwrap().into_iter().filter(|e| matches!(e.body, EventBody::User { .. })).map(|e| e.seq).collect()
+}
+
+/// The rewinds recorded in the session's history: (message, what the files got back, conversation too).
+fn rewinds(m: &Manager, id: &str) -> Vec<(u64, Option<Value>, bool)> {
+    m.events(id, 0)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::Rewind { to, code, conversation } => Some((to, code, conversation)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn rewinding_previews_then_restores_the_code_the_conversation_or_both() {
+    let home = temp_home("sess-rewind");
+    let m = manager(&home, Config::default());
+    let file = |name: &str| home.join(name).display().to_string();
+    let a = m.create(NewSession { permission_mode: Some("acceptEdits".into()), ..new(&home, "change cart.ts") }).unwrap().meta.id;
+    wait_status(&m, &a, Status::Idle).await;
+    m.send(&a, "change notes.md").unwrap();
+    wait_turns(&m, &a, 2).await;
+    m.send(&a, "hello three").unwrap();
+    wait_turns(&m, &a, 3).await;
+    wait_status(&m, &a, Status::Idle).await;
+    let seqs = user_seqs(&m, &a);
+    assert_eq!(seqs.len(), 3);
+    // Every message went to Claude with an id of hangar's, which is what it is rewound by.
+    let ids: Vec<String> = m
+        .events(&a, 0)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::User { uuid, .. } => uuid,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids.len(), 3);
+    assert!(ids.iter().all(|u| u.len() == 36) && ids[0] != ids[1]);
+    // Claude Code's notes on each such message (queued, started, done) are not history.
+    assert!(m.events(&a, 0).unwrap().iter().all(|e| !matches!(&e.body, EventBody::Claude { msg } if msg["type"] == "command_lifecycle")));
+
+    // A preview says what going back would change in the files, counted as the rewind changes
+    // them. It changes nothing, and is not history.
+    let preview = |files: Vec<String>, n: u64| json!({"can_restore": true, "files": files, "insertions": n, "deletions": n, "error": null});
+    assert_eq!(m.rewind(&a, seqs[2], Rewind::Preview).await.unwrap(), preview(vec![], 0), "nothing was changed since the newest message");
+    assert_eq!(m.rewind(&a, seqs[0], Rewind::Preview).await.unwrap(), preview(vec![file("cart.ts"), file("notes.md")], 2));
+    assert_eq!(m.rewind(&a, seqs[1], Rewind::Preview).await.unwrap(), preview(vec![file("notes.md")], 1));
+    assert!(rewinds(&m, &a).is_empty());
+
+    // The code alone: the files go back, the conversation stays as it is.
+    assert_eq!(m.rewind(&a, seqs[1], Rewind::Code).await.unwrap(), json!({"code": {"ok": true, "skipped": 0}}));
+    assert_eq!(rewinds(&m, &a), vec![(seqs[1], Some(json!({"files": [file("notes.md")], "insertions": 1, "deletions": 1, "skipped": 0})), false)]);
+    assert_eq!(m.rewind(&a, seqs[0], Rewind::Preview).await.unwrap(), preview(vec![file("cart.ts")], 1), "the second message's change is undone");
+
+    // The conversation alone, to before the second message. A third came after it: Claude Code
+    // wants the newest one named, and hangar names it. The message's text comes back for the box.
+    assert_eq!(m.rewind(&a, seqs[1], Rewind::Conversation).await.unwrap(), json!({"conversation": {"ok": true, "prefill": "change notes.md"}}));
+    assert_eq!(rewinds(&m, &a).last().unwrap(), &(seqs[1], None, true));
+    m.send(&a, "recall").unwrap();
+    wait_turns(&m, &a, 4).await;
+    assert_eq!(texts(&m, &a).last().unwrap(), "I remember: change cart.ts | recall", "the second and third message are gone for Claude");
+    // A message that is gone cannot be gone back to, and only the user's messages can be.
+    assert!(m.rewind(&a, seqs[2], Rewind::Conversation).await.is_err());
+    assert!(m.rewind(&a, seqs[0] + 1, Rewind::Preview).await.is_err());
+
+    // Both at once, to before the first message: the code first, then the conversation.
+    wait_status(&m, &a, Status::Idle).await;
+    assert_eq!(m.rewind(&a, seqs[0], Rewind::Preview).await.unwrap(), preview(vec![file("cart.ts")], 1));
+    assert_eq!(
+        m.rewind(&a, seqs[0], Rewind::Both).await.unwrap(),
+        json!({"code": {"ok": true, "skipped": 0}, "conversation": {"ok": true, "prefill": "change cart.ts"}})
+    );
+    assert_eq!(rewinds(&m, &a).last().unwrap(), &(seqs[0], Some(json!({"files": [file("cart.ts")], "insertions": 1, "deletions": 1, "skipped": 0})), true));
+    assert_eq!(get(&m, &a).meta.status, Status::Idle);
+    m.send(&a, "recall").unwrap();
+    wait_turns(&m, &a, 5).await;
+    assert_eq!(texts(&m, &a).last().unwrap(), "I remember: recall");
+}
+
+#[tokio::test]
+async fn rewinding_wakes_a_stopped_session_stops_a_running_turn_and_passes_on_what_claude_code_refuses() {
+    let home = temp_home("sess-rewind-edge");
+    let m = manager(&home, Config::default());
+    let file = |name: &str| home.join(name).display().to_string();
+    let a = m.create(NewSession { permission_mode: Some("acceptEdits".into()), ..new(&home, "change cart.ts") }).unwrap().meta.id;
+    wait_status(&m, &a, Status::Idle).await;
+    let first = user_seqs(&m, &a)[0];
+
+    // A stopped session: rewinding is Claude Code's, so its process is started again (the same
+    // conversation) and asked. No message is sent, and the session is idle afterwards.
+    m.stop(&a).unwrap();
+    wait_status(&m, &a, Status::Stopped).await;
+    let p = m.rewind(&a, first, Rewind::Preview).await.unwrap();
+    assert_eq!((p["can_restore"].clone(), p["files"].clone()), (json!(true), json!([file("cart.ts")])), "the new process knows the earlier message");
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(s.pid.is_some() && !s.in_turn);
+    assert_eq!(user_seqs(&m, &a).len(), 1, "nothing was sent to wake it");
+
+    // A turn is running (a request waits). A preview can still be had. A restore stops the turn
+    // first, as Claude Code's terminal does, and then goes back.
+    m.send(&a, "use tool").unwrap();
+    wait_status(&m, &a, Status::NeedsYou).await;
+    let second = user_seqs(&m, &a)[1];
+    assert_eq!(m.rewind(&a, second, Rewind::Preview).await.unwrap()["can_restore"], true);
+    assert_eq!(get(&m, &a).meta.status, Status::NeedsYou, "a preview stops nothing");
+    assert_eq!(m.rewind(&a, second, Rewind::Conversation).await.unwrap(), json!({"conversation": {"ok": true, "prefill": "use tool"}}));
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(s.pending.is_empty() && !s.in_turn);
+    assert!(texts(&m, &a).contains(&"interrupted".to_string()), "the turn was stopped before the rewind");
+
+    // Files Claude Code cannot put back: its own words come back, and nothing is recorded.
+    m.send(&a, "change locked.txt").unwrap();
+    wait_turns(&m, &a, 3).await;
+    wait_status(&m, &a, Status::Idle).await;
+    let third = *user_seqs(&m, &a).last().unwrap();
+    let before = rewinds(&m, &a).len();
+    let failed = m.rewind(&a, third, Rewind::Code).await.unwrap();
+    assert_eq!(
+        failed,
+        json!({"code": {"ok": false, "error": "Failed to rewind: No files were restored: 1 file(s) failed (backup missing, or the file could not be updated)"}})
+    );
+    assert_eq!(rewinds(&m, &a).len(), before);
+    // Both, with the code failing: the conversation still goes back, as in Claude Code's terminal.
+    let half = m.rewind(&a, third, Rewind::Both).await.unwrap();
+    assert_eq!((half["code"]["ok"].clone(), half["conversation"].clone()), (json!(false), json!({"ok": true, "prefill": "change locked.txt"})));
+    assert_eq!(rewinds(&m, &a).last().unwrap(), &(third, None, true));
+}
+
+#[tokio::test]
+async fn rewinding_works_after_a_restart_puts_the_mode_back_and_stops_agents_first() {
+    let home = temp_home("sess-rewind-more");
+    let file = |name: &str| home.join(name).display().to_string();
+    let mode = |m: &Manager, id: &str, to: &str| m.update(id, Update { permission_mode: Some(to.into()), ..Default::default() }).unwrap();
+    let (a, seqs);
+    {
+        let m = manager(&home, Config::default());
+        a = m.create(NewSession { permission_mode: Some("acceptEdits".into()), ..new(&home, "change cart.ts") }).unwrap().meta.id;
+        wait_status(&m, &a, Status::Idle).await;
+        mode(&m, &a, "default");
+        m.send(&a, "hello two").unwrap();
+        wait_turns(&m, &a, 2).await;
+        wait_status(&m, &a, Status::Idle).await;
+        seqs = user_seqs(&m, &a);
+        m.shutdown();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+    // hangar was stopped and started again. Nothing of the session is in memory, its process is
+    // gone: which message is meant is read from the stored history, and Claude Code is started
+    // on the same conversation to be asked.
+    let m = manager(&home, Config::default());
+    let p = m.rewind(&a, seqs[0], Rewind::Preview).await.unwrap();
+    assert_eq!((p["can_restore"].clone(), p["files"].clone()), (json!(true), json!([file("cart.ts")])));
+
+    // Going back to before a message puts back the mode it was sent in, as Claude Code's
+    // terminal does. The second message was sent in "ask first", which is what the session is in.
+    assert_eq!(m.rewind(&a, seqs[1], Rewind::Conversation).await.unwrap(), json!({"conversation": {"ok": true, "prefill": "hello two"}}));
+    assert_eq!(get(&m, &a).meta.permission_mode, "default");
+    // The first was sent in "auto-accept edits".
+    assert_eq!(
+        m.rewind(&a, seqs[0], Rewind::Both).await.unwrap(),
+        json!({"code": {"ok": true, "skipped": 0}, "conversation": {"ok": true, "prefill": "change cart.ts", "mode": "acceptEdits"}})
+    );
+    assert_eq!(get(&m, &a).meta.permission_mode, "acceptEdits");
+
+    // Rewinding again, after new messages: to the newest, then to an older one.
+    m.send(&a, "one more").unwrap();
+    wait_turns(&m, &a, 3).await;
+    m.send(&a, "and another").unwrap();
+    wait_turns(&m, &a, 4).await;
+    wait_status(&m, &a, Status::Idle).await;
+    let now = user_seqs(&m, &a);
+    assert_eq!(m.rewind(&a, now[3], Rewind::Conversation).await.unwrap()["conversation"]["prefill"], "and another");
+    m.send(&a, "recall").unwrap();
+    wait_turns(&m, &a, 5).await;
+    assert_eq!(texts(&m, &a).last().unwrap(), "I remember: one more | recall");
+    wait_status(&m, &a, Status::Idle).await;
+    assert_eq!(m.rewind(&a, now[2], Rewind::Conversation).await.unwrap()["conversation"]["prefill"], "one more");
+    assert!(m.rewind(&a, now[3], Rewind::Preview).await.is_err(), "a message that is gone stays gone");
+
+    // An agent is at work in the background. Claude Code will not take the conversation back
+    // while one runs, so it is stopped first, like a running turn.
+    m.send(&a, "helper start").unwrap();
+    let s = wait_turns(&m, &a, 6).await;
+    assert_eq!(s.agents.len(), 1);
+    let helper = *user_seqs(&m, &a).last().unwrap();
+    assert_eq!(m.rewind(&a, helper, Rewind::Preview).await.unwrap()["can_restore"], true);
+    assert_eq!(get(&m, &a).agents.len(), 1, "a preview stops nothing");
+    assert_eq!(m.rewind(&a, helper, Rewind::Conversation).await.unwrap()["conversation"], json!({"ok": true, "prefill": "helper start"}));
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(s.agents.is_empty());
+
+    // Full access is never switched on by going back: only the user saying so does that.
+    mode(&m, &a, "bypassPermissions");
+    m.send(&a, "sent with full access").unwrap();
+    wait_turns(&m, &a, 7).await;
+    mode(&m, &a, "default");
+    m.send(&a, "sent asking first").unwrap();
+    wait_turns(&m, &a, 8).await;
+    wait_status(&m, &a, Status::Idle).await;
+    let full = user_seqs(&m, &a).into_iter().rev().nth(1).unwrap();
+    assert_eq!(m.rewind(&a, full, Rewind::Conversation).await.unwrap(), json!({"conversation": {"ok": true, "prefill": "sent with full access"}}));
+    assert_eq!(get(&m, &a).meta.permission_mode, "default");
 }

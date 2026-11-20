@@ -38,6 +38,16 @@ pub fn random_hex(n: usize) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A random id in the usual 8-4-4-4-12 form (a version 4 UUID).
+pub fn uuid() -> String {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).expect("OS randomness");
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+}
+
 /// Compares secrets without leaking where they differ through timing.
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());

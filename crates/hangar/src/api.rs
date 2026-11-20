@@ -19,7 +19,7 @@
 use crate::daemon::Pairing;
 use crate::pool::Pool;
 use crate::procs;
-use crate::sessions::{Answer, Manager, NeedsTrust, NewSession};
+use crate::sessions::{Answer, Manager, NeedsTrust, NewSession, Rewind};
 use crate::util::constant_time_eq;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
@@ -79,6 +79,7 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState, mut shutd
         .route("/sessions/{id}/permissions/{request_id}", post(decide))
         .route("/sessions/{id}/interrupt", post(interrupt))
         .route("/sessions/{id}/agents/{agent}/stop", post(stop_helper))
+        .route("/sessions/{id}/rewind", post(rewind))
         .route("/sessions/{id}/stop", post(stop))
         .route("/sessions/{id}/start", post(start_now))
         .route("/servers/{id}/stop", post(stop_server))
@@ -456,6 +457,20 @@ async fn decide(State(st): State<AppState>, Path((id, request_id)): Path<(String
 
 async fn interrupt(State(st): State<AppState>, Path(id): Path<String>) -> Response {
     result(st.manager.interrupt(&id))
+}
+
+#[derive(Deserialize)]
+struct RewindBody {
+    /// The user's message to go back to before: its number in the session's history.
+    seq: u64,
+    action: Rewind,
+}
+
+async fn rewind(State(st): State<AppState>, Path(id): Path<String>, Json(b): Json<RewindBody>) -> Response {
+    match st.manager.rewind(&id, b.seq, b.action).await {
+        Ok(done) => Json(done).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")),
+    }
 }
 
 async fn stop_helper(State(st): State<AppState>, Path((id, agent)): Path<(String, String)>) -> Response {
