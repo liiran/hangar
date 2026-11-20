@@ -14,8 +14,16 @@ fn fake_claude() -> std::path::PathBuf {
     env!("CARGO_BIN_EXE_fake-claude").into()
 }
 
+/// The fake sessions are tiny. The budget is told so, or these tests would
+/// wait "for memory" on a PC that has little of it free at the moment.
+fn small(mut config: Config) -> Config {
+    config.budget.reserve_mb = 64;
+    config.budget.initial_estimate_mb = 8;
+    config
+}
+
 fn manager(home: &std::path::Path, config: Config) -> Arc<Manager> {
-    let m = Manager::start(home, &config);
+    let m = Manager::start(home, &small(config));
     m.set_claude_bin(Some(fake_claude()));
     m.set_claude_json(home.join("no-claude.json"));
     m
@@ -518,7 +526,7 @@ struct Ui {
 
 async fn ui_daemon(tag: &str) -> Ui {
     let home = temp_home(tag);
-    let d = Daemon::start(DaemonOptions { home: home.clone(), config: Config::default(), ui_port: Some(0) }).await.unwrap();
+    let d = Daemon::start(DaemonOptions { home: home.clone(), config: small(Config::default()), ui_port: Some(0) }).await.unwrap();
     d.sessions.set_claude_bin(Some(fake_claude()));
     d.sessions.set_claude_json(home.join("no-claude.json"));
     let base = format!("http://127.0.0.1:{}", d.info.ui_port.unwrap());
