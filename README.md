@@ -37,6 +37,13 @@
 - **Context and plan limits in view.** Every number is Claude Code's own, as of Claude's last reply; hangar works none of them out.
   - **Context:** a ring under the message box, bottom right, fills as Claude's context window does, for example `42%`. It warms as it fills: yellow from 50%, orange from 70%, red at the end. Hover it to see what fills the window.
   - **Limits:** the sidebar shows how much of your Claude plan's 5-hour and 7-day limits is used and when each starts over, with bars colored the same way. They appear once a session has talked to Claude, and update as sessions run.
+- **Rewind.** Go back to before one of your messages, as `/rewind` does in Claude Code's terminal. It is Claude Code's own rewind, asked for by hangar, so it restores what Claude Code restores.
+  - **Open it** with `Esc` twice (with nothing typed), with *Rewind* in the command palette, or with the *Rewind* button that shows on one of your messages when the pointer is over it.
+  - **Pick a message.** hangar asks Claude Code what restoring the code would change, then shows Claude Code's choices: *Restore code and conversation*, *Restore conversation*, *Restore code*, *Never mind*. Under them it says what the highlighted one does, for example "The code will be restored +3 -1 in cart.ts." The choices with code show only when there is something to restore. `Enter` does it; there is no second question.
+  - **Restore conversation** takes that message and everything after it out of the conversation, and puts the message's text back in the message box, so you can change it and send it again.
+  - **Restore code** puts files back as they were before the message. This covers what Claude changed with its own edit tools: a file it created is deleted, a file it edited goes back whole. It does not cover what a command did (`rm`, `npm install`), or, normally, what a helper agent edited. Claude Code keeps the copies it needs under `~/.claude/file-history`.
+  - A stopped or paused session is started again to be asked. A running turn is stopped first, and so are agents still at work when the conversation goes back.
+  - Messages sent before hangar 0.2 could do this cannot be gone back to. Claude Code's two *Summarize* choices are not offered: they only exist inside its terminal.
 - **History that lasts.** Sessions outlive restarts. A stopped or paused session carries on in the same conversation when you send your next message. The conversation is Claude Code's own, so `claude --resume <id>` in a terminal can continue it too.
 - **Light or dark.** hangar follows your system. To pin one, press `Ctrl K` and type *theme*.
 - **Keyboard first:**
@@ -48,6 +55,7 @@
 | `J` / `K` | next / previous session |
 | `R` | reply to the open session |
 | `Esc` | stop the running turn, or the turn whose plan is waiting for your answer |
+| `Esc` `Esc` | with nothing running and nothing typed: Rewind |
 | `Ctrl \` | show or hide the sidebar |
 | `A`, `B`, … | choose that option of Claude's question (with the panel in focus); `←` `→` go to the other questions |
 | `1`, `2`, `3` | choose that line of "Would you like to proceed?" under a plan (with the list in focus). In its box, `Enter` sends what you typed back to Claude and `Shift Tab` approves the plan with it |
@@ -366,7 +374,7 @@ cargo test --workspace                      # Rust: unit, pool, sessions, API an
 cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all --check
 cd web && npm test                          # UI logic
 cargo build --workspace && npm run e2e      # the app in a real browser against a real daemon (fake Claude, no network)
-cargo build --workspace && npm run e2e:parity # questions, plans, edits, helper agents, context, limits and stopping, in a real browser (fake Claude)
+cargo build --workspace && npm run e2e:parity # questions, plans, edits, helper agents, rewind, context, limits and stopping, in a real browser (fake Claude)
 cargo build --release && npm run e2e:claude # real Claude Code (Haiku) sessions through the API; costs a few cents
 cargo build --workspace && npm run e2e:attack # attacks a throwaway hangar from outside (Windows; fake Claude, no network)
 cargo build --release && npm run media      # re-records the README's pictures and video with real sessions (needs ffmpeg and HANGAR_MEDIA_DIR)
@@ -378,7 +386,7 @@ On Windows with the GNU toolchain, put a MinGW `bin` folder (for `dlltool` and `
 The integration tests run real shim processes against an in-process daemon. They use a scriptable fake MCP server (stdio and HTTP) and a fake `claude` that speaks the stream-json protocol. They cover:
 - **Routing:** concurrent overlapping ids, progress isolation, caching, subscriptions and roots safety.
 - **Failure handling:** crash restart, idle shutdown, fallback, reconnecting after a daemon restart, and impostor daemons.
-- **Sessions:** approvals and withdrawn approvals, answered questions, approved and returned plans, the changed lines of an edit, helper agents (in the background, in the foreground, asking, stopped, failing), the budget queue, idle reclaim, resume, model switching, workspace trust and hostile paths.
+- **Sessions:** approvals and withdrawn approvals, answered questions, approved and returned plans, the changed lines of an edit, helper agents (in the background, in the foreground, asking, stopped, failing), rewind (preview, code, conversation, both, after a restart), the budget queue, idle reclaim, resume, model switching, workspace trust and hostile paths.
 - **The API:** pairing, and its token, Host, Origin, cross-site and CSP checks.
 
 `npm run e2e` drives the app in a real browser: hostile replies and links, long and disguised permission requests, the trust notice, sign-in and sign-out. `npm run e2e:parity` does the same for the parts that stand in for Claude Code's own dialogs and read-outs. The fake `claude` sends what Claude Code was recorded sending (2.1.325; the helper agents 2.1.329), and `npm run e2e:claude` checks the same paths against the real one.
