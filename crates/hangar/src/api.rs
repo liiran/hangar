@@ -78,6 +78,7 @@ pub async fn serve(listener: tokio::net::TcpListener, state: AppState, mut shutd
         .route("/sessions/{id}/messages", post(send_message))
         .route("/sessions/{id}/permissions/{request_id}", post(decide))
         .route("/sessions/{id}/interrupt", post(interrupt))
+        .route("/sessions/{id}/agents/{agent}/stop", post(stop_helper))
         .route("/sessions/{id}/stop", post(stop))
         .route("/sessions/{id}/start", post(start_now))
         .route("/servers/{id}/stop", post(stop_server))
@@ -455,6 +456,10 @@ async fn decide(State(st): State<AppState>, Path((id, request_id)): Path<(String
 
 async fn interrupt(State(st): State<AppState>, Path(id): Path<String>) -> Response {
     result(st.manager.interrupt(&id))
+}
+
+async fn stop_helper(State(st): State<AppState>, Path((id, agent)): Path<(String, String)>) -> Response {
+    result(st.manager.stop_helper(&id, &agent))
 }
 
 async fn stop(State(st): State<AppState>, Path(id): Path<String>) -> Response {

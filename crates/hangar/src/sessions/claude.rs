@@ -40,6 +40,8 @@ pub struct PermissionRequest {
     pub input: Value,
     pub suggestions: Option<Value>,
     pub description: Option<String>,
+    /// Set when a helper agent asks, not Claude itself: the helper's task id.
+    pub agent_id: Option<String>,
 }
 
 /// What a driver reports. Every variant names the process it came from.
@@ -243,6 +245,11 @@ impl Driver {
         self.control(&format!("int-{}", crate::util::now_ms()), json!({"subtype": "interrupt"}));
     }
 
+    /// Stops one helper agent. The turn it belongs to carries on.
+    pub fn stop_task(&self, task_id: &str) {
+        self.control(&format!("stop-{}", crate::util::now_ms()), json!({"subtype": "stop_task", "task_id": task_id}));
+    }
+
     pub fn set_permission_mode(&self, mode: &str) {
         self.control(&format!("mode-{}", crate::util::now_ms()), json!({"subtype": "set_permission_mode", "mode": mode}));
     }
@@ -301,6 +308,7 @@ fn route(id: &str, pid: u32, msg: Value, ev: &mpsc::UnboundedSender<DriverEvent>
                     input: req["input"].clone(),
                     suggestions: req.get("permission_suggestions").filter(|v| !v.is_null()).cloned(),
                     description: req["description"].as_str().or(req["title"].as_str()).map(String::from),
+                    agent_id: req["agent_id"].as_str().filter(|a| !a.is_empty() && a.len() <= 64).map(String::from),
                 };
                 let _ = ev.send(DriverEvent::Permission { session_id, pid, request });
             } else {

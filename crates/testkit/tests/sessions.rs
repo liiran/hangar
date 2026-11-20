@@ -952,3 +952,205 @@ async fn the_app_is_told_which_local_servers_are_not_shared_yet() {
     assert_eq!(std::fs::read_to_string(&config).unwrap(), doc.to_string(), "the file is untouched");
     ui.d.shutdown().await;
 }
+
+/// The messages of one kind that Claude Code sent about a session's tasks.
+fn task_events(m: &Manager, id: &str, subtype: &str) -> Vec<Value> {
+    m.events(id, 0)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::Claude { msg } if msg["type"] == "system" && msg["subtype"] == subtype => Some(msg),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Waits until the session's turns so far number `n`, and returns it as it is then.
+async fn wait_turns(m: &Manager, id: &str, n: usize) -> SessionView {
+    for _ in 0..300 {
+        let done = m.events(id, 0).unwrap().into_iter().filter(|e| matches!(&e.body, EventBody::Claude { msg } if msg["type"] == "result")).count();
+        if done >= n {
+            return get(m, id);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("session {id} never finished {n} turns");
+}
+
+#[tokio::test]
+async fn a_session_whose_helper_is_at_work_is_working_and_is_not_paused() {
+    let home = temp_home("sess-helper");
+    let mut cfg = Config::default();
+    cfg.budget.max_sessions = 1;
+    cfg.budget.reclaim_idle_after_secs = 0;
+    let m = manager(&home, cfg);
+    let a = m.create(NewSession { permission_mode: Some("acceptEdits".into()), ..new(&home, "helper start") }).unwrap().meta.id;
+    // Claude's turn is over ("I've started a helper"); the helper is not.
+    let s = wait_turns(&m, &a, 1).await;
+    assert_eq!(s.meta.status, Status::Working, "a helper is still at work");
+    assert_eq!(s.agents.len(), 1);
+    assert_eq!(
+        (s.agents[0].id.as_str(), s.agents[0].tool_use_id.as_str(), s.agents[0].description.as_str(), s.agents[0].background),
+        ("agent1", "toolu_agent1", "Tidy the notes", true)
+    );
+    // Another session wants the only place. The one with the helper is not paused for it.
+    let b = m.create(new(&home, "second")).unwrap().meta.id;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(get(&m, &b).meta.status, Status::Queued);
+    assert_eq!(get(&m, &a).meta.status, Status::Working);
+
+    // The helper's steps arrive with no turn running; a message in between gets its own turn.
+    m.send(&a, "helper step 2").unwrap();
+    for _ in 0..300 {
+        if task_events(&m, &a, "task_progress").len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let s = wait_turns(&m, &a, 2).await;
+    assert_eq!(s.meta.status, Status::Working);
+    let progress = task_events(&m, &a, "task_progress");
+    assert_eq!(progress.len(), 2);
+    assert_eq!(
+        progress[1],
+        json!({"type": "system", "subtype": "task_progress", "task_id": "agent1", "tool_use_id": "toolu_agent1", "description": "Searching for TODO", "subagent_type": "general-purpose", "usage": {"total_tokens": 21000, "tool_uses": 2, "duration_ms": 2400}, "last_tool_name": "Grep"})
+    );
+    // The prompt is in the Agent call already: the task message is kept without it.
+    let started = task_events(&m, &a, "task_started");
+    assert_eq!(
+        started,
+        vec![
+            json!({"type": "system", "subtype": "task_started", "task_id": "agent1", "tool_use_id": "toolu_agent1", "description": "Tidy the notes", "subagent_type": "general-purpose", "is_backgrounded": true})
+        ]
+    );
+    // The helper's own messages are kept, marked with the call they belong to.
+    let inside =
+        m.events(&a, 0).unwrap().into_iter().filter(|e| matches!(&e.body, EventBody::Claude { msg } if msg["parent_tool_use_id"] == "toolu_agent1")).count();
+    assert_eq!(inside, 4, "two steps: a tool call and its result each");
+
+    // The helper reports; Claude Code starts a turn by itself to read the report. Only then
+    // is the session idle, and only then is it paused for the one that waits.
+    m.send(&a, "helper finish").unwrap();
+    let s = wait_status(&m, &a, Status::Hibernated).await;
+    assert!(s.agents.is_empty());
+    assert!(texts(&m, &a).contains(&"The helper is done: Tidy the notes.".to_string()));
+    let ended = task_events(&m, &a, "task_notification");
+    assert_eq!(
+        ended,
+        vec![
+            json!({"type": "system", "subtype": "task_notification", "task_id": "agent1", "tool_use_id": "toolu_agent1", "status": "completed", "usage": {"total_tokens": 21000, "tool_uses": 2, "duration_ms": 2400}})
+        ]
+    );
+    wait_status(&m, &b, Status::Idle).await;
+}
+
+#[tokio::test]
+async fn a_helper_that_is_stopped_or_ends_without_a_report_leaves_the_session_idle() {
+    let home = temp_home("sess-helper-end");
+    let m = manager(&home, Config::default());
+    let a = m.create(new(&home, "helper start")).unwrap().meta.id;
+    wait_turns(&m, &a, 1).await;
+
+    // Stop, with only a helper running, stops the helper: nothing follows, and the session is idle at once.
+    let before = std::time::Instant::now();
+    m.interrupt(&a).unwrap();
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(before.elapsed() < Duration::from_secs(3), "idle as soon as the helper is stopped");
+    assert!(s.agents.is_empty());
+    assert_eq!(task_events(&m, &a, "task_updated")[0]["status"], "killed");
+
+    // Two helpers, stopped one at a time.
+    m.send(&a, "two helpers").unwrap();
+    let s = wait_turns(&m, &a, 2).await;
+    assert_eq!(s.agents.iter().map(|h| h.description.as_str()).collect::<Vec<_>>(), vec!["Map the code", "Check the tests"]);
+    assert!(m.stop_helper(&a, "agent9").is_err(), "only a helper that is running can be stopped");
+    m.stop_helper(&a, "agent2").unwrap();
+    for _ in 0..200 {
+        if get(&m, &a).agents.len() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let s = get(&m, &a);
+    assert_eq!((s.agents.len(), s.agents[0].id.as_str(), s.meta.status), (1, "agent3", Status::Working), "the other helper works on");
+    m.stop_helper(&a, "agent3").unwrap();
+    wait_status(&m, &a, Status::Idle).await;
+
+    // A helper that ends with no turn after it: the session is idle a few seconds later, not working forever.
+    m.send(&a, "helper start").unwrap();
+    wait_turns(&m, &a, 3).await;
+    m.send(&a, "helper vanish").unwrap();
+    let s = wait_turns(&m, &a, 4).await;
+    assert_ne!(s.meta.status, Status::Idle, "the turn Claude starts to read the report is waited for");
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(s.agents.is_empty());
+
+    // The process ends with a helper running: no helper is listed as running.
+    m.send(&a, "helper start").unwrap();
+    let s = wait_turns(&m, &a, 5).await;
+    assert_eq!(s.agents.len(), 1);
+    m.stop(&a).unwrap();
+    let s = wait_status(&m, &a, Status::Stopped).await;
+    assert!(s.agents.is_empty());
+}
+
+#[tokio::test]
+async fn a_helpers_request_says_which_helper_asks_and_a_background_command_is_not_a_helper() {
+    let home = temp_home("sess-helper-ask");
+    let m = manager(&home, Config::default());
+    // A helper in the foreground: it asks before its edit, inside Claude's turn.
+    let a = m.create(new(&home, "helper fg")).unwrap().meta.id;
+    let s = wait_status(&m, &a, Status::NeedsYou).await;
+    assert_eq!((s.pending[0].tool_name.as_str(), s.pending[0].agent_id.as_deref()), ("Edit", Some("agent1")));
+    assert_eq!((s.agents.len(), s.agents[0].background), (1, false));
+    let asked =
+        m.events(&a, 0).unwrap().into_iter().any(|e| matches!(e.body, EventBody::Permission { ref agent_id, .. } if agent_id.as_deref() == Some("agent1")));
+    assert!(asked, "the stored request names the helper");
+    m.decide(&a, &s.pending[0].request_id, allow()).unwrap();
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(s.agents.is_empty());
+    assert!(texts(&m, &a).contains(&"The helper tidied the notes.".to_string()));
+    // Of what the Agent tool reports, the totals are kept, not the prompt and the report again.
+    let totals: Vec<Value> = m
+        .events(&a, 0)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::Claude { msg } if msg["type"] == "user" && msg["tool_use_result"]["agentId"].is_string() => Some(msg["tool_use_result"].clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(totals, vec![json!({"agentId": "agent1", "status": "completed", "totalDurationMs": 6000, "totalTokens": 25500, "totalToolUseCount": 5})]);
+    // The helper's edit keeps its changed lines, like an edit of Claude's own.
+    let edit = m
+        .events(&a, 0)
+        .unwrap()
+        .into_iter()
+        .any(|e| matches!(&e.body, EventBody::Claude { msg } if msg["parent_tool_use_id"] == "toolu_agent1" && msg["tool_use_result"].is_object()));
+    assert!(edit);
+
+    // Stop while the helper asks: the helper and the turn both end.
+    m.send(&a, "helper fg").unwrap();
+    wait_status(&m, &a, Status::NeedsYou).await;
+    m.interrupt(&a).unwrap();
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(s.agents.is_empty() && s.pending.is_empty());
+
+    // A helper in the background asks with no turn running. Stopping it takes the request back.
+    m.send(&a, "helper start").unwrap();
+    wait_turns(&m, &a, 3).await;
+    m.send(&a, "helper step 4").unwrap();
+    let s = wait_status(&m, &a, Status::NeedsYou).await;
+    assert_eq!(s.pending[0].agent_id.as_deref(), Some("agent3"));
+    m.stop_helper(&a, "agent3").unwrap();
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(s.agents.is_empty() && s.pending.is_empty());
+
+    // A shell command left running in the background is listed by Claude Code like a helper.
+    // It is not one: the session is idle, and nothing about it is kept.
+    m.send(&a, "background command").unwrap();
+    let s = wait_turns(&m, &a, 5).await;
+    assert_eq!(s.meta.status, Status::Idle);
+    assert!(s.agents.is_empty());
+    assert!(task_events(&m, &a, "task_started").iter().all(|t| t["task_id"] != "shell1"));
+}

@@ -8,7 +8,13 @@
 //! * `get_context_usage` is answered at any time, also while a request waits;
 //! * a message that arrives while a plan waits is held, and read with the answer
 //!   to the plan;
-//! * entering plan mode (`EnterPlanMode`) is not asked about.
+//! * entering plan mode (`EnterPlanMode`) is not asked about;
+//! * a helper agent (the `Agent` tool) is announced with `task_started`, each
+//!   of its steps with `task_progress`, its end with `task_updated` and
+//!   `task_notification`; its own messages carry `parent_tool_use_id` and
+//!   `agent_id`, and so does a request it makes. One in the background is also
+//!   listed in `background_tasks_changed`, works on after the turn's `result`,
+//!   and is stopped by an interrupt (recorded from 2.1.329).
 //!
 //! Message text controls behavior:
 //! * `use tool`: asks permission for `Bash {command: "ls"}` first; an
@@ -28,6 +34,18 @@
 //!   `long plan` is one too long for the card, and
 //!   `hostile plan` one with markup, a script link, a remote image and an
 //!   invisible character in it, and a field besides the plan in its request;
+//! * `helper fg`: runs a helper in the foreground through five steps (read, search,
+//!   read, edit, command) and reports. The edit asks first unless edits are
+//!   accepted; an interrupt while it asks stops the helper and the turn;
+//! * `helper start`: starts a helper in the background and ends the turn; `two
+//!   helpers` starts two. They do nothing until told to:
+//!   `helper step` (or `helper step N`) ends the turn, then each helper does its
+//!   next step (N steps); `helper finish` ends the turn, then the oldest helper
+//!   reports and Claude starts a turn by itself to say so; `helper fail` is the
+//!   same with a helper that failed; `helper vanish` ends the oldest helper with
+//!   no turn after it;
+//! * `background command`: starts a shell command in the background, which is
+//!   listed like a helper but is not one;
 //! * `edit files`: edits and writes files without asking, with the line-by-line
 //!   changes the real CLI reports, one of them failing;
 //! * `context NN`: reports the context window NN% full from then on;
@@ -52,6 +70,24 @@ fn out(v: Value) {
     let _ = o.flush();
 }
 
+/// A helper agent the fake pretends to run.
+struct Helper {
+    task: String,
+    tool_use: String,
+    description: String,
+    background: bool,
+    steps: u64,
+}
+
+/// How a helper's step ended.
+enum Went {
+    On,
+    /// The helper was stopped while it asked.
+    Stopped,
+    /// Stdin closed.
+    Gone,
+}
+
 /// How a permission request ended.
 enum Decision {
     /// The whole answer: `updatedInput`, and `updatedPermissions` if any.
@@ -74,6 +110,17 @@ struct Fake {
     context_percent: Option<u64>,
     /// Messages that arrived while a request was waiting.
     held: Vec<String>,
+    /// The helpers that are running, oldest first.
+    helpers: Vec<Helper>,
+    started: u64,
+    /// Shell commands running in the background.
+    shells: Vec<String>,
+    /// The helper whose request is waiting.
+    asking: Option<String>,
+}
+
+fn path(name: &str) -> String {
+    std::env::current_dir().unwrap_or_default().join(name).display().to_string()
 }
 
 impl Fake {
@@ -110,6 +157,175 @@ impl Fake {
         categories.push(json!({"name": "Autocompact buffer", "tokens": 33_000, "kind": "buffer"}));
         categories.push(json!({"name": "Free space", "tokens": max.saturating_sub(total + 33_000), "kind": "free"}));
         json!({"categories": categories, "totalTokens": total, "maxTokens": max, "rawMaxTokens": max, "percentage": percent, "model": self.model, "autoCompactThreshold": max - 33_000, "isAutoCompactEnabled": true})
+    }
+
+    fn init(&self) {
+        out(
+            json!({"type": "system", "subtype": "init", "session_id": self.session_id, "model": self.model, "permissionMode": self.mode, "mcp_servers": [], "tools": []}),
+        );
+    }
+
+    fn system(&self, subtype: &str, mut fields: Value) {
+        fields["type"] = json!("system");
+        fields["subtype"] = json!(subtype);
+        fields["session_id"] = json!(self.session_id);
+        out(fields);
+    }
+
+    /// Everything that runs in the background, sent whenever that changes.
+    fn background_changed(&self) {
+        let mut tasks: Vec<Value> = self
+            .helpers
+            .iter()
+            .filter(|h| h.background)
+            .map(|h| json!({"task_id": h.task, "run_id": format!("run-{}", h.task), "task_type": "local_agent", "subagent_type": "general-purpose", "description": h.description}))
+            .collect();
+        tasks.extend(
+            self.shells.iter().map(|s| json!({"task_id": s, "run_id": format!("run-{s}"), "task_type": "local_bash", "description": "Start the dev server"})),
+        );
+        self.system("background_tasks_changed", json!({"tasks": tasks}));
+    }
+
+    /// A message from inside a helper.
+    fn inside(&self, h: &Helper, kind: &str, content: Value, full: Option<Value>) {
+        let mut m = json!({"type": kind, "message": {"role": kind, "content": content}, "parent_tool_use_id": h.tool_use, "agent_id": h.task, "subagent_type": "general-purpose", "task_description": h.description, "session_id": self.session_id});
+        if let Some(full) = full {
+            m["tool_use_result"] = full;
+        }
+        out(m);
+    }
+
+    fn usage(steps: u64) -> Value {
+        json!({"total_tokens": 18_000 + 1_500 * steps, "tool_uses": steps, "duration_ms": 1_200 * steps})
+    }
+
+    /// Claude starts a helper with the Agent tool.
+    fn helper_start(&mut self, description: &str, background: bool) {
+        self.started += 1;
+        let h = Helper {
+            task: format!("agent{}", self.started),
+            tool_use: format!("toolu_agent{}", self.started),
+            description: description.to_string(),
+            background,
+            steps: 0,
+        };
+        let prompt = format!("{description}. Report what you did.");
+        let mut input = json!({"description": description, "subagent_type": "general-purpose", "prompt": prompt});
+        if !background {
+            input["run_in_background"] = json!(false);
+        }
+        self.tool_use(&h.tool_use, "Agent", &input);
+        self.helpers.push(h);
+        let h = self.helpers.last().unwrap();
+        if background {
+            self.background_changed();
+        }
+        self.system(
+            "task_started",
+            json!({"task_id": h.task, "run_id": format!("run-{}", h.task), "tool_use_id": h.tool_use, "description": description, "subagent_type": "general-purpose", "is_backgrounded": background, "spawn_depth": 1, "task_type": "local_agent", "prompt": prompt}),
+        );
+        if background {
+            let launched = format!(
+                "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: {} (internal ID - do not mention to user.)\nThe agent is working in the background. You will be notified automatically when it completes.",
+                h.task
+            );
+            self.tool_result(
+                &h.tool_use,
+                &launched,
+                false,
+                json!({"isAsync": true, "status": "async_launched", "agentId": h.task, "description": description, "prompt": prompt, "outputFile": path("tasks.output"), "canReadOutputFile": true}),
+            );
+        } else {
+            self.inside(h, "user", json!([{"type": "text", "text": prompt}]), None);
+        }
+    }
+
+    /// The next step of helper `i`: read, search, read, edit, command, and
+    /// around again. The edit asks first unless edits are accepted.
+    fn helper_step(&mut self, lines: &mut Lines, i: usize) -> Went {
+        let (task, tool_use, n) = {
+            let h = &self.helpers[i];
+            (h.task.clone(), h.tool_use.clone(), h.steps)
+        };
+        let id = format!("{tool_use}_s{n}");
+        let (name, input, doing, output, full) = match n % 5 {
+            0 => ("Read", json!({"file_path": path("src/app.ts")}), "Reading app.ts", "export const app = 1;", None),
+            1 => ("Grep", json!({"pattern": "TODO", "path": path("src")}), "Searching for TODO", "src/app.ts:3: // TODO: tidy up", None),
+            2 => ("Read", json!({"file_path": path("src/util.ts")}), "Reading util.ts", "export const twice = (n: number) => n * 2;", None),
+            3 => (
+                "Edit",
+                json!({"file_path": path("notes.txt"), "old_string": "draft", "new_string": "final", "replace_all": false}),
+                "Editing notes.txt",
+                "The file has been updated successfully.",
+                Some(
+                    json!({"filePath": path("notes.txt"), "originalFile": "(the whole file)", "structuredPatch": [{"oldStart": 1, "oldLines": 2, "newStart": 1, "newLines": 2, "lines": [" # Notes", "-draft", "+final"]}]}),
+                ),
+            ),
+            _ => ("Bash", json!({"command": "npm test", "description": "Run the tests"}), "Running Run the tests", "12 passed", None),
+        };
+        self.inside(&self.helpers[i], "assistant", json!([{"type": "tool_use", "id": id, "name": name, "input": input}]), None);
+        self.helpers[i].steps += 1;
+        self.system(
+            "task_progress",
+            json!({"task_id": task, "run_id": format!("run-{task}"), "tool_use_id": tool_use, "description": doing, "subagent_type": "general-purpose", "usage": Self::usage(n + 1), "last_tool_name": name}),
+        );
+        if name == "Edit" && self.mode == "default" {
+            self.asking = Some(task);
+            let decision = self.ask(
+                lines,
+                &format!("perm-{id}"),
+                "Edit",
+                &id,
+                &input,
+                Some(json!([{"type": "setMode", "mode": "acceptEdits", "destination": "session"}])),
+            );
+            self.asking = None;
+            match decision {
+                Decision::Allow(_) => {}
+                Decision::Deny { .. } => {
+                    let refused = json!([{"type": "tool_result", "tool_use_id": id, "content": "The user doesn't want to proceed with this tool use.", "is_error": true}]);
+                    self.inside(&self.helpers[i], "user", refused, None);
+                    return Went::On;
+                }
+                Decision::Interrupted => {
+                    self.helper_end(i, "killed");
+                    return Went::Stopped;
+                }
+                Decision::Gone => return Went::Gone,
+            }
+        }
+        self.inside(&self.helpers[i], "user", json!([{"type": "tool_result", "tool_use_id": id, "content": output}]), full);
+        Went::On
+    }
+
+    /// Helper `i` ends: `completed` (it reports first), `failed` or `killed`.
+    fn helper_end(&mut self, i: usize, status: &str) -> Helper {
+        let h = self.helpers.remove(i);
+        let report = format!("Done: {} steps. The notes are tidy.", h.steps);
+        if status == "completed" {
+            self.inside(&h, "assistant", json!([{"type": "text", "text": report}]), None);
+        }
+        self.system("task_updated", json!({"task_id": h.task, "run_id": format!("run-{}", h.task), "patch": {"status": status, "end_time": 1}}));
+        self.system(
+            "task_notification",
+            json!({"task_id": h.task, "run_id": format!("run-{}", h.task), "tool_use_id": h.tool_use, "status": if status == "killed" { "stopped" } else { status }, "output_file": path("tasks.output"), "summary": report, "usage": Self::usage(h.steps)}),
+        );
+        if h.background {
+            self.background_changed();
+        }
+        h
+    }
+
+    /// Stops the helpers an interrupt (all of them) or `stop_task` (one) names.
+    fn helpers_stop(&mut self, only: Option<&str>) {
+        let mut i = 0;
+        while i < self.helpers.len() {
+            if only.is_none_or(|t| t == self.helpers[i].task) {
+                self.helper_end(i, "killed");
+            } else {
+                i += 1;
+            }
+        }
     }
 
     fn assistant(&self, content: Value) {
@@ -155,12 +371,16 @@ impl Fake {
             Some(s) => request["permission_suggestions"] = s,
             None => request["requires_user_interaction"] = json!(true),
         }
+        if let Some(agent) = &self.asking {
+            request["agent_id"] = json!(agent);
+        }
         out(json!({"type": "control_request", "request_id": request_id, "request": request}));
         loop {
             let Some(Ok(l)) = lines.next() else { return Decision::Gone };
             let Ok(v) = serde_json::from_str::<Value>(&l) else { continue };
             if v["type"] == "control_request" {
-                if !self.control(&v) {
+                let stops_asker = v["request"]["subtype"] == "stop_task" && self.asking.as_deref() == v["request"]["task_id"].as_str();
+                if stops_asker || !self.control(&v) {
                     out(json!({"type": "control_response", "response": {"subtype": "success", "request_id": v["request_id"], "response": {}}}));
                     out(json!({"type": "control_cancel_request", "request_id": request_id}));
                     return Decision::Interrupted;
@@ -228,15 +448,25 @@ fn main() {
         turn: 0,
         context_percent: None,
         held: Vec::new(),
+        helpers: Vec::new(),
+        started: 0,
+        shells: Vec::new(),
+        asking: None,
     };
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let file = |name: &str| cwd.join(name).display().to_string();
+    let file = path;
 
     let mut lines: Lines = std::io::stdin().lines();
     while let Some(Ok(line)) = lines.next() {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
         match msg["type"].as_str().unwrap_or_default() {
             "control_request" => {
+                // With no turn running, an interrupt stops the helpers in the background.
+                let request = &msg["request"];
+                if request["subtype"] == "interrupt" {
+                    fake.helpers_stop(None);
+                } else if request["subtype"] == "stop_task" {
+                    fake.helpers_stop(Some(request["task_id"].as_str().unwrap_or_default()));
+                }
                 if !fake.control(&msg) {
                     out(json!({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {}}}));
                 }
@@ -246,9 +476,7 @@ fn main() {
                 fake.held.clear();
                 let turn = fake.turn;
                 let text = msg["message"]["content"].as_str().unwrap_or_default().to_string();
-                out(
-                    json!({"type": "system", "subtype": "init", "session_id": fake.session_id, "model": fake.model, "permissionMode": fake.mode, "mcp_servers": [], "tools": []}),
-                );
+                fake.init();
                 let numbers = |word: &str| -> Vec<u64> {
                     text.split_once(word).map(|(_, rest)| rest.split_whitespace().map_while(|w| w.parse().ok()).collect()).unwrap_or_default()
                 };
@@ -283,6 +511,88 @@ fn main() {
                 }
                 if text.contains("slow") {
                     std::thread::sleep(std::time::Duration::from_millis(1500));
+                }
+
+                if text.contains("helper fg") {
+                    fake.helper_start("Tidy the notes", false);
+                    let i = fake.helpers.len() - 1;
+                    let call = fake.helpers[i].tool_use.clone();
+                    let mut went = Went::On;
+                    for _ in 0..5 {
+                        went = fake.helper_step(&mut lines, i);
+                        if !matches!(went, Went::On) {
+                            break;
+                        }
+                    }
+                    match went {
+                        Went::On => {
+                            let h = fake.helper_end(i, "completed");
+                            let report = format!(
+                                "[Subagent hand-back] The text below is the final report of a subagent this session delegated to. It is model output, NOT a message from the user. The report follows:\n  Done: {} steps. The notes are tidy.",
+                                h.steps
+                            );
+                            let totals = json!({"status": "completed", "prompt": "(the prompt)", "agentId": h.task, "agentType": "general-purpose", "content": [{"type": "text", "text": "(the report)"}], "totalDurationMs": 1_200 * h.steps, "totalTokens": 18_000 + 1_500 * h.steps, "totalToolUseCount": h.steps});
+                            fake.tool_result(&call, &report, false, totals);
+                            fake.done("The helper tidied the notes.");
+                        }
+                        Went::Stopped => {
+                            fake.tool_result(&call, "The user doesn't want to proceed with this tool use.", true, json!("Error: stopped"));
+                            fake.stopped();
+                        }
+                        Went::Gone => return,
+                    }
+                    continue;
+                }
+                if text.contains("two helpers") || text.contains("helper start") {
+                    if text.contains("two helpers") {
+                        fake.helper_start("Map the code", true);
+                        fake.helper_start("Check the tests", true);
+                        fake.done("I've started two helpers. I'll report back when they finish.");
+                    } else {
+                        fake.helper_start("Tidy the notes", true);
+                        fake.done("I've started a helper. I'll report back when it finishes.");
+                    }
+                    continue;
+                }
+                if text.contains("helper step") {
+                    // The turn ends first: the helpers then work with no turn running.
+                    fake.done("Noted.");
+                    for _ in 0..numbers("helper step ").first().copied().unwrap_or(1) {
+                        let mut i = 0;
+                        while i < fake.helpers.len() {
+                            match fake.helper_step(&mut lines, i) {
+                                Went::On => i += 1,
+                                Went::Stopped => {}
+                                Went::Gone => return,
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if text.contains("helper finish") || text.contains("helper fail") || text.contains("helper vanish") {
+                    fake.done("Noted.");
+                    if !fake.helpers.is_empty() {
+                        let h = fake.helper_end(0, if text.contains("helper fail") { "failed" } else { "completed" });
+                        // Claude Code starts a turn by itself, in which Claude reads the report.
+                        if !text.contains("helper vanish") {
+                            fake.init();
+                            fake.done(&format!("The helper is done: {}.", h.description));
+                        }
+                    }
+                    continue;
+                }
+                if text.contains("background command") {
+                    let input = json!({"command": "npm run dev", "description": "Start the dev server", "run_in_background": true});
+                    fake.tool_use("tu_shell", "Bash", &input);
+                    fake.shells.push("shell1".into());
+                    fake.background_changed();
+                    fake.system(
+                        "task_started",
+                        json!({"task_id": "shell1", "run_id": "run-shell1", "tool_use_id": "tu_shell", "description": "Start the dev server", "is_backgrounded": true, "task_type": "local_bash"}),
+                    );
+                    fake.tool_result("tu_shell", "Command running in background with ID: shell1", false, json!({"backgroundTaskId": "shell1"}));
+                    fake.done("The dev server is starting.");
+                    continue;
                 }
 
                 if text.contains("ask question") || text.contains("ask preview") || text.contains("ask hostile") {

@@ -21,7 +21,7 @@ use crate::util::now_ms;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -226,6 +226,9 @@ pub enum EventBody {
         suggestions: Option<Value>,
         #[serde(default)]
         description: Option<String>,
+        /// The helper agent that asks, when it is not Claude itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
     },
     /// `allow`, `allow_always` (rules remembered for this session), `deny` or `cancelled`.
     /// `detail` is what the user chose beyond that: the answers to a
@@ -254,6 +257,21 @@ pub struct PendingPermission {
     pub suggestions: Option<Value>,
     /// Whether "always allow" has session rules to remember.
     pub can_remember: bool,
+    /// The helper agent that asks, when it is not Claude itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+}
+
+/// A helper agent Claude started with its Agent tool, while it runs.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Helper {
+    /// Claude Code's id for the task; a helper's requests carry it as `agent_id`.
+    pub id: String,
+    /// The Agent tool call that started it. Empty if Claude Code never said.
+    pub tool_use_id: String,
+    pub description: String,
+    /// Runs beside the conversation: Claude's turn can end while it works.
+    pub background: bool,
 }
 
 /// What the UI sees for one session.
@@ -270,6 +288,8 @@ pub struct SessionView {
     pub pending: Vec<PendingPermission>,
     pub queue_position: Option<usize>,
     pub mcp: Vec<Value>,
+    /// The helper agents running right now. Empty when the process is not running.
+    pub agents: Vec<Helper>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -497,13 +517,89 @@ struct Run {
     context_asked: Option<Instant>,
     /// Something changed since that question: ask again once it is answered.
     context_stale: bool,
+    /// The helper agents running right now.
+    helpers: Vec<Helper>,
+    /// Every helper this process has started, by task id: their later
+    /// messages are kept, those of other background tasks are not.
+    helper_ids: BTreeSet<String>,
+    /// A turn of the conversation itself is running (from `init` to `result`).
+    turn: bool,
+    /// The last helper ended with no turn running. Claude Code then starts a
+    /// turn by itself to read the helper's report; if it has not by
+    /// `SETTLE`, the session counts as idle.
+    settle: Option<Instant>,
 }
+
+/// How long a session stays "working" after its last helper ended, waiting
+/// for the turn in which Claude reads the report.
+const SETTLE: Duration = Duration::from_secs(5);
 
 impl Run {
     /// Asks Claude how full its context is. One question is out at a time:
     /// while it is unanswered, a change is only noted, and asked about when
     /// the answer comes (see `on_context`). An answer that never comes
     /// stops counting after 10 s.
+    /// Nothing is running: no turn and no helper.
+    fn at_rest(&self) -> bool {
+        !self.turn && self.helpers.is_empty()
+    }
+
+    /// Notes what a task message says about a helper. Returns whether a
+    /// helper ended, and whether it was stopped rather than finished.
+    fn track(&mut self, subtype: &str, msg: &Value) -> (bool, bool) {
+        let id = msg["task_id"].as_str().unwrap_or_default();
+        match subtype {
+            "task_started" if msg["task_type"] == "local_agent" && !id.is_empty() && id.len() <= 64 => {
+                self.helper_ids.insert(id.to_string());
+                self.helpers.retain(|h| h.id != id);
+                self.helpers.push(Helper {
+                    id: id.to_string(),
+                    tool_use_id: msg["tool_use_id"].as_str().unwrap_or_default().to_string(),
+                    description: truncate(msg["description"].as_str().unwrap_or_default(), 200),
+                    background: msg["is_backgrounded"] == true,
+                });
+                self.settle = None;
+                (false, false)
+            }
+            // `task_updated` reports every change; only an end counts here.
+            "task_updated" | "task_notification" => {
+                let status = if subtype == "task_updated" { &msg["patch"]["status"] } else { &msg["status"] };
+                let status = status.as_str().unwrap_or_default();
+                if matches!(status, "" | "running" | "pending") {
+                    return (false, false);
+                }
+                let before = self.helpers.len();
+                self.helpers.retain(|h| h.id != id);
+                (self.helpers.len() < before, matches!(status, "killed" | "stopped"))
+            }
+            // The whole list of what runs in the background, whenever it changes.
+            "background_tasks_changed" => {
+                let listed: Vec<&Value> = msg["tasks"].as_array().map(|a| a.iter().filter(|t| t["task_type"] == "local_agent").collect()).unwrap_or_default();
+                let before = self.helpers.len();
+                self.helpers.retain(|h| !h.background || listed.iter().any(|t| t["task_id"] == h.id.as_str()));
+                let ended = self.helpers.len() < before;
+                for t in listed {
+                    let Some(id) = t["task_id"].as_str().filter(|i| !i.is_empty() && i.len() <= 64) else { continue };
+                    match self.helpers.iter_mut().find(|h| h.id == id) {
+                        // A helper that started in the foreground and was moved to the background.
+                        Some(h) => h.background = true,
+                        None => {
+                            self.helper_ids.insert(id.to_string());
+                            self.helpers.push(Helper {
+                                id: id.to_string(),
+                                tool_use_id: String::new(),
+                                description: truncate(t["description"].as_str().unwrap_or_default(), 200),
+                                background: true,
+                            });
+                        }
+                    }
+                }
+                (ended, false)
+            }
+            _ => (false, false),
+        }
+    }
+
     fn ask_context(&mut self) {
         if self.context_asked.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
             self.context_stale = true;
@@ -883,6 +979,18 @@ impl Manager {
         Ok(())
     }
 
+    /// Stops one helper agent of a session. What else is running carries on.
+    pub fn stop_helper(&self, id: &str, helper: &str) -> Result<()> {
+        let inner = self.inner.locked();
+        let s = inner.sessions.get(id).context("no such session")?;
+        let run = s.run.as_ref().context("session is not running")?;
+        if !run.helpers.iter().any(|h| h.id == helper) {
+            bail!("that helper is not running");
+        }
+        run.driver.stop_task(helper);
+        Ok(())
+    }
+
     /// Stops the process and drops undelivered messages. The conversation can be resumed later.
     pub fn stop(self: &Arc<Self>, id: &str) -> Result<()> {
         let mut inner = self.inner.locked();
@@ -1109,6 +1217,10 @@ impl Manager {
                     resumed: resume.is_some(),
                     context_asked: None,
                     context_stale: false,
+                    helpers: Vec::new(),
+                    helper_ids: BTreeSet::new(),
+                    turn: false,
+                    settle: None,
                 });
                 s.stopping = None;
                 s.idle_since = None;
@@ -1176,10 +1288,28 @@ impl Manager {
                 if let Some(list) = msg["mcp_servers"].as_array() {
                     s.mcp = list.iter().map(|m| json!({"name": m["name"], "status": m["status"]})).collect();
                 }
-                if s.meta.status == Status::Starting {
+                // Every turn opens with `init`, also one Claude Code starts by
+                // itself when a helper has reported back.
+                run.turn = true;
+                run.settle = None;
+                if matches!(s.meta.status, Status::Starting | Status::Idle) {
                     status = Some(Status::Working);
                 }
                 run.ask_context();
+            }
+            ("system", "task_started" | "task_updated" | "task_notification" | "background_tasks_changed") => {
+                let (ended, stopped) = run.track(&subtype, &msg);
+                if ended && run.at_rest() {
+                    if stopped {
+                        // Nothing follows a helper the user stopped.
+                        if s.meta.status == Status::Working {
+                            s.idle_since = Some(Instant::now());
+                            status = Some(Status::Idle);
+                        }
+                    } else {
+                        run.settle = Some(Instant::now());
+                    }
+                }
             }
             // Claude Code says so when the mode changes inside it: a plan
             // was approved, or it left plan mode some other way.
@@ -1224,15 +1354,27 @@ impl Manager {
                     let stopped = msg["terminal_reason"].as_str().is_some_and(|r| r.starts_with("aborted"));
                     s.meta.preview = truncate(msg["result"].as_str().unwrap_or(if stopped { "Stopped" } else { "the turn failed" }), 160);
                 }
-                s.idle_since = Some(Instant::now());
-                status = Some(Status::Idle);
+                run.turn = false;
+                // A helper in the background works on after Claude's turn has
+                // ended: the session is not done, and must not be paused.
+                if run.helpers.is_empty() {
+                    s.idle_since = Some(Instant::now());
+                    status = Some(Status::Idle);
+                } else {
+                    status = Some(Status::Working);
+                }
                 run.ask_context();
             }
             _ => {}
         }
         let keep = match kind.as_str() {
             "stream_event" | "rate_limit_event" => false,
-            "system" => matches!(subtype.as_str(), "init" | "compact_boundary"),
+            "system" => match subtype.as_str() {
+                "init" | "compact_boundary" => true,
+                // Of the background tasks, only helper agents are drawn.
+                "task_started" | "task_progress" | "task_updated" | "task_notification" => msg["task_id"].as_str().is_some_and(|t| run.helper_ids.contains(t)),
+                _ => false,
+            },
             _ => true,
         };
         if keep {
@@ -1294,6 +1436,7 @@ impl Manager {
                 input: req.input.clone(),
                 suggestions: req.suggestions.clone(),
                 can_remember,
+                agent_id: req.agent_id.clone(),
             },
         );
         self.push_event(
@@ -1305,6 +1448,7 @@ impl Manager {
                 input: req.input,
                 suggestions: req.suggestions,
                 description: req.description,
+                agent_id: req.agent_id,
             },
         );
         set_status(&mut inner, id, Status::NeedsYou, None);
@@ -1320,9 +1464,14 @@ impl Manager {
         }
         let still_waiting = !s.pending.is_empty();
         let needs_you = s.meta.status == Status::NeedsYou;
+        // A stopped helper takes its request back with nothing left running.
+        let at_rest = s.run.as_ref().is_some_and(Run::at_rest);
+        if at_rest && !still_waiting && needs_you {
+            s.idle_since = Some(Instant::now());
+        }
         self.push_event(&mut inner, id, EventBody::Decision { request_id: request_id.into(), behavior: "cancelled".into(), detail: None });
         if !still_waiting && needs_you {
-            set_status(&mut inner, id, Status::Working, None);
+            set_status(&mut inner, id, if at_rest { Status::Idle } else { Status::Working }, None);
         }
         self.save(&inner, id);
         self.broadcast_session(&inner, id);
@@ -1410,6 +1559,20 @@ impl Manager {
                         self.hibernate(&mut inner, &id);
                         continue;
                     }
+                    // The last helper ended and Claude started no turn to read its report.
+                    let settled = s.run.as_ref().is_some_and(|r| r.at_rest() && r.settle.is_some_and(|t| t.elapsed() >= SETTLE));
+                    if settled {
+                        if let Some(run) = s.run.as_mut() {
+                            run.settle = None;
+                        }
+                        if s.meta.status == Status::Working {
+                            s.idle_since = Some(Instant::now());
+                            set_status(&mut inner, &id, Status::Idle, None);
+                            self.save(&inner, &id);
+                            self.broadcast_session(&inner, &id);
+                            continue;
+                        }
+                    }
                     if changed {
                         self.broadcast_session(&inner, &id);
                     }
@@ -1466,6 +1629,7 @@ fn view(s: &Session, queue: &[String]) -> SessionView {
         pending: s.pending.values().cloned().collect(),
         queue_position: queue.iter().position(|q| *q == s.meta.id).map(|p| p + 1),
         mcp: s.mcp.clone(),
+        agents: s.run.as_ref().map(|r| r.helpers.clone()).unwrap_or_default(),
     }
 }
 
@@ -1480,6 +1644,23 @@ fn truncate(s: &str, n: usize) -> String {
 
 /// Trims huge tool results so the event log stays small.
 fn slim(mut msg: Value) -> Value {
+    // Of a task message, only what a helper's row shows. The prompt is in the
+    // Agent call already, and the report arrives as the helper's own message.
+    if msg["type"] == "system" && msg["subtype"].as_str().is_some_and(|s| s.starts_with("task_")) {
+        let mut kept = json!({"type": "system", "subtype": msg["subtype"], "task_id": msg["task_id"]});
+        for key in ["tool_use_id", "description", "subagent_type", "is_backgrounded", "status", "usage", "last_tool_name"] {
+            if let Some(v) = msg.get(key).filter(|v| !v.is_null()) {
+                kept[key] = match v {
+                    Value::String(s) => json!(truncate(s, 200)),
+                    v => v.clone(),
+                };
+            }
+        }
+        if let Some(status) = msg["patch"]["status"].as_str() {
+            kept["status"] = json!(status);
+        }
+        return kept;
+    }
     fn cut(v: &mut Value) {
         match v {
             Value::String(s) if s.len() > MAX_BLOCK_TEXT => {
@@ -1501,12 +1682,25 @@ fn slim(mut msg: Value) -> Value {
         // Claude Code repeats each tool's output here in full (a whole file,
         // before and after). Only the line-by-line changes of an edit are kept.
         if let Some(o) = msg.as_object_mut()
-            && let Some(patch) = o.remove("tool_use_result").as_ref().and_then(patch_of)
+            && let Some(kept) = o.remove("tool_use_result").as_ref().and_then(|r| patch_of(r).or_else(|| helper_totals(r)))
         {
-            o.insert("tool_use_result".into(), patch);
+            o.insert("tool_use_result".into(), kept);
         }
     }
     msg
+}
+
+/// What the Agent tool reports about a helper: whether it went to the
+/// background, and for one that ran to its end, how much it did.
+fn helper_totals(result: &Value) -> Option<Value> {
+    let id = result["agentId"].as_str().filter(|a| a.len() <= 64)?;
+    let mut kept = json!({"agentId": id});
+    for key in ["status", "totalDurationMs", "totalTokens", "totalToolUseCount"] {
+        if let Some(v) = result.get(key).filter(|v| v.is_number() || v.as_str().is_some_and(|s| s.len() <= 32)) {
+            kept[key] = v.clone();
+        }
+    }
+    Some(kept)
 }
 
 /// The most lines of one edit's changes kept, and the longest line.
@@ -1628,7 +1822,7 @@ mod tests {
     fn pending(tool: &str, input: Value) -> PendingPermission {
         let suggestions =
             json!([{"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "ls"}], "behavior": "allow", "destination": "localSettings"}]);
-        PendingPermission { request_id: "r".into(), tool_name: tool.into(), input, suggestions: Some(suggestions), can_remember: true }
+        PendingPermission { request_id: "r".into(), tool_name: tool.into(), input, suggestions: Some(suggestions), can_remember: true, agent_id: None }
     }
 
     fn answers(pairs: &[(&str, &str)]) -> Option<BTreeMap<String, String>> {
