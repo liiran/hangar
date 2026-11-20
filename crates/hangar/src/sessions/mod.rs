@@ -528,9 +528,13 @@ struct Run {
     /// A turn of the conversation itself is running (from `init` to `result`).
     turn: bool,
     /// The last helper ended with no turn running. Claude Code then starts a
-    /// turn by itself to read the helper's report; if it has not by
-    /// `SETTLE`, the session counts as idle.
+    /// turn by itself, in which Claude reads the helper's report or hears
+    /// that it was stopped; if it has not by `SETTLE`, the session counts
+    /// as idle.
     settle: Option<Instant>,
+    /// When the user last stopped the session's turn. Helpers that end
+    /// because of that are not followed by a turn.
+    interrupted: Option<Instant>,
 }
 
 /// How long a session stays "working" after its last helper ended, waiting
@@ -545,6 +549,11 @@ impl Run {
     /// Nothing is running: no turn and no helper.
     fn at_rest(&self) -> bool {
         !self.turn && self.helpers.is_empty()
+    }
+
+    /// The user has just stopped everything: no turn is coming.
+    fn just_interrupted(&self) -> bool {
+        self.interrupted.is_some_and(|t| t.elapsed() < Duration::from_secs(10))
     }
 
     /// Notes what a task message says about a helper. Returns whether a
@@ -976,9 +985,11 @@ impl Manager {
     }
 
     pub fn interrupt(&self, id: &str) -> Result<()> {
-        let inner = self.inner.locked();
-        let s = inner.sessions.get(id).context("no such session")?;
-        s.run.as_ref().context("session is not running")?.driver.interrupt();
+        let mut inner = self.inner.locked();
+        let s = inner.sessions.get_mut(id).context("no such session")?;
+        let run = s.run.as_mut().context("session is not running")?;
+        run.interrupted = Some(Instant::now());
+        run.driver.interrupt();
         Ok(())
     }
 
@@ -1224,6 +1235,7 @@ impl Manager {
                     helper_ids: BTreeSet::new(),
                     turn: false,
                     settle: None,
+                    interrupted: None,
                 });
                 s.stopping = None;
                 s.idle_since = None;
@@ -1303,13 +1315,15 @@ impl Manager {
             ("system", "task_started" | "task_updated" | "task_notification" | "background_tasks_changed") => {
                 let (ended, stopped) = run.track(&subtype, &msg);
                 if ended && run.at_rest() {
-                    if stopped {
-                        // Nothing follows a helper the user stopped.
+                    if stopped && run.just_interrupted() {
+                        // Stop ended the helpers with everything else: nothing follows.
                         if s.meta.status == Status::Working {
                             s.idle_since = Some(Instant::now());
                             status = Some(Status::Idle);
                         }
                     } else {
+                        // Claude Code now starts a turn in which Claude reads the
+                        // report, or hears that the helper was stopped by itself.
                         run.settle = Some(Instant::now());
                     }
                 }
@@ -1467,14 +1481,16 @@ impl Manager {
         }
         let still_waiting = !s.pending.is_empty();
         let needs_you = s.meta.status == Status::NeedsYou;
-        // A stopped helper takes its request back with nothing left running.
-        let at_rest = s.run.as_ref().is_some_and(Run::at_rest);
-        if at_rest && !still_waiting && needs_you {
+        // Stop ends a helper that was asking with everything else: nothing is
+        // left running, and nothing follows. (A helper stopped by itself is
+        // followed by a turn; see `SETTLE`.)
+        let done = s.run.as_ref().is_some_and(|r| r.at_rest() && r.just_interrupted());
+        if done && !still_waiting && needs_you {
             s.idle_since = Some(Instant::now());
         }
         self.push_event(&mut inner, id, EventBody::Decision { request_id: request_id.into(), behavior: "cancelled".into(), detail: None });
         if !still_waiting && needs_you {
-            set_status(&mut inner, id, if at_rest { Status::Idle } else { Status::Working }, None);
+            set_status(&mut inner, id, if done { Status::Idle } else { Status::Working }, None);
         }
         self.save(&inner, id);
         self.broadcast_session(&inner, id);

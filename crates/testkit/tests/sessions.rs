@@ -1074,21 +1074,24 @@ async fn a_helper_that_is_stopped_or_ends_without_a_report_leaves_the_session_id
     }
     let s = get(&m, &a);
     assert_eq!((s.agents.len(), s.agents[0].id.as_str(), s.meta.status), (1, "agent3", Status::Working), "the other helper works on");
+    // The last one stopped: Claude Code starts a turn in which Claude hears of it. The session
+    // is idle after that turn, not before it.
     m.stop_helper(&a, "agent3").unwrap();
     wait_status(&m, &a, Status::Idle).await;
+    assert_eq!(texts(&m, &a).iter().filter(|t| *t == "The agent was stopped before it reported.").count(), 2, "a turn followed each stop");
 
     // A helper that ends with no turn after it: the session is idle a few seconds later, not working forever.
     m.send(&a, "helper start").unwrap();
-    wait_turns(&m, &a, 3).await;
+    wait_turns(&m, &a, 5).await;
     m.send(&a, "helper vanish").unwrap();
-    let s = wait_turns(&m, &a, 4).await;
+    let s = wait_turns(&m, &a, 6).await;
     assert_ne!(s.meta.status, Status::Idle, "the turn Claude starts to read the report is waited for");
     let s = wait_status(&m, &a, Status::Idle).await;
     assert!(s.agents.is_empty());
 
     // The process ends with a helper running: no helper is listed as running.
     m.send(&a, "helper start").unwrap();
-    let s = wait_turns(&m, &a, 5).await;
+    let s = wait_turns(&m, &a, 7).await;
     assert_eq!(s.agents.len(), 1);
     m.stop(&a).unwrap();
     let s = wait_status(&m, &a, Status::Stopped).await;
@@ -1147,11 +1150,12 @@ async fn a_helpers_request_says_which_helper_asks_and_a_background_command_is_no
     m.stop_helper(&a, "agent3").unwrap();
     let s = wait_status(&m, &a, Status::Idle).await;
     assert!(s.agents.is_empty() && s.pending.is_empty());
+    assert!(texts(&m, &a).contains(&"The agent was stopped before it reported.".to_string()), "idle only after the turn that follows the stop");
 
     // A shell command left running in the background is listed by Claude Code like a helper.
     // It is not one: the session is idle, and nothing about it is kept.
     m.send(&a, "background command").unwrap();
-    let s = wait_turns(&m, &a, 5).await;
+    let s = wait_turns(&m, &a, 6).await;
     assert_eq!(s.meta.status, Status::Idle);
     assert!(s.agents.is_empty());
     assert!(task_events(&m, &a, "task_started").iter().all(|t| t["task_id"] != "shell1"));

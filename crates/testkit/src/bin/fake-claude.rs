@@ -14,7 +14,9 @@
 //!   `task_notification`; its own messages carry `parent_tool_use_id` and
 //!   `agent_id`, and so does a request it makes. One in the background is also
 //!   listed in `background_tasks_changed`, works on after the turn's `result`,
-//!   and is stopped by an interrupt (recorded from 2.1.329).
+//!   and is stopped by an interrupt. One stopped by itself (`stop_task`) with
+//!   no turn running is followed by a turn in which Claude says so; a stop by
+//!   interrupt is followed by nothing (recorded from 2.1.329).
 //!
 //! Message text controls behavior:
 //! * `use tool`: asks permission for `Bash {command: "ls"}` first; an
@@ -117,6 +119,8 @@ struct Fake {
     shells: Vec<String>,
     /// The helper whose request is waiting.
     asking: Option<String>,
+    /// A helper was stopped by itself (`stop_task`) while it asked.
+    stopped_alone: bool,
 }
 
 fn path(name: &str) -> String {
@@ -380,6 +384,7 @@ impl Fake {
             let Ok(v) = serde_json::from_str::<Value>(&l) else { continue };
             if v["type"] == "control_request" {
                 let stops_asker = v["request"]["subtype"] == "stop_task" && self.asking.as_deref() == v["request"]["task_id"].as_str();
+                self.stopped_alone = stops_asker;
                 if stops_asker || !self.control(&v) {
                     out(json!({"type": "control_response", "response": {"subtype": "success", "request_id": v["request_id"], "response": {}}}));
                     out(json!({"type": "control_cancel_request", "request_id": request_id}));
@@ -452,6 +457,7 @@ fn main() {
         started: 0,
         shells: Vec::new(),
         asking: None,
+        stopped_alone: false,
     };
     let file = path;
 
@@ -464,11 +470,18 @@ fn main() {
                 let request = &msg["request"];
                 if request["subtype"] == "interrupt" {
                     fake.helpers_stop(None);
-                } else if request["subtype"] == "stop_task" {
+                }
+                let before = fake.helpers.len();
+                if request["subtype"] == "stop_task" {
                     fake.helpers_stop(Some(request["task_id"].as_str().unwrap_or_default()));
                 }
                 if !fake.control(&msg) {
                     out(json!({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {}}}));
+                }
+                // A helper stopped by itself: Claude Code starts a turn in which Claude hears of it.
+                if fake.helpers.len() < before {
+                    fake.init();
+                    fake.done("The agent was stopped before it reported.");
                 }
             }
             "user" => {
@@ -537,7 +550,12 @@ fn main() {
                         }
                         Went::Stopped => {
                             fake.tool_result(&call, "The user doesn't want to proceed with this tool use.", true, json!("Error: stopped"));
-                            fake.stopped();
+                            // Stopped by itself, the helper is gone and Claude's turn goes on; an interrupt ends the turn too.
+                            if std::mem::take(&mut fake.stopped_alone) {
+                                fake.done("The agent was stopped before it finished.");
+                            } else {
+                                fake.stopped();
+                            }
                         }
                         Went::Gone => return,
                     }
@@ -566,6 +584,10 @@ fn main() {
                                 Went::Gone => return,
                             }
                         }
+                    }
+                    if std::mem::take(&mut fake.stopped_alone) {
+                        fake.init();
+                        fake.done("The agent was stopped before it reported.");
                     }
                     continue;
                 }
