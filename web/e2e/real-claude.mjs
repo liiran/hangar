@@ -2,8 +2,9 @@
 // permission prompt, approval, per-turn cost, stop, resume with the
 // conversation intact; then a question answered, a plan sent back and
 // approved with a note, Claude entering plan mode by itself, an edit's
-// changed lines, and the context and limit figures checked against
-// Claude's own. Costs a few cents.
+// changed lines, the context and limit figures checked against Claude's
+// own, and a helper agent in the background and in the foreground. Costs a
+// few cents.
 //
 //   cargo build --release && cd web && npm run e2e:claude
 import { execFileSync } from "node:child_process";
@@ -207,6 +208,101 @@ await decide(entering.id, enteredPlan.pending[0].request_id, { behavior: "deny",
 const afterStop = await waitFor(entering.id, (s) => s.status === "idle", "the turn to stop", 60000);
 check("stopping while a plan waits ends the turn, still in plan mode, with nothing written", afterStop.permission_mode === "plan" && afterStop.preview === "Stopped" && !fs.existsSync(path.join(work, "later.txt")), `${afterStop.permission_mode}; ${afterStop.preview}`);
 await api("DELETE", `/sessions/${entering.id}`);
+
+// ---------------------------------------------------------------- helper agents
+// Claude hands work to a helper agent (its Agent tool) in the background. Its own turn ends
+// while the agent works on: the session must stay "working", say which agent runs, name the
+// agent on the request it makes, answer a message meanwhile, and let the agent be stopped.
+const agentsDir = path.join(proj, "agents");
+fs.mkdirSync(agentsDir);
+const helped = await api("POST", "/sessions", {
+  cwd: agentsDir,
+  prompt:
+    "Use the Agent tool once (general-purpose subagent, run_in_background: true). Tell the subagent to do exactly two steps in the current folder: " +
+    "first create a file named made.txt containing the word hi with the Write tool, then run this one Bash command, which takes 40 seconds: node -e \"setTimeout(() => console.log('slept'), 40000)\" . " +
+    "Do not do the work yourself. As soon as the agent is started, reply with one short sentence.",
+  model: "haiku",
+  permission_mode: "default",
+  trust: true,
+});
+const agentAsks = await waitFor(helped.id, (s) => s.status === "needs_you" && s.pending.some((p) => p.agent_id), "the agent's request");
+const agentRequest = agentAsks.pending.find((p) => p.agent_id);
+const running = agentAsks.agents[0];
+check("the agent Claude started is listed as running, in the background", agentAsks.agents.length === 1 && running?.background === true, JSON.stringify(agentAsks.agents));
+check("a request made by the agent names the agent", agentRequest.tool_name === "Write" && agentRequest.agent_id === running?.id, `${agentRequest.tool_name} by ${agentRequest.agent_id}`);
+await decide(helped.id, agentRequest.request_id, { behavior: "allow" });
+// The second step may ask too (a command). Allow whatever the agent asks until it is asleep in it.
+const turnsOf = (events) => events.filter((e) => e.kind === "claude" && e.msg.type === "result").length;
+let atWork;
+for (const end = Date.now() + 120000; Date.now() < end; await sleep(500)) {
+  const s = await session(helped.id);
+  for (const p of s.pending) await decide(helped.id, p.request_id, { behavior: "allow" });
+  const steps = (await eventsOf(helped.id)).filter((e) => e.kind === "claude" && e.msg.type === "system" && e.msg.subtype === "task_progress");
+  if (s.pending.length === 0 && !s.in_turn && s.agents.length === 1 && steps.some((e) => e.msg.last_tool_name === "Bash")) {
+    atWork = s;
+    break;
+  }
+}
+const midEvents = await eventsOf(helped.id);
+check("with Claude's turn over and the agent still at work, the session is working, not idle", atWork?.status === "working" && turnsOf(midEvents) >= 1, `${atWork?.status}, ${turnsOf(midEvents)} turn(s) ended`);
+for (let i = 0; i < 20 && !fs.existsSync(path.join(agentsDir, "made.txt")); i++) await sleep(250);
+check("the agent really did its first step", fs.existsSync(path.join(agentsDir, "made.txt")));
+const insideAgent = midEvents.filter((e) => e.kind === "claude" && e.msg.parent_tool_use_id === running.tool_use_id);
+const agentTools = insideAgent.flatMap((e) => (e.msg.type === "assistant" ? e.msg.message.content.filter((b) => b.type === "tool_use").map((b) => b.name) : []));
+check("the agent's own steps are kept with the call that started it", agentTools.includes("Write") && agentTools.includes("Bash"), agentTools.join(", "));
+const started = midEvents.find((e) => e.kind === "claude" && e.msg.subtype === "task_started")?.msg;
+const progress = midEvents.filter((e) => e.kind === "claude" && e.msg.subtype === "task_progress").at(-1)?.msg;
+check("Claude Code's account of the agent is kept, without the prompt", started?.task_id === running.id && started.tool_use_id === running.tool_use_id && !("prompt" in started), JSON.stringify(started));
+check("…with its own count of tool uses and tokens", progress?.usage?.tool_uses >= 2 && progress.usage.total_tokens > 0 && typeof progress.description === "string", JSON.stringify(progress?.usage));
+const launch = midEvents.find((e) => e.kind === "claude" && e.msg.type === "user" && e.msg.tool_use_result?.agentId)?.msg.tool_use_result;
+check("of the Agent tool's result, only the launch facts are kept", launch?.agentId === running.id && launch.status === "async_launched" && Object.keys(launch).every((k) => ["agentId", "status"].includes(k)), JSON.stringify(launch));
+
+// A message while only the agent works: Claude answers at once, and the agent works on.
+const before = turnsOf(midEvents);
+await api("POST", `/sessions/${helped.id}/messages`, { text: "Reply with exactly these two words and nothing else: still here" });
+let answered;
+for (const end = Date.now() + 60000; Date.now() < end; await sleep(400)) {
+  const events = await eventsOf(helped.id);
+  if (turnsOf(events) > before) {
+    answered = { events, s: await session(helped.id) };
+    break;
+  }
+}
+check("a message sent while only the agent works is answered at once", /still here/i.test(lastResult(answered?.events ?? [])?.result ?? ""), (lastResult(answered?.events ?? [])?.result ?? "").slice(0, 60));
+check("…and the agent works on behind it: the session is still working", answered?.s.status === "working" && answered.s.agents.length === 1, `${answered?.s.status}, ${answered?.s.agents.length} agent(s)`);
+
+// The agent is stopped by itself.
+const stopAt = Date.now();
+await api("POST", `/sessions/${helped.id}/agents/${encodeURIComponent(running.id)}/stop`);
+// Claude Code then starts a turn by itself, in which Claude hears that the agent was stopped.
+// The session is idle after that turn, and not for a moment before it.
+const stoppedAgent = await waitFor(helped.id, (s) => s.agents.length === 0 && s.status === "idle", "the agent to stop", 60000);
+const stopTook = Date.now() - stopAt;
+const endEvents = await eventsOf(helped.id);
+check("the session is idle only after the turn in which Claude hears of the stop", turnsOf(endEvents) === turnsOf(answered?.events ?? []) + 1, `${turnsOf(endEvents)} turns ended when it went idle`);
+await sleep(3000);
+const settled = await session(helped.id);
+const ends = endEvents.filter((e) => e.kind === "claude" && (e.msg.subtype === "task_updated" || e.msg.subtype === "task_notification")).map((e) => `${e.msg.subtype}:${e.msg.status}`);
+check("one agent can be stopped by itself; Claude Code reports it killed", stoppedAgent.agents.length === 0 && ends.includes("task_updated:killed"), `${ends.join(", ")} after ${stopTook} ms`);
+check("…and the session is idle with nothing listed as running", settled.status === "idle" && settled.agents.length === 0 && !settled.in_turn, `${turnsOf(endEvents)} turns in all`);
+
+// An agent in the foreground runs inside Claude's turn and reports its totals.
+await api("POST", `/sessions/${helped.id}/messages`, {
+  text: "Use the Agent tool once (general-purpose subagent, run_in_background: false) to read made.txt in the current folder and report its content. Do not read it yourself. Then tell me the content in one short sentence.",
+});
+await waitFor(helped.id, (s) => s.agents.length === 1, "the foreground agent to start", 60000).catch(() => null);
+const fgDone = await waitFor(helped.id, (s) => s.status === "idle" && s.agents.length === 0, "the foreground agent's turn", 120000);
+const fgEvents = await eventsOf(helped.id);
+const totals = fgEvents.filter((e) => e.kind === "claude" && e.msg.type === "user" && e.msg.tool_use_result?.status === "completed" && e.msg.tool_use_result.agentId).at(-1)?.msg.tool_use_result;
+const fgStart = fgEvents.filter((e) => e.kind === "claude" && e.msg.subtype === "task_started").at(-1)?.msg;
+check("an agent in the foreground is announced as such", fgStart?.is_backgrounded === false, JSON.stringify(fgStart));
+check(
+  "when it has reported, Claude Code's totals for it are kept",
+  totals?.totalToolUseCount >= 1 && totals.totalTokens > 0 && totals.totalDurationMs > 0 && Object.keys(totals).every((k) => ["agentId", "status", "totalDurationMs", "totalTokens", "totalToolUseCount"].includes(k)),
+  JSON.stringify(totals),
+);
+check("…and Claude goes on with the agent's report", /hi/i.test(lastResult(fgEvents)?.result ?? "") && fgDone.status === "idle", (lastResult(fgEvents)?.result ?? "").slice(0, 80));
+await api("DELETE", `/sessions/${helped.id}`);
 
 await api("DELETE", `/sessions/${id}`);
 check("deleted", !(await session(id)));
