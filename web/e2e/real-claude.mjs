@@ -521,35 +521,49 @@ check(
 await api("DELETE", `/sessions/${summed.id}`);
 
 // 2. An agent started by an agent. Claude Code announces the inner one (started, doing, ended)
-// without sending its steps.
+// without sending its steps. Whether the outer agent really starts one is Claude's choice (it
+// sometimes just does the work itself), so this is tried up to three times.
 const nestDir = newFolder("nested", "alpha\n");
-const nested = await api("POST", "/sessions", {
-  cwd: nestDir,
-  prompt:
-    "Use the Agent tool once (general-purpose, run_in_background: false). Tell that agent exactly this: 'Use the Agent tool yourself (general-purpose, run_in_background: false) " +
-    "to read the file a.txt in the current folder and report its content. If you have no Agent tool, say exactly NO AGENT TOOL. Report what happened.' " +
-    "Do not do any of it yourself. Then tell me in one short sentence what the agent reported.",
-  model: "haiku",
-  permission_mode: "bypassPermissions",
-  trust: true,
-});
-let most = 0;
-for (const end = Date.now() + 240000; Date.now() < end; await sleep(120)) {
-  const s = await session(nested.id);
-  most = Math.max(most, s.agents.length);
-  if (s.status === "idle" && resultsOf(await eventsOf(nested.id)) >= 1) break;
+let nest = null;
+for (let attempt = 1; attempt <= 3 && !nest; attempt++) {
+  const nested = await api("POST", "/sessions", {
+    cwd: nestDir,
+    prompt:
+      "Use the Agent tool once (general-purpose, run_in_background: false). Tell that agent exactly this: 'You MUST delegate: call the Agent tool yourself (general-purpose, run_in_background: false) " +
+      "and have that agent read the file a.txt in the current folder and report its content. Do not read the file yourself. If you have no Agent tool, say exactly NO AGENT TOOL. Report what happened.' " +
+      "Do not do any of it yourself. Then tell me in one short sentence what the agent reported.",
+    model: "haiku",
+    permission_mode: "bypassPermissions",
+    trust: true,
+  });
+  let most = 0;
+  for (const end = Date.now() + 240000; Date.now() < end; await sleep(120)) {
+    const s = await session(nested.id);
+    most = Math.max(most, s.agents.length);
+    if (s.status === "idle" && resultsOf(await eventsOf(nested.id)) >= 1) break;
+  }
+  const events = await eventsOf(nested.id);
+  const innerCalls = events
+    .filter((e) => e.kind === "claude" && e.msg.type === "assistant" && e.msg.parent_tool_use_id)
+    .flatMap((e) => e.msg.message.content.filter((b) => b.type === "tool_use" && b.name === "Agent").map((b) => b.id));
+  const innerStart = events.find((e) => e.kind === "claude" && e.msg.subtype === "task_started" && innerCalls.includes(e.msg.tool_use_id))?.msg;
+  const left = await session(nested.id);
+  // Whatever Claude chose, nothing may be left running and the session must be idle.
+  check(`try ${attempt}: when the agents are done, none is left listed and the session is idle`, left.agents.length === 0 && left.status === "idle", `${left.status}, ${left.agents.length} agent(s)`);
+  if (innerStart) {
+    nest = {
+      attempt,
+      most,
+      innerStart,
+      innerEnd: events.find((e) => e.kind === "claude" && e.msg.subtype === "task_notification" && e.msg.task_id === innerStart.task_id)?.msg,
+      innerSteps: events.filter((e) => e.kind === "claude" && innerCalls.includes(e.msg.parent_tool_use_id)).length,
+    };
+  } else console.log(`      (try ${attempt}: Claude's agent did the work itself: ${(lastResult(events)?.result ?? "").slice(0, 120)})`);
+  await api("DELETE", `/sessions/${nested.id}`);
 }
-const nestEvents = await eventsOf(nested.id);
-const innerCalls = nestEvents
-  .filter((e) => e.kind === "claude" && e.msg.type === "assistant" && e.msg.parent_tool_use_id)
-  .flatMap((e) => e.msg.message.content.filter((b) => b.type === "tool_use" && b.name === "Agent").map((b) => b.id));
-const innerStart = nestEvents.find((e) => e.kind === "claude" && e.msg.subtype === "task_started" && innerCalls.includes(e.msg.tool_use_id))?.msg;
-const innerEnd = nestEvents.find((e) => e.kind === "claude" && e.msg.subtype === "task_notification" && e.msg.task_id === innerStart?.task_id)?.msg;
-const innerSteps = nestEvents.filter((e) => e.kind === "claude" && innerCalls.includes(e.msg.parent_tool_use_id)).length;
-check("an agent started by an agent is announced by Claude Code, with the call it belongs to", !!innerStart && innerEnd?.status === "completed", JSON.stringify(innerStart ?? lastResult(nestEvents)?.result).slice(0, 200));
-check("…Claude Code sends none of its steps, only its account of it", !!innerStart && innerSteps === 0, `${innerSteps} messages from inside it`);
-check("both agents were listed while they ran, and none is left when they are done", most === 2 && (await session(nested.id)).agents.length === 0 && (await session(nested.id)).status === "idle", `most at once: ${most}`);
-await api("DELETE", `/sessions/${nested.id}`);
+check("an agent started by an agent is announced by Claude Code, with the call it belongs to", !!nest && nest.innerEnd?.status === "completed", nest ? `on try ${nest.attempt}: ${JSON.stringify(nest.innerStart).slice(0, 180)}` : "Claude's agent never started one of its own in three tries");
+check("…Claude Code sends none of its steps, only its account of it", !!nest && nest.innerSteps === 0, `${nest?.innerSteps} messages from inside it`);
+check("…and both agents were listed while they ran", nest?.most === 2, `most at once: ${nest?.most}`);
 
 // 3. "Restore code" while an agent is still at work on the same file. Claude Code does not stop
 // agents for it, and neither does hangar: the restore goes through, the agent goes on, and what
