@@ -898,6 +898,36 @@ try {
   const bothStopped = await session(bothId);
   check("…and that is what happens: the turn and the agent are both stopped", bothStopped.agents.length === 0 && bothStopped.status === "idle" && bothStopped.pending.length === 0, `${bothStopped.status}, ${bothStopped.agents.length} agent(s)`);
 
+  // The list's highlight belongs to a message, not to a place in the list. A message that arrives
+  // while the list is open (sent from another window: here, straight to the daemon) must not move it.
+  await composer.focus();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor();
+  const before = await points.count();
+  await page.keyboard.press("ArrowUp"); // onto the newest message…
+  const newest = await flat(dialog.locator('[data-rewind-point][aria-selected="true"]'));
+  await page.keyboard.press("ArrowDown"); // …and back down to "(current)"
+  await api("POST", `/sessions/${bothId}/messages`, { text: "hello from another window" });
+  await points.nth(before).waitFor();
+  check(
+    "a message arriving while the list is open leaves the highlight on (current), not on the new row",
+    (await dialog.locator("[data-rewind-current]").getAttribute("aria-selected")) === "true" && (await dialog.locator('[data-rewind-point][aria-selected="true"]').count()) === 0,
+    `${before} -> ${await points.count()} rows`,
+  );
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await api("POST", `/sessions/${bothId}/messages`, { text: "and one more" });
+  await points.nth(before + 1).waitFor();
+  check(
+    "…and a highlighted message stays highlighted when another arrives",
+    (await flat(dialog.locator('[data-rewind-point][aria-selected="true"]'))) === newest && (await dialog.locator('[data-rewind-point][aria-selected="true"]').count()) === 1,
+    `${newest} / ${await flat(dialog.locator('[data-rewind-point][aria-selected="true"]'))}`,
+  );
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  await idle(bothId);
+
   // ================================================================ stopping hangar
   const other = await ctx.newPage(); // a second window on the same daemon
   watch(other);
@@ -929,8 +959,12 @@ try {
   await page.waitForSelector("[data-stopped]");
   check("the window says hangar is stopped, and how to start it again", (await page.locator("[data-stopped]").innerText()).includes("hangar is stopped") && (await page.locator("[data-stopped]").innerText()).includes("hangar up"));
   await shot(page, "stopped");
-  await other.waitForSelector("[data-stopped]", { timeout: 8000 });
-  check("every other open window is told too, instead of “lost the daemon”", (await other.locator("text=Lost the daemon").count()) === 0);
+  // (A failure here names what the window showed instead, so that it can be told apart from a slow page.)
+  const otherTold = await other.waitForSelector("[data-stopped]", { timeout: 8000 }).then(
+    () => true,
+    () => false,
+  );
+  check("every other open window is told too, instead of “lost the daemon”", otherTold && (await other.locator("text=Lost the daemon").count()) === 0, otherTold ? "" : (await other.locator("body").innerText()).replace(/\s+/g, " ").slice(-160));
   for (let i = 0; i < 50 && fs.existsSync(path.join(home, "daemon.json")); i++) await sleep(100);
   check("the daemon really stopped", !fs.existsSync(path.join(home, "daemon.json")));
 

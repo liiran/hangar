@@ -53,6 +53,13 @@ function section(t) {
   console.log(`\n== ${t}`);
 }
 
+// A HANGAR_UI_PORT that is no port is refused: hangar must not start on the usual port instead.
+// (Tried before this test's own hangar is up, in the same home: nothing may be left running there.)
+const badPorts = ["abc", "70000", "-1"].map((value) => {
+  const r = spawnSync(hangar, ["up", "--no-open"], { env: { ...env, HANGAR_UI_PORT: value }, encoding: "utf8" });
+  const status = spawnSync(hangar, ["status"], { env, encoding: "utf8" });
+  return { value, code: r.status, said: (r.stderr + r.stdout).trim().split(/\r?\n/).pop(), running: !/not running/.test(status.stdout + status.stderr) };
+});
 const pairUrl = execFileSync(hangar, ["up", "--no-open"], { env, encoding: "utf8" }).trim().split(/\r?\n/).pop();
 const info = JSON.parse(fs.readFileSync(path.join(home, "daemon.json"), "utf8"));
 const port = Number(new URL(pairUrl).port);
@@ -60,6 +67,11 @@ const HOST = `127.0.0.1:${port}`;
 const ORIGIN = `http://${HOST}`;
 const code = pairUrl.split("#pair=")[1];
 console.log("daemon.json keys:", Object.keys(info).join(", "), "| app port", port);
+check(
+  "HANGAR_UI_PORT with a value that is no port is refused, and no hangar is started on the usual port instead",
+  badPorts.every((b) => b.code !== 0 && /HANGAR_UI_PORT must be a port number/.test(b.said) && !b.running) && port !== 7317,
+  JSON.stringify(badPorts),
+);
 
 /** One HTTP request with full control of the headers (Host included). */
 function req(method, p, { headers = {}, body, token, host = HOST, timeout = 8000 } = {}) {
