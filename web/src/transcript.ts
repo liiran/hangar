@@ -16,6 +16,8 @@ export type Row =
       canRewind: boolean;
       /** Sent while a turn ran: Claude Code kept no file checkpoint for it. */
       midTurn?: boolean;
+      /** Claude has summarized the conversation since: it cannot be gone back to. */
+      summarized?: boolean;
     }
   /** The user went back to before a message: what was restored, and the message's text. */
   | { kind: "rewind"; key: string; text: string; code?: RewindRestored; conversation: boolean }
@@ -57,6 +59,8 @@ export interface AgentRun {
   durationMs?: number;
   /** How it ended, once Claude Code has said so. */
   ended?: "completed" | "failed" | "stopped";
+  /** What Claude Code last said it is doing ("Reading notes.txt"). */
+  doing?: string;
   /** Goes up with every change to the agent or to one of its steps. */
   rev: number;
 }
@@ -101,6 +105,9 @@ export function rowState(r: Row): string {
     return r.agent ? `${own} agent ${r.agent.rev}` : own;
   }
   if (r.kind === "permission") return `${r.decision} ${r.superseded === true} ${r.detail != null}`;
+  // Whether a message of the user's can still be gone back to: it loses that when Claude
+  // summarizes the conversation, or when it turns out never to have reached Claude.
+  if (r.kind === "user") return `${r.canRewind} ${r.summarized === true}`;
   return "";
 }
 
@@ -275,11 +282,18 @@ export function toRows(events: SessionEvent[]): Row[] {
               }
             }
           }
+        } else if (m.type === "system" && m.subtype === "compact_boundary") {
+          // Claude summarized the conversation. What came before cannot be gone back to, except
+          // what Claude Code says it kept word for word.
+          const keptWhole: unknown[] = Array.isArray(m.compact_metadata?.preserved_messages?.all_uuids) ? m.compact_metadata.preserved_messages.all_uuids : [];
+          for (const [uuid, row] of byUuid) if (!keptWhole.includes(uuid)) row.summarized = true;
+          for (const r of rows) if (r.kind === "user" && !r.canRewind) r.summarized = true;
         } else if (m.type === "system" && typeof m.subtype === "string" && m.subtype.startsWith("task_")) {
           // Claude Code's own account of a helper agent: started, what it has used, ended.
           const row = (typeof m.tool_use_id === "string" ? tools.get(m.tool_use_id) : undefined) ?? byTask.get(String(m.task_id));
           if (!row) break;
           const agent = agentOf(row);
+          if (m.subtype === "task_progress" && typeof m.description === "string") agent.doing = m.description;
           if (m.subtype === "task_started") {
             agent.id = String(m.task_id);
             agent.background = m.is_backgrounded === true;

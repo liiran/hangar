@@ -621,6 +621,20 @@ impl Run {
     /// while it is unanswered, a change is only noted, and asked about when
     /// the answer comes (see `on_context`). An answer that never comes
     /// stops counting after 10 s.
+    /// Drops helpers that cannot be running: one that runs inside another
+    /// (in its foreground) needs a helper one level up to run in. Claude
+    /// Code announces their ends too; this is for an end that never comes.
+    fn prune(&mut self) {
+        loop {
+            let levels: Vec<u64> = self.helpers.iter().map(|h| h.depth).collect();
+            let before = self.helpers.len();
+            self.helpers.retain(|h| h.background || h.depth <= 1 || levels.contains(&(h.depth - 1)));
+            if self.helpers.len() == before {
+                break;
+            }
+        }
+    }
+
     /// Nothing is running: no turn and no helper.
     fn at_rest(&self) -> bool {
         !self.turn && self.helpers.is_empty()
@@ -1149,8 +1163,15 @@ impl Manager {
         // The user's messages that Claude still has, oldest first: (seq, id, a message of the feed, its mode).
         let mut kept: Vec<(u64, Option<String>, bool, Option<String>)> = Vec::new();
         let mut text = String::new();
+        // The newest point at which Claude summarized the conversation, and
+        // the messages Claude Code said it kept word for word across it.
+        let mut summarized: Option<(u64, Vec<String>)> = None;
         for e in self.events(id, 0)? {
             match e.body {
+                EventBody::Claude { msg } if msg["type"] == "system" && msg["subtype"] == "compact_boundary" => {
+                    let kept_whole = msg["compact_metadata"]["preserved_messages"]["all_uuids"].as_array();
+                    summarized = Some((e.seq, kept_whole.map(|a| a.iter().filter_map(|u| u.as_str().map(String::from)).collect()).unwrap_or_default()));
+                }
                 EventBody::User { uuid, mode, text: said, .. } => {
                     if e.seq == seq {
                         text = said;
@@ -1171,6 +1192,18 @@ impl Manager {
             bail!("that message is not in the conversation any more");
         };
         let uuid = uuid.context("this message was sent before hangar could rewind; only later ones can be gone back to")?;
+        // Past a summary Claude Code goes back only while the process that
+        // made the summary still runs; after a restart it has neither the
+        // message nor its file checkpoint (seen on 2.1.330). Its terminal
+        // does not list such messages at all. hangar restarts processes as
+        // it sees fit, so it offers none of them either, except those Claude
+        // Code said it kept word for word.
+        if let Some((at, kept_whole)) = &summarized
+            && seq < *at
+            && !kept_whole.contains(&uuid)
+        {
+            bail!("that message is from before Claude summarized the conversation; only later ones can be gone back to");
+        }
         Ok(RewindTarget { newest: newest.filter(|n| *n != uuid), uuid, mode, text })
     }
 
@@ -1695,7 +1728,9 @@ impl Manager {
             }
             ("system", "task_started" | "task_updated" | "task_notification" | "background_tasks_changed") => {
                 let alone = msg["task_id"].as_str().is_some_and(|t| run.stopped_alone.remove(t));
-                if let Some(ended) = run.track(&subtype, &msg) {
+                let ended = run.track(&subtype, &msg);
+                run.prune();
+                if let Some(ended) = ended {
                     // Stop ended this helper with everything else: nothing follows.
                     let with_the_rest = ended.stopped && !alone && run.just_interrupted();
                     if run.at_rest() {
@@ -1767,6 +1802,7 @@ impl Manager {
                 // A helper in the foreground runs inside the turn: it cannot
                 // have outlived it, whatever was or was not said about its end.
                 run.helpers.retain(|h| h.background || h.depth > 1);
+                run.prune();
                 if !run.helpers.is_empty() {
                     // A helper in the background works on after Claude's turn has
                     // ended: the session is not done, and must not be paused.

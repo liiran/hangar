@@ -343,7 +343,7 @@ const DrawnRow = memo(
 function RowView({ row, session }: { row: Row; session: Session }) {
   switch (row.kind) {
     case "user":
-      return <UserMessage text={row.text} ts={row.ts} seq={row.seq} canRewind={row.canRewind} />;
+      return <UserMessage text={row.text} ts={row.ts} seq={row.seq} canRewind={row.canRewind && !row.summarized} />;
     case "rewind": {
       const what = row.code && row.conversation ? "Code and conversation restored" : row.code ? "Code restored" : "Conversation restored";
       const files = row.code?.files ?? [];
@@ -662,7 +662,8 @@ function AgentRow({ row, session }: { row: ToolRowData; session: Session }) {
         {!open && active && (
           <div data-agent-live className="mt-1 space-y-0.5 border-l border-line-strong pl-3 text-[12px] text-muted">
             {lines.length === 0 ? (
-              <p className="text-faint">Initializing…</p>
+              // An agent started by an agent: Claude Code sends what it is doing, not its steps.
+              <p className="text-faint">{agent?.doing ? visible(agent.doing).slice(0, 200) : "Initializing…"}</p>
             ) : (
               <>
                 {lines.map((l) =>
@@ -706,7 +707,7 @@ function AgentRow({ row, session }: { row: ToolRowData; session: Session }) {
                 <pre className="mt-1 max-h-60 overflow-auto rounded-md bg-code p-2.5 font-sans text-[12px] whitespace-pre-wrap text-muted ring-1 ring-inset ring-line">{visible(prompt)}</pre>
               </div>
             )}
-            {steps.length === 0 && active && <p className="text-[12px] text-faint">Initializing…</p>}
+            {steps.length === 0 && active && <p className="text-[12px] text-faint">{agent?.doing ? visible(agent.doing).slice(0, 200) : "Initializing…"}</p>}
             {steps.map((s) =>
               s === answer ? null : s.kind === "tool" ? (
                 AGENT_TOOLS.has(s.name) ? (

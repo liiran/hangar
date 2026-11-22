@@ -3,8 +3,10 @@
 // conversation intact; then a question answered, a plan sent back and
 // approved with a note, Claude entering plan mode by itself, an edit's
 // changed lines, the context and limit figures checked against Claude's
-// own, a helper agent in the background and in the foreground, and Claude
-// Code's rewind (preview, code, conversation, both). Costs a few cents.
+// own, a helper agent in the background and in the foreground, Claude
+// Code's rewind (preview, code, conversation, both), and three harder
+// cases: after a summary, an agent inside an agent, and a restore while an
+// agent edits. Costs a few cents.
 //
 //   cargo build --release && cd web && npm run e2e:claude
 import { execFileSync } from "node:child_process";
@@ -182,10 +184,21 @@ check(
   `${built.status}; asked about: ${askedWhileBuilding.join(", ") || "nothing"}; hello-b.txt=${wrote("hello-b.txt")}; bye.txt=${wrote("bye.txt")}`,
 );
 const approvedAt = builtEvents.find((e) => e.kind === "decision" && e.behavior === "allow")?.seq ?? Infinity;
-const oldName = builtEvents
+// What Claude did with the old name after the approval. Writing or creating hello.txt would mean
+// the note was read too late. A command that only looks (a listing that names it) is not that.
+const afterApproval = builtEvents
   .filter((e) => e.seq > approvedAt && e.kind === "claude" && e.msg.type === "assistant")
-  .flatMap((e) => (e.msg.message?.content ?? []).filter((b) => b.type === "tool_use" && JSON.stringify(b.input).includes("hello.txt")).map((b) => b.name));
-check("a note typed with the approval is read with it: Claude never touches the old name", oldName.length === 0 && !fs.existsSync(path.join(work, "hello.txt")), oldName.join(", "));
+  .flatMap((e) => (e.msg.message?.content ?? []).filter((b) => b.type === "tool_use" && JSON.stringify(b.input).includes("hello.txt")));
+const wroteOld = afterApproval.filter(
+  (b) =>
+    (["Write", "Edit", "MultiEdit"].includes(b.name) && /(^|[\\/])hello\.txt$/.test(String(b.input.file_path ?? ""))) ||
+    (["Bash", "PowerShell"].includes(b.name) && /(>\s*|touch\s+|tee\s+|Set-Content\s+|Out-File\s+|New-Item\s+)["']?(\.[\\/])?hello\.txt/i.test(String(b.input.command ?? ""))),
+);
+check(
+  "a note typed with the approval is read with it: Claude never writes the old name",
+  wroteOld.length === 0 && !fs.existsSync(path.join(work, "hello.txt")),
+  afterApproval.map((b) => `${b.name}: ${String(b.input.command ?? b.input.file_path ?? "").slice(0, 120)}`).join(" | ") || "the old name never came up",
+);
 check("…and the note is kept with the approval, not as a message", builtEvents.find((e) => e.seq === approvedAt)?.detail?.feedback === "Name the first file hello-b.txt, not hello.txt." && builtEvents.filter((e) => e.kind === "user").length === 1);
 check("…and the session is in the mode that was chosen", built.permission_mode === "acceptEdits", built.permission_mode);
 check("Claude is told the plan was approved, in its own terminal's words", toolResults(builtEvents).some((t) => t.startsWith("User has approved your plan")));
@@ -341,6 +354,7 @@ fs.mkdirSync(rewindDir);
 fs.writeFileSync(path.join(rewindDir, "a.txt"), "alpha\n");
 const files = () => Object.fromEntries(["a.txt", "b.txt", "c.txt"].map((n) => [n, fs.existsSync(path.join(rewindDir, n)) ? fs.readFileSync(path.join(rewindDir, n), "utf8").trim() : null]));
 const rewind = (sid, seq, action) => api("POST", `/sessions/${sid}/rewind`, { seq, action });
+const files_in = (dir) => (fs.existsSync(path.join(dir, "a.txt")) ? fs.readFileSync(path.join(dir, "a.txt"), "utf8").trim() : null);
 const names = (list) => list.map((f) => path.basename(f)).sort();
 const SECOND = "Use the Write tool to create b.txt containing the single line bee. Then run this exact Bash command: echo sea > c.txt . Then reply DONE.";
 const rewound = await api("POST", "/sessions", {
@@ -449,6 +463,119 @@ check(
 );
 check("…and the session is idle afterwards, not still working", (await waitFor(rewound.id, (s) => s.status === "idle", "idle after the restore", 30000)).status === "idle");
 await api("DELETE", `/sessions/${rewound.id}`);
+
+// ---------------------------------------------------------------- three harder cases
+const resultsOf = (events) => events.filter((e) => e.kind === "claude" && e.msg.type === "result").length;
+/** Waits until the session has ended `n` turns and is idle; returns its history. */
+async function turnsDone(sid, n, ms = 240000) {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(500)) {
+    const events = await eventsOf(sid);
+    if (resultsOf(events) >= n && (await session(sid)).status === "idle") return events;
+  }
+  throw new Error(`turn ${n} of ${sid} did not end: ${JSON.stringify(await session(sid))}`);
+}
+const newFolder = (name, text) => {
+  const dir = path.join(proj, name);
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, "a.txt"), text);
+  return dir;
+};
+const refusal = async (run) => {
+  try {
+    await run();
+    return "";
+  } catch (e) {
+    return e.message;
+  }
+};
+
+// 1. After Claude has summarized the conversation (/compact here; it also happens by itself in
+// a long session), nothing from before the summary is offered. Claude Code goes back past a
+// summary only until its process is restarted (seen on 2.1.330), and hangar restarts processes.
+const sumDir = newFolder("summary", "alpha\n");
+const summed = await api("POST", "/sessions", { cwd: sumDir, prompt: "Use the Edit tool to change the word alpha to ALPHA in a.txt. Then reply DONE.", model: "haiku", permission_mode: "bypassPermissions", trust: true });
+await turnsDone(summed.id, 1);
+await api("POST", `/sessions/${summed.id}/messages`, { text: "/compact" });
+const afterCompact = await turnsDone(summed.id, 2);
+const boundary = afterCompact.find((e) => e.kind === "claude" && e.msg.type === "system" && e.msg.subtype === "compact_boundary");
+check("summarizing ends like a turn, and Claude Code's note of it is kept", !!boundary && !(await session(summed.id)).in_turn, JSON.stringify(boundary?.msg.compact_metadata ?? null).slice(0, 160));
+await api("POST", `/sessions/${summed.id}/messages`, { text: "Remember the word PLUM. Reply with the single word OK." });
+const sumEvents = await turnsDone(summed.id, 3);
+const sumSeqs = sumEvents.filter((e) => e.kind === "user").map((e) => e.seq);
+const pastSummary = await refusal(() => rewind(summed.id, sumSeqs[0], "preview"));
+const pastSummaryBoth = await refusal(() => rewind(summed.id, sumSeqs[0], "both"));
+check("a message from before the summary is not offered, for a preview or a restore", /before Claude summarized the conversation/.test(pastSummary) && /before Claude summarized the conversation/.test(pastSummaryBoth) && files_in(sumDir) === "ALPHA", pastSummary.slice(0, 160));
+const afterSummary = await rewind(summed.id, sumSeqs[2], "conversation");
+check("a message from after the summary goes back as ever", afterSummary.conversation?.ok === true && /PLUM/.test(afterSummary.conversation.prefill ?? ""), JSON.stringify(afterSummary).slice(0, 160));
+await api("DELETE", `/sessions/${summed.id}`);
+
+// 2. An agent started by an agent. Claude Code announces the inner one (started, doing, ended)
+// without sending its steps.
+const nestDir = newFolder("nested", "alpha\n");
+const nested = await api("POST", "/sessions", {
+  cwd: nestDir,
+  prompt:
+    "Use the Agent tool once (general-purpose, run_in_background: false). Tell that agent exactly this: 'Use the Agent tool yourself (general-purpose, run_in_background: false) " +
+    "to read the file a.txt in the current folder and report its content. If you have no Agent tool, say exactly NO AGENT TOOL. Report what happened.' " +
+    "Do not do any of it yourself. Then tell me in one short sentence what the agent reported.",
+  model: "haiku",
+  permission_mode: "bypassPermissions",
+  trust: true,
+});
+let most = 0;
+for (const end = Date.now() + 240000; Date.now() < end; await sleep(120)) {
+  const s = await session(nested.id);
+  most = Math.max(most, s.agents.length);
+  if (s.status === "idle" && resultsOf(await eventsOf(nested.id)) >= 1) break;
+}
+const nestEvents = await eventsOf(nested.id);
+const innerCalls = nestEvents
+  .filter((e) => e.kind === "claude" && e.msg.type === "assistant" && e.msg.parent_tool_use_id)
+  .flatMap((e) => e.msg.message.content.filter((b) => b.type === "tool_use" && b.name === "Agent").map((b) => b.id));
+const innerStart = nestEvents.find((e) => e.kind === "claude" && e.msg.subtype === "task_started" && innerCalls.includes(e.msg.tool_use_id))?.msg;
+const innerEnd = nestEvents.find((e) => e.kind === "claude" && e.msg.subtype === "task_notification" && e.msg.task_id === innerStart?.task_id)?.msg;
+const innerSteps = nestEvents.filter((e) => e.kind === "claude" && innerCalls.includes(e.msg.parent_tool_use_id)).length;
+check("an agent started by an agent is announced by Claude Code, with the call it belongs to", !!innerStart && innerEnd?.status === "completed", JSON.stringify(innerStart ?? lastResult(nestEvents)?.result).slice(0, 200));
+check("…Claude Code sends none of its steps, only its account of it", !!innerStart && innerSteps === 0, `${innerSteps} messages from inside it`);
+check("both agents were listed while they ran, and none is left when they are done", most === 2 && (await session(nested.id)).agents.length === 0 && (await session(nested.id)).status === "idle", `most at once: ${most}`);
+await api("DELETE", `/sessions/${nested.id}`);
+
+// 3. "Restore code" while an agent is still at work on the same file. Claude Code does not stop
+// agents for it, and neither does hangar: the restore goes through, the agent goes on, and what
+// it then writes is its own.
+const editDir = newFolder("agent-edits", "alpha\n");
+const editing = await api("POST", "/sessions", {
+  cwd: editDir,
+  prompt:
+    "First use the Edit tool yourself to change the word alpha to ALPHA in a.txt. Then start ONE helper agent with the Agent tool (general-purpose, run_in_background: true). " +
+    "Its job, in this order: run this one command, which takes a while: node -e \"setTimeout(() => console.log('waited'), 25000)\" ; when it has finished, read a.txt and use the Edit tool to change " +
+    "the one word in it to AGENT. Do not do the agent's job yourself. Once the agent is started, reply with one short sentence.",
+  model: "haiku",
+  permission_mode: "bypassPermissions",
+  trust: true,
+});
+let waiting;
+for (const end = Date.now() + 180000; Date.now() < end; await sleep(400)) {
+  const s = await session(editing.id);
+  const atCommand = (await eventsOf(editing.id)).some((e) => e.kind === "claude" && e.msg.subtype === "task_progress" && ["Bash", "PowerShell"].includes(e.msg.last_tool_name));
+  if (!s.in_turn && s.agents.length === 1 && atCommand && files_in(editDir) === "ALPHA") {
+    waiting = s;
+    break;
+  }
+}
+const editSeq = (await eventsOf(editing.id)).find((e) => e.kind === "user").seq;
+const editPreview = await rewind(editing.id, editSeq, "preview");
+const editRestore = await rewind(editing.id, editSeq, "code");
+const rightAfter = await session(editing.id);
+check(
+  "with an agent at work, Restore code goes through: the file is back",
+  !!waiting && JSON.stringify(names(editPreview.files)) === '["a.txt"]' && editRestore.code?.ok === true && files_in(editDir) === "alpha",
+  `${waiting ? "agent was at its command" : "the agent never got to its command"}; preview ${JSON.stringify(names(editPreview.files))}; a.txt=${files_in(editDir)}`,
+);
+check("…the agent is not stopped, and the session still counts as working", rightAfter.agents.length === 1 && rightAfter.status === "working", `${rightAfter.status}, ${rightAfter.agents.length} agent(s)`);
+const editDone = await waitFor(editing.id, (s) => s.status === "idle" && s.agents.length === 0, "the agent to finish after the restore", 180000);
+check("…and it goes on to change the file again, as the dialog warns", files_in(editDir) === "AGENT" && editDone.status === "idle", `a.txt=${files_in(editDir)}`);
+await api("DELETE", `/sessions/${editing.id}`);
 
 await api("DELETE", `/sessions/${id}`);
 check("deleted", !(await session(id)));

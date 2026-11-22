@@ -249,6 +249,11 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                     The code cannot be restored: {visible(preview.error).slice(0, 300)}
                   </p>
                 )}
+                {chosen === "code" && agentsRunning && !session.in_turn && (
+                  <p className="mt-2 text-[12px] text-s-needs" data-rewind-agents-go-on>
+                    Agents that are still running are not stopped, and may change files again.
+                  </p>
+                )}
                 {chosen !== "nevermind" && (session.in_turn || (agentsRunning && chosen !== "code")) && (
                   <p className="mt-2 text-[12px] text-faint" data-rewind-stops>
                     {session.in_turn ? "The turn that is running is stopped first." : "The agents that are running are stopped first."}

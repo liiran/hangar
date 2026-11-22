@@ -64,6 +64,13 @@
 //!   test can see what the session is in between;
 //! * `helper lost`: a helper in the foreground whose end is never announced: the
 //!   turn just ends; `helper refuse`: an Agent call that fails outright;
+//! * `helper nested`: a helper that starts a helper of its own. Of the inner one
+//!   Claude Code sends only the task messages (started, what it is doing, ended),
+//!   not its steps (seen on 2.1.330). The outer one then makes its edit, which
+//!   asks first unless edits are accepted. `helper nested orphan` is the same
+//!   with an inner helper whose end is never announced;
+//! * `/compact`: summarizes the conversation (`compact_boundary`). The messages
+//!   before it can no longer be gone back to, as after a restart of the real CLI;
 //! * `background command`: starts a shell command in the background, which is
 //!   listed like a helper but is not one;
 //! * `change NAME`: edits the file NAME (one line) without asking, which rewind can
@@ -797,6 +804,65 @@ fn main() {
                     let h = fake.helpers.remove(i);
                     fake.tool_result(&h.tool_use, "[Request interrupted by user for tool use]", true, json!("Error: interrupted"));
                     fake.stopped();
+                    continue;
+                }
+                if text.contains("helper nested") {
+                    fake.helper_start("Plan the work", false);
+                    let i = fake.helpers.len() - 1;
+                    let outer = fake.helpers[i].tool_use.clone();
+                    // The outer helper starts one of its own. Only the task messages of that one are sent.
+                    let inner =
+                        json!({"description": "Read the notes", "subagent_type": "general-purpose", "prompt": "Read notes.txt and report its content."});
+                    fake.inside(&fake.helpers[i], "assistant", json!([{"type": "tool_use", "id": "toolu_inner", "name": "Agent", "input": inner}]), None);
+                    fake.system(
+                        "task_started",
+                        json!({"task_id": "inner1", "run_id": "run-inner1", "tool_use_id": "toolu_inner", "description": "Read the notes", "subagent_type": "general-purpose", "is_backgrounded": false, "spawn_depth": 2, "task_type": "local_agent", "prompt": "Read notes.txt and report its content."}),
+                    );
+                    fake.system(
+                        "task_progress",
+                        json!({"task_id": "inner1", "run_id": "run-inner1", "tool_use_id": "toolu_inner", "description": "Reading notes.txt", "subagent_type": "general-purpose", "usage": {"total_tokens": 19_000, "tool_uses": 1, "duration_ms": 900}, "last_tool_name": "Read"}),
+                    );
+                    // The outer helper's own edit: asks first unless edits are accepted, with the inner one still running.
+                    fake.helpers[i].steps = 3;
+                    let went = fake.helper_step(&mut lines, i);
+                    if matches!(went, Went::Gone) {
+                        return;
+                    }
+                    if !text.contains("orphan") {
+                        fake.system("task_updated", json!({"task_id": "inner1", "run_id": "run-inner1", "patch": {"status": "completed", "end_time": 1}}));
+                        fake.system(
+                            "task_notification",
+                            json!({"task_id": "inner1", "run_id": "run-inner1", "tool_use_id": "toolu_inner", "status": "completed", "summary": "notes read", "usage": {"total_tokens": 19_400, "tool_uses": 1, "duration_ms": 1_400}}),
+                        );
+                    }
+                    if matches!(went, Went::Stopped) {
+                        fake.tool_result(&outer, "The user doesn't want to proceed with this tool use.", true, json!("Error: stopped"));
+                        fake.stopped();
+                        continue;
+                    }
+                    fake.inside(&fake.helpers[i], "user", json!([{"type": "tool_result", "tool_use_id": "toolu_inner", "content": "notes read"}]), None);
+                    let h = fake.helper_end(i, "completed");
+                    let totals = json!({"status": "completed", "agentId": h.task, "totalDurationMs": 4_800, "totalTokens": 24_000, "totalToolUseCount": 2});
+                    fake.tool_result(&outer, "[Subagent hand-back] The report follows:\n  Done.", false, totals);
+                    fake.done("The helper planned the work, with a helper of its own.");
+                    continue;
+                }
+                if text.trim() == "/compact" {
+                    // Claude summarizes the conversation. What came before can no longer be gone back to.
+                    for p in &mut fake.prompts {
+                        p.gone = true;
+                        p.checkpoint = false;
+                    }
+                    fake.remember();
+                    fake.system("status", json!({"status": "compacting"}));
+                    fake.system("status", json!({"status": null, "compact_result": "success"}));
+                    fake.system(
+                        "compact_boundary",
+                        json!({"compact_metadata": {"trigger": "manual", "pre_tokens": 31_000, "post_tokens": 6_000, "preserved_messages": {"anchor_uuid": "a", "uuids": [], "all_uuids": []}}}),
+                    );
+                    out(
+                        json!({"type": "result", "subtype": "success", "is_error": false, "num_turns": 0, "total_cost_usd": 0.01 * fake.turn as f64, "duration_ms": 5, "session_id": fake.session_id, "result": ""}),
+                    );
                     continue;
                 }
                 if text.contains("helper refuse") {

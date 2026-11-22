@@ -32,6 +32,16 @@ describe("drawFrom", () => {
   });
 });
 
+describe("rowState of a message", () => {
+  it("changes when the message can no longer be gone back to, so that its Rewind button goes", () => {
+    const message = ev({ kind: "user", text: "hello", uuid: "u1" });
+    const before = rowState(toRows([message])[0]);
+    expect(rowState(toRows([message, ev({ kind: "claude", msg: { type: "system", subtype: "compact_boundary" } })])[0])).not.toBe(before);
+    expect(rowState(toRows([message, ev({ kind: "unsent", uuids: ["u1"] })])[0])).not.toBe(before);
+    expect(rowState(toRows([message, ev({ kind: "user", text: "more", uuid: "u2" })])[0])).toBe(before);
+  });
+});
+
 describe("rowState", () => {
   it("changes when a tool gets its result or a request its answer, and not otherwise", () => {
     const call = assistant([{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }]);
@@ -273,6 +283,25 @@ describe("helper agents", () => {
     expect(shown(first(7), false).lines[2]).toBe("Searched for 1 pattern, read 1 file");
     expect(readSearchSummary(2, 0, true)).toBe("Searching for 2 patterns…");
     expect(readSearchSummary(0, 3, false)).toBe("Read 3 files");
+  });
+
+  it("shows an agent started by an agent from Claude Code's task messages alone, which is all it sends of it", () => {
+    const inner = inside([{ type: "tool_use", id: "a2", name: "Agent", input: { description: "Read the notes", prompt: "Read them." } }]);
+    const events = [
+      call,
+      started,
+      inner,
+      sys("task_started", { task_id: "task2", tool_use_id: "a2", description: "Read the notes", is_backgrounded: false }),
+      sys("task_progress", { task_id: "task2", tool_use_id: "a2", description: "Reading notes.txt", usage: { tool_uses: 1, total_tokens: 19000 } }),
+    ];
+    const step = agentOf(events).agent.steps[0];
+    if (step.kind !== "tool" || !step.agent) throw new Error("the inner call has no agent");
+    expect([step.agent.id, step.agent.doing, step.agent.steps.length, step.agent.ended]).toEqual(["task2", "Reading notes.txt", 0, undefined]);
+    expect(agentUsage(step.agent, false)).toBe("1 tool use · 19k tokens");
+    const done = agentOf([...events, sys("task_notification", { task_id: "task2", tool_use_id: "a2", status: "completed", usage: { tool_uses: 1, total_tokens: 19400, duration_ms: 1400 } })]).agent.steps[0];
+    expect(done.kind === "tool" && done.agent?.ended).toBe("completed");
+    // The outer agent's row is drawn again when the inner one changes.
+    expect(rowState(toRows(events)[0])).not.toBe(rowState(toRows(events.slice(0, 4))[0]));
   });
 
   it("says which agent asked for permission", () => {

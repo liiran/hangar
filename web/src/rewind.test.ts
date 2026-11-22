@@ -50,6 +50,24 @@ describe("the messages that can be gone back to", () => {
     expect([point.canRewind, editedLine(point)]).toEqual([true, "⚠ No code restore"]);
   });
 
+  it("offers no message from before Claude summarized the conversation, except one Claude Code kept word for word", () => {
+    const events = [
+      ev({ kind: "user", text: "long ago", uuid: "u1" }),
+      ev({ kind: "user", text: "kept whole", uuid: "u2" }),
+      ev({ kind: "claude", msg: { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto", preserved_messages: { all_uuids: ["u2", "x"] } } } }),
+      ev({ kind: "user", text: "after", uuid: "u3" }),
+    ];
+    const points = rewindPoints(toRows(events), "C:\\app");
+    expect(points.map((p) => [p.text, p.canRewind, editedLine(p)])).toEqual([
+      ["long ago", false, "Before Claude summarized the conversation"],
+      ["kept whole", true, "No edits"],
+      ["after", true, "No edits"],
+    ]);
+    // A boundary that names nothing kept (an older Claude Code) leaves nothing before it.
+    const bare = [ev({ kind: "user", text: "a", uuid: "u1" }), ev({ kind: "claude", msg: { type: "system", subtype: "compact_boundary" } }), ev({ kind: "user", text: "b", uuid: "u2" })];
+    expect(rewindPoints(toRows(bare), "C:\\app").map((p) => p.canRewind)).toEqual([false, true]);
+  });
+
   it("marks a message sent before hangar gave messages an id: it cannot be gone back to", () => {
     const [point] = rewindPoints(toRows([user("old", null)]), "C:\\app");
     expect(point.canRewind).toBe(false);

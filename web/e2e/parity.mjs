@@ -790,6 +790,88 @@ try {
   check("…and going back to before it is quick and puts it back in the box", (await composer.inputValue()) === "hello, one more thing" && Date.now() - quick < 3000, `${Date.now() - quick} ms`);
   await composer.fill("");
 
+  // After Claude has summarized the conversation, what came before is not offered: Claude Code
+  // can go back past a summary only until its process is restarted, and its terminal lists none.
+  const sumId = await start("change before.ts, then summarize", "acceptEdits");
+  await main.locator("text=changed before.ts").waitFor();
+  await say("/compact");
+  for (let i = 0; i < 100 && (await session(sumId)).turns < 1; i++) await sleep(50);
+  await idle(sumId);
+  await say("hello after the summary");
+  await main.locator("text=echo: hello after the summary").waitFor();
+  await idle(sumId);
+  check("a message from before the summary has no Rewind button; one after it has", (await main.locator("[data-rewind-to]").count()) === 1);
+  await composer.focus();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor();
+  const sumRows = (await dialog.locator("[data-rewind-point]").allInnerTexts()).map((x) => x.replace(/\s+/g, " ").trim());
+  check(
+    "the list shows what came before the summary as not to be gone back to",
+    JSON.stringify(sumRows) === JSON.stringify(["change before.ts, then summarize Before Claude summarized the conversation", "/compact Before Claude summarized the conversation", "hello after the summary No edits"]) &&
+      (await dialog.locator('[data-rewind-point][aria-disabled="true"]').count()) === 2,
+    sumRows.join(" / "),
+  );
+  await dialog.locator("[data-rewind-point]").first().click({ force: true });
+  await sleep(200);
+  check("picking such a message does nothing", (await dialog.getAttribute("data-rewind")) === "list");
+  // The arrow keys skip them.
+  await page.keyboard.press("ArrowUp");
+  check("the arrow keys go past them to the message that can be picked", (await dialog.locator("[data-rewind-point]").nth(2).getAttribute("aria-selected")) === "true");
+  await page.keyboard.press("ArrowUp");
+  check("…and round to (current), not onto them", (await dialog.locator("[data-rewind-current]").getAttribute("aria-selected")) === "true");
+  await shot(dialog, "rewind-summarized");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+
+  // An agent started by an agent. Claude Code sends what the inner one is doing, not its steps.
+  const nestId = await start("helper nested, please", "default");
+  await main.locator("[data-asking-agent]").waitFor();
+  const outerRow = main.locator("[data-agent]").first();
+  await outerRow.locator("button[aria-expanded]").first().click();
+  const innerRow = outerRow.locator("[data-agent-steps] [data-agent]").first();
+  await innerRow.waitFor();
+  check(
+    "an agent started by an agent shows inside it, running, with what Claude Code says it is doing",
+    (await innerRow.getAttribute("data-agent-state")) === "running" && (await flat(innerRow.locator("[data-agent-live]"))) === "Reading notes.txt In progress… · 1 tool use · 19k tokens",
+    await flat(innerRow),
+  );
+  check("both agents are counted as running", (await session(nestId)).agents.length === 2);
+  await shot(page, "agent-nested");
+  await main.locator("button", { hasText: /^\s*Allow$/ }).first().click();
+  await main.locator("text=The helper planned the work, with a helper of its own.").waitFor();
+  await idle(nestId);
+  check(
+    "when they are done, the inner one reads Done with Claude Code's totals, and nothing is left running",
+    (await flat(innerRow.locator("[data-agent-outcome]"))) === "Done (1 tool use · 19.4k tokens · 1s)" && (await session(nestId)).agents.length === 0,
+    await flat(innerRow),
+  );
+
+  // Restore code with an agent still running: it is not stopped (as in Claude Code), and the dialog says so.
+  const goOnId = await start("change base.ts, then helpers", "acceptEdits");
+  await main.locator("text=changed base.ts").waitFor();
+  await idle(goOnId);
+  await say("helper start");
+  await main.locator('[data-agent-state="running"]').waitFor();
+  await main.locator("[data-rewind-to]").first().click();
+  await dialog.locator('[data-rewind-choice="both"]').waitFor();
+  check("with agents running, going back in the conversation says they are stopped first", (await flat(dialog.locator("[data-rewind-stops]"))) === "The agents that are running are stopped first." && (await dialog.locator("[data-rewind-agents-go-on]").count()) === 0);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  check(
+    "…and Restore code says they are not stopped and may change files again",
+    (await dialog.locator('[data-rewind-choice][aria-selected="true"]').getAttribute("data-rewind-choice")) === "code" &&
+      (await flat(dialog.locator("[data-rewind-agents-go-on]"))) === "Agents that are still running are not stopped, and may change files again." &&
+      (await dialog.locator("[data-rewind-stops]").count()) === 0,
+  );
+  await shot(dialog, "rewind-code-agents");
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "detached" });
+  const wentOn = await session(goOnId);
+  check("Restore code left the agent running and the session working", wentOn.agents.length === 1 && wentOn.status === "working" && (await main.locator("[data-rewound]").count()) === 1, `${wentOn.status}, ${wentOn.agents.length} agent(s)`);
+  await page.locator("header button", { hasText: "Stop" }).click();
+  await idle(goOnId);
+
   // ================================================================ stopping hangar
   const other = await ctx.newPage(); // a second window on the same daemon
   watch(other);

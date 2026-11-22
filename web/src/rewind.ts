@@ -16,6 +16,8 @@ export interface RewindPoint {
   edited: string[];
   /** Sent while a turn ran: Claude Code kept no file checkpoint for it. */
   midTurn: boolean;
+  /** Claude has summarized the conversation since it was sent. */
+  summarized: boolean;
 }
 
 const EDITS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
@@ -24,7 +26,7 @@ const EDITS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 export function rewindPoints(rows: Row[], cwd: string): RewindPoint[] {
   const points: RewindPoint[] = [];
   for (const r of rows) {
-    if (r.kind === "user") points.push({ seq: r.seq, text: r.text, ts: r.ts, canRewind: r.canRewind, edited: [], midTurn: !!r.midTurn });
+    if (r.kind === "user") points.push({ seq: r.seq, text: r.text, ts: r.ts, canRewind: r.canRewind && !r.summarized, edited: [], midTurn: !!r.midTurn, summarized: !!r.summarized });
     else if (r.kind === "tool" && EDITS.has(r.name) && r.result && !r.result.isError && points.length > 0) {
       const path = r.input?.file_path ?? r.input?.notebook_path;
       const name = typeof path === "string" ? relative(path, cwd) : "";
@@ -47,6 +49,9 @@ export function fileNames(files: string[]): string {
 
 /** Under a message in the list: what Claude edited in that turn. hangar's line, from the feed. */
 export function editedLine(point: RewindPoint): string {
+  // After a summary Claude Code can go back past it only now and then (not once its process has
+  // been restarted), and its own terminal does not list such messages: hangar offers none.
+  if (point.summarized) return "Before Claude summarized the conversation";
   if (!point.canRewind) return "Sent before hangar could rewind";
   // Claude Code's words for a message it took into a running turn.
   if (point.midTurn) return "⚠ No code restore";

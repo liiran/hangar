@@ -34,6 +34,7 @@
     - An agent *in the background* works on after Claude's reply has ended. The session counts as working until the agent is done, so it is never paused in the middle. A strip at the foot of the feed says what each such agent is doing now, and a message you send meanwhile is answered at once.
     - Each running agent has a *Stop* of its own. The session's *Stop*, with only agents running, stops them all.
     - A request that comes from an agent says so and names the agent: "An agent wants to use Edit".
+    - An agent can start an agent of its own. That one shows inside the first, with what Claude Code says it is doing ("Reading notes.txt") and how it ended. Claude Code does not send its single steps, so there are none to open.
 - **Context and plan limits in view.** Every number is Claude Code's own, as of Claude's last reply; hangar works none of them out.
   - **Context:** a ring under the message box, bottom right, fills as Claude's context window does, for example `42%`. It warms as it fills: yellow from 50%, orange from 70%, red at the end. Hover it to see what fills the window.
   - **Limits:** the sidebar shows how much of your Claude plan's 5-hour and 7-day limits is used and when each starts over, with bars colored the same way. They appear once a session has talked to Claude, and update as sessions run.
@@ -42,7 +43,11 @@
   - **Pick a message.** hangar asks Claude Code what restoring the code would change, then shows Claude Code's choices: *Restore code and conversation*, *Restore conversation*, *Restore code*, *Never mind*. Under them it says what the highlighted one does, for example "The code will be restored +3 -1 in cart.ts." The choices with code show only when there is something to restore. `Enter` does it; there is no second question.
   - **Restore conversation** takes that message and everything after it out of the conversation, and puts the message's text back in the message box, so you can change it and send it again.
   - **Restore code** puts files back as they were before the message. This covers what Claude changed with its own edit tools: a file it created is deleted, a file it edited goes back whole. It does not cover what a command did (`rm`, `npm install`), or, normally, what a helper agent edited. Claude Code keeps the copies it needs under `~/.claude/file-history`.
-  - A stopped or paused session is started again to be asked. A running turn is stopped first, and so are agents still at work when the conversation goes back.
+  - A stopped or paused session is started again to be asked. A running turn is stopped first, and so are agents still at work when the conversation goes back. *Restore code* alone does not stop agents, as in Claude Code: one that is still running may change files again, and the dialog says so.
+  - Some messages cannot be gone back to, or only in part. The list says which:
+    - **A message typed while Claude was working** reads "⚠ No code restore", Claude Code's own words: it was taken into the turn that was running, and Claude Code kept no copy of the files for it. Its conversation can still go back.
+    - **Messages from before Claude summarized the conversation** are dimmed. Claude summarizes by itself when a long conversation fills its context (or when you send `/compact`). After that, Claude Code can go back past the summary only until its process is restarted, and hangar restarts processes when it pauses a session; Claude Code's terminal does not list such messages either.
+    - **A message that never reached Claude** (it was waiting to be sent when you stopped the session) is dimmed.
   - Messages you sent before hangar had rewind cannot be gone back to: the list shows them dimmed. Claude Code's two *Summarize* choices are not offered: of all the requests Claude Code takes, none summarizes part of a conversation, so hangar cannot ask for it.
 - **History that lasts.** Sessions outlive restarts. A stopped or paused session carries on in the same conversation when you send your next message. The conversation is Claude Code's own, so `claude --resume <id>` in a terminal can continue it too.
 - **Light or dark.** hangar follows your system. To pin one, press `Ctrl K` and type *theme*.
@@ -148,7 +153,7 @@ cargo build --release
 
 | Command | What it does |
 |---|---|
-| `hangar up` | Starts hangar if needed and opens the app. `--no-open` prints a one-time sign-in link instead. |
+| `hangar up` | Starts hangar if needed and opens the app. `--no-open` prints a one-time sign-in link instead. The app is served on port 7317, or on a free port if that one is taken; set `HANGAR_UI_PORT` to choose another (`0`: any free one). |
 | `hangar stop` | Stops hangar, every session and every MCP server it runs. Sessions resume from where they were next time. In the app: `Ctrl K`, then *Stop hangar*. |
 | `hangar status` | Shows the shared MCP servers: how they are shared, how many sessions use each, memory, requests, cache hits and restarts. |
 | `hangar wrap` | Sends your local MCP servers through hangar's pool. `--dry-run` previews the change. |
@@ -386,7 +391,7 @@ On Windows with the GNU toolchain, put a MinGW `bin` folder (for `dlltool` and `
 The integration tests run real shim processes against an in-process daemon. They use a scriptable fake MCP server (stdio and HTTP) and a fake `claude` that speaks the stream-json protocol. They cover:
 - **Routing:** concurrent overlapping ids, progress isolation, caching, subscriptions and roots safety.
 - **Failure handling:** crash restart, idle shutdown, fallback, reconnecting after a daemon restart, and impostor daemons.
-- **Sessions:** approvals and withdrawn approvals, answered questions, approved and returned plans, the changed lines of an edit, helper agents (in the background, in the foreground, asking, stopped, failing), rewind (preview, code, conversation, both, after a restart), the budget queue, idle reclaim, resume, model switching, workspace trust and hostile paths.
+- **Sessions:** approvals and withdrawn approvals, answered questions, approved and returned plans, the changed lines of an edit, helper agents (in the background, in the foreground, asking, stopped, failing, one inside another), rewind (preview, code, conversation, both, after a restart, after a summary, a message typed during a turn), the budget queue, idle reclaim, resume, model switching, workspace trust and hostile paths.
 - **The API:** pairing, and its token, Host, Origin, cross-site and CSP checks.
 
 `npm run e2e` drives the app in a real browser: hostile replies and links, long and disguised permission requests, the trust notice, sign-in and sign-out. `npm run e2e:parity` does the same for the parts that stand in for Claude Code's own dialogs and read-outs. The fake `claude` sends what Claude Code was recorded sending (2.1.325; the helper agents 2.1.329), and `npm run e2e:claude` checks the same paths against the real one.

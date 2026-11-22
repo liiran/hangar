@@ -1529,3 +1529,61 @@ async fn a_message_typed_while_a_turn_runs_can_be_gone_back_to_and_does_not_hold
     wait_turns(&m, &a, 3).await;
     assert_eq!(texts(&m, &a).last().unwrap(), "I remember: hello one | use tool please | recall");
 }
+
+#[tokio::test]
+async fn no_message_from_before_claude_summarized_the_conversation_can_be_gone_back_to() {
+    let home = temp_home("sess-rewind-compact");
+    let m = manager(&home, Config::default());
+    let a = m.create(NewSession { permission_mode: Some("acceptEdits".into()), ..new(&home, "change cart.ts") }).unwrap().meta.id;
+    wait_status(&m, &a, Status::Idle).await;
+    // Claude summarizes the conversation. Claude Code goes back past a summary only while the
+    // process that made it still runs, and hangar restarts processes as it sees fit: so hangar
+    // offers nothing from before it, as Claude Code's terminal does not either.
+    m.send(&a, "/compact").unwrap();
+    wait_turns(&m, &a, 2).await;
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(!s.in_turn, "summarizing is a turn like another: it ends");
+    m.send(&a, "hello after").unwrap();
+    wait_turns(&m, &a, 3).await;
+    wait_status(&m, &a, Status::Idle).await;
+    let seqs = user_seqs(&m, &a);
+    for old in [seqs[0], seqs[1]] {
+        for what in [Rewind::Preview, Rewind::Code, Rewind::Conversation, Rewind::Both] {
+            let refused = m.rewind(&a, old, what).await.unwrap_err().to_string();
+            assert!(refused.contains("before Claude summarized the conversation"), "{refused}");
+        }
+    }
+    assert!(rewinds(&m, &a).is_empty(), "nothing was asked of Claude Code, nothing changed");
+    // What was sent after the summary goes back as ever.
+    assert_eq!(m.rewind(&a, seqs[2], Rewind::Conversation).await.unwrap(), json!({"conversation": {"ok": true, "prefill": "hello after"}}));
+}
+
+#[tokio::test]
+async fn a_helper_started_by_a_helper_is_listed_while_it_runs_and_never_outlives_the_one_it_runs_in() {
+    let home = temp_home("sess-helper-nested");
+    let m = manager(&home, Config::default());
+    // The outer helper starts one of its own, then asks before its edit: both are running.
+    let a = m.create(new(&home, "helper nested")).unwrap().meta.id;
+    let s = wait_status(&m, &a, Status::NeedsYou).await;
+    assert_eq!(s.agents.iter().map(|h| h.description.as_str()).collect::<Vec<_>>(), vec!["Plan the work", "Read the notes"]);
+    assert_eq!(s.agents[1].tool_use_id, "toolu_inner", "the inner one belongs to the outer one's Agent call");
+    // Of the inner helper only Claude Code's account of it arrives, and is kept.
+    assert_eq!(
+        task_events(&m, &a, "task_progress").iter().filter(|p| p["task_id"] == "inner1").map(|p| p["description"].clone()).collect::<Vec<_>>(),
+        vec![json!("Reading notes.txt")]
+    );
+    m.decide(&a, &s.pending[0].request_id, allow()).unwrap();
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(s.agents.is_empty());
+    assert!(texts(&m, &a).contains(&"The helper planned the work, with a helper of its own.".to_string()));
+
+    // An inner helper whose end is never announced: it goes with the helper it ran in, and the
+    // session is idle, not working for good.
+    m.send(&a, "helper nested orphan").unwrap();
+    let s = wait_status(&m, &a, Status::NeedsYou).await;
+    assert_eq!(s.agents.len(), 2);
+    m.decide(&a, &s.pending[0].request_id, allow()).unwrap();
+    let s = wait_turns(&m, &a, 2).await;
+    assert!(s.agents.is_empty(), "{:?}", s.agents);
+    assert_eq!(s.meta.status, Status::Idle);
+}
