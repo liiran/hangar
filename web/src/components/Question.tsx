@@ -1,5 +1,5 @@
 import { Check, ChevronLeft, ChevronRight, CircleHelp, MessagesSquare } from "lucide-react";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api, type DecisionDetail, type Session } from "../api";
 import { answerOf, answersOf, NOTHING, pick, toggleOther, type, type Picked, type Question } from "../ask";
 import { report } from "../store";
@@ -57,11 +57,20 @@ export function QuestionPanel({ session, requestId, questions }: { session: Sess
     const answers = answersOf(questions, all);
     if (answers && !busy) send("allow", { answers });
   };
+  // The keys keep working on the question that is now showing: the focus moves to it as it is
+  // drawn, before anything else can be pressed. (A frame later, a key pressed in between went
+  // nowhere: the row that had the focus was gone.)
+  const moved = useRef(false);
+  useLayoutEffect(() => {
+    if (!moved.current) return;
+    moved.current = false;
+    root.current?.querySelector<HTMLElement>("[data-choice]")?.focus();
+  }, [at]);
   const go = (i: number) => {
-    setAt(i);
     setPeek(null);
-    // The keys keep working on the question that is now showing.
-    requestAnimationFrame(() => root.current?.querySelector<HTMLElement>("[data-choice]")?.focus());
+    if (i === at) return root.current?.querySelector<HTMLElement>("[data-choice]")?.focus();
+    moved.current = true;
+    setAt(i);
   };
   const set = (next: Picked) => {
     const all = picked.map((old, i) => (i === at ? next : old));
