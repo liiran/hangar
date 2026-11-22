@@ -578,8 +578,13 @@ struct Run {
     unconfirmed: Vec<(String, String)>,
     /// Requests to Claude Code whose answers someone waits for, by request id.
     waiting: HashMap<String, oneshot::Sender<Result<Value, String>>>,
-    /// A message was sent and its turn has not begun yet (`init` not seen).
-    awaiting_turn: bool,
+    /// Messages sent that Claude Code has not begun yet, with when each was
+    /// sent. Claude Code says for each message when it is queued, started
+    /// and done (`command_lifecycle`); one is taken off here when it starts.
+    unstarted: Vec<(String, Instant)>,
+    /// This process has sent `command_lifecycle` notes. One that never does
+    /// (an older Claude Code) is taken to begin a message with every turn.
+    lifecycle: bool,
     asked: u64,
     /// Last cumulative `total_cost_usd` reported by this process.
     cost_seen: f64,
@@ -1033,7 +1038,7 @@ impl Manager {
         match s.run.as_mut().filter(|_| deliverable) {
             Some(run) => {
                 run.driver.send_user(&uuid, text);
-                run.awaiting_turn = true;
+                run.unstarted.push((uuid.clone(), Instant::now()));
                 if !run.initialized {
                     run.unconfirmed.push((uuid.clone(), text.to_string()));
                 }
@@ -1169,8 +1174,10 @@ impl Manager {
         for e in self.events(id, 0)? {
             match e.body {
                 EventBody::Claude { msg } if msg["type"] == "system" && msg["subtype"] == "compact_boundary" => {
-                    let kept_whole = msg["compact_metadata"]["preserved_messages"]["all_uuids"].as_array();
-                    summarized = Some((e.seq, kept_whole.map(|a| a.iter().filter_map(|u| u.as_str().map(String::from)).collect()).unwrap_or_default()));
+                    // Kept word for word across the summary, or sent but not begun when it was made.
+                    let still_there = [&msg["compact_metadata"]["preserved_messages"]["all_uuids"], &msg["hangar_unstarted"]];
+                    summarized =
+                        Some((e.seq, still_there.iter().filter_map(|l| l.as_array()).flatten().filter_map(|u| u.as_str().map(String::from)).collect()));
                 }
                 EventBody::User { uuid, mode, text: said, .. } => {
                     if e.seq == seq {
@@ -1234,6 +1241,35 @@ impl Manager {
         Ok(())
     }
 
+    /// Stops what runs in a session and waits until nothing does: a turn,
+    /// a turn that is about to begin (a message just sent, or the turn
+    /// Claude Code starts by itself when an agent has reported), and with
+    /// `with_helpers` the helper agents too. Stop ends the turn; with no
+    /// turn left, it ends the helpers.
+    async fn quiet(&self, id: &str, with_helpers: bool, give_up: Instant) -> Result<()> {
+        let busy = || {
+            self.inner.locked().sessions.get(id).is_some_and(|s| {
+                s.run.as_ref().is_some_and(|r| {
+                    // A message sent a while ago that has not begun, with no turn running, is not about to.
+                    let about_to_start = r.unstarted.iter().any(|(_, sent)| sent.elapsed() < Duration::from_secs(15));
+                    r.turn || about_to_start || r.report_due || r.settle.is_some() || (with_helpers && !r.helpers.is_empty())
+                })
+            })
+        };
+        let mut asked: Option<Instant> = None;
+        while busy() {
+            if asked.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+                self.interrupt(id)?;
+                asked = Some(Instant::now());
+            }
+            if Instant::now() > give_up {
+                bail!("what is running did not stop");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok(())
+    }
+
     /// Claude Code's rewind, for the user's message `seq`: a preview of what
     /// restoring the code would change, or the restore itself, of the code,
     /// of the conversation, or of both (the code first, as in Claude Code's
@@ -1291,26 +1327,8 @@ impl Manager {
         // are stopped for it too. Stop ends the turn; with no turn left, it
         // ends the helpers.
         let with_helpers = matches!(what, Rewind::Conversation | Rewind::Both);
-        // A message just sent counts as a turn: Claude Code is about to start it.
-        let busy = || {
-            self.inner
-                .locked()
-                .sessions
-                .get(id)
-                .is_some_and(|s| s.run.as_ref().is_some_and(|r| r.turn || r.awaiting_turn || (with_helpers && !r.helpers.is_empty())))
-        };
         let give_up = Instant::now() + Duration::from_secs(20);
-        let mut asked: Option<Instant> = None;
-        while busy() {
-            if asked.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
-                self.interrupt(id)?;
-                asked = Some(Instant::now());
-            }
-            if Instant::now() > give_up {
-                bail!("what is running did not stop");
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        self.quiet(id, with_helpers, give_up).await?;
         let mut out = json!({});
         if matches!(what, Rewind::Code | Rewind::Both) {
             out["code"] = match self.answer(id, json!({"subtype": "rewind_files", "user_message_id": uuid})).await {
@@ -1324,21 +1342,26 @@ impl Manager {
         let try_again = out["code"]["error"].as_str().is_some_and(|e| e.contains("still being copied"));
         let mut until = None;
         if matches!(what, Rewind::Conversation | Rewind::Both) && !try_again {
-            until = self.inner.locked().sessions.get(id).map(|s| s.next_seq);
             let mut request = json!({"subtype": "rewind_conversation", "target_message_uuid": uuid});
             if let Some(newest) = &newest {
                 request["last_seen_user_message_uuid"] = json!(newest);
             }
-            // Claude Code may still count a turn as running a moment after its
-            // end reached hangar: then it is asked again, within the same limit.
-            let mut answer = self.answer(id, request.clone()).await;
-            while let Ok(a) = &answer
-                && matches!(a["reason"].as_str(), Some("turn_running" | "prompt_pending" | "commands_queued"))
-                && Instant::now() < give_up
-            {
+            // If Claude Code says that something runs after all (a turn that
+            // began in the meantime), that is stopped like the rest, and it is
+            // asked again, within the same limit. What the history holds up to
+            // the asking is what goes: it is read anew each time.
+            let answer = loop {
+                until = self.inner.locked().sessions.get(id).map(|s| s.next_seq);
+                let answer = self.answer(id, request.clone()).await;
+                let running = matches!(&answer, Ok(a) if matches!(a["reason"].as_str(), Some("turn_running" | "prompt_pending" | "commands_queued")));
+                if !running || Instant::now() >= give_up {
+                    break answer;
+                }
                 tokio::time::sleep(Duration::from_millis(250)).await;
-                answer = self.answer(id, request.clone()).await;
-            }
+                if self.quiet(id, true, give_up).await.is_err() {
+                    break answer;
+                }
+            };
             out["conversation"] = match answer {
                 Ok(answer) if answer["rewound"] == true => json!({"ok": true, "prefill": answer["prefillText"]}),
                 Ok(answer) => {
@@ -1631,7 +1654,8 @@ impl Manager {
                 s.run = Some(Run {
                     driver,
                     initialized: false,
-                    awaiting_turn: !outbox.is_empty(),
+                    unstarted: outbox.iter().map(|(uuid, _)| (uuid.clone(), Instant::now())).collect(),
+                    lifecycle: false,
                     unconfirmed: outbox,
                     waiting: HashMap::new(),
                     asked: 0,
@@ -1718,7 +1742,9 @@ impl Manager {
                 // Every turn opens with `init`, also one Claude Code starts by
                 // itself when a helper has reported back.
                 run.turn = true;
-                run.awaiting_turn = false;
+                if !run.lifecycle {
+                    run.unstarted.clear();
+                }
                 run.settle = None;
                 run.report_due = false;
                 if matches!(s.meta.status, Status::Starting | Status::Idle) {
@@ -1757,7 +1783,12 @@ impl Manager {
                     s.meta.permission_mode = mode.to_string();
                 }
             }
-            ("system", "compact_boundary") => run.ask_context(),
+            ("system", "compact_boundary") => {
+                // Messages sent that Claude has not begun yet come after the
+                // summary: they stay in the conversation, and can be gone back to.
+                msg["hangar_unstarted"] = json!(run.unstarted.iter().map(|(uuid, _)| uuid).collect::<Vec<_>>());
+                run.ask_context()
+            }
             ("assistant", _) => {
                 // A subagent's messages are about its own context, not this one.
                 let own = msg["parent_tool_use_id"].is_null();
@@ -1771,6 +1802,13 @@ impl Manager {
                 }
                 if own {
                     run.ask_context();
+                }
+            }
+            // Claude Code's note on one message: queued, started, completed or cancelled.
+            ("command_lifecycle", _) => {
+                run.lifecycle = true;
+                if matches!(msg["state"].as_str(), Some("started" | "completed" | "cancelled")) {
+                    run.unstarted.retain(|(uuid, _)| msg["command_uuid"] != uuid.as_str());
                 }
             }
             ("rate_limit_event", _) => {
@@ -1797,8 +1835,11 @@ impl Manager {
                 }
                 run.turn = false;
                 // A message sent while the turn ran was taken into it (no turn of
-                // its own starts: seen on 2.1.329), so nothing is about to start now.
-                run.awaiting_turn = false;
+                // its own starts: seen on 2.1.329). Claude Code says so for each
+                // message; without that, the turn's end is taken to cover them.
+                if !run.lifecycle {
+                    run.unstarted.clear();
+                }
                 // A helper in the foreground runs inside the turn: it cannot
                 // have outlived it, whatever was or was not said about its end.
                 run.helpers.retain(|h| h.background || h.depth > 1);

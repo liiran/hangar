@@ -496,17 +496,28 @@ const sumDir = newFolder("summary", "alpha\n");
 const summed = await api("POST", "/sessions", { cwd: sumDir, prompt: "Use the Edit tool to change the word alpha to ALPHA in a.txt. Then reply DONE.", model: "haiku", permission_mode: "bypassPermissions", trust: true });
 await turnsDone(summed.id, 1);
 await api("POST", `/sessions/${summed.id}/messages`, { text: "/compact" });
-const afterCompact = await turnsDone(summed.id, 2);
+// A message sent while the summary is being made: Claude begins it after the summary.
+await sleep(1500);
+await api("POST", `/sessions/${summed.id}/messages`, { text: "Remember the word KIWI. Reply with the single word OK." });
+const afterCompact = await turnsDone(summed.id, 3);
 const boundary = afterCompact.find((e) => e.kind === "claude" && e.msg.type === "system" && e.msg.subtype === "compact_boundary");
 check("summarizing ends like a turn, and Claude Code's note of it is kept", !!boundary && !(await session(summed.id)).in_turn, JSON.stringify(boundary?.msg.compact_metadata ?? null).slice(0, 160));
 await api("POST", `/sessions/${summed.id}/messages`, { text: "Remember the word PLUM. Reply with the single word OK." });
-const sumEvents = await turnsDone(summed.id, 3);
+const sumEvents = await turnsDone(summed.id, 4);
 const sumSeqs = sumEvents.filter((e) => e.kind === "user").map((e) => e.seq);
 const pastSummary = await refusal(() => rewind(summed.id, sumSeqs[0], "preview"));
 const pastSummaryBoth = await refusal(() => rewind(summed.id, sumSeqs[0], "both"));
 check("a message from before the summary is not offered, for a preview or a restore", /before Claude summarized the conversation/.test(pastSummary) && /before Claude summarized the conversation/.test(pastSummaryBoth) && files_in(sumDir) === "ALPHA", pastSummary.slice(0, 160));
-const afterSummary = await rewind(summed.id, sumSeqs[2], "conversation");
+const afterSummary = await rewind(summed.id, sumSeqs[3], "conversation");
 check("a message from after the summary goes back as ever", afterSummary.conversation?.ok === true && /PLUM/.test(afterSummary.conversation.prefill ?? ""), JSON.stringify(afterSummary).slice(0, 160));
+// The message sent during the summary is written before the summary's mark, yet Claude began it after.
+const boundarySeq = sumEvents.find((e) => e.kind === "claude" && e.msg.subtype === "compact_boundary").seq;
+const duringSummary = await refusal(() => rewind(summed.id, sumSeqs[2], "conversation").then((r) => (r.conversation?.ok ? "" : JSON.stringify(r))));
+check(
+  "a message sent while Claude was summarizing can be gone back to: Claude began it after the summary",
+  sumSeqs[2] < boundarySeq && duringSummary === "",
+  `sent at ${sumSeqs[2]}, summary's mark at ${boundarySeq}; ${duringSummary || "went back"}; unstarted then: ${JSON.stringify(boundary?.msg.hangar_unstarted)}`,
+);
 await api("DELETE", `/sessions/${summed.id}`);
 
 // 2. An agent started by an agent. Claude Code announces the inner one (started, doing, ended)

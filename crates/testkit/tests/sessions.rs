@@ -1587,3 +1587,36 @@ async fn a_helper_started_by_a_helper_is_listed_while_it_runs_and_never_outlives
     assert!(s.agents.is_empty(), "{:?}", s.agents);
     assert_eq!(s.meta.status, Status::Idle);
 }
+
+#[tokio::test]
+async fn a_message_sent_while_claude_summarizes_is_begun_after_the_summary_and_can_be_gone_back_to() {
+    let home = temp_home("sess-rewind-compact-during");
+    let m = manager(&home, Config::default());
+    let a = m.create(new(&home, "hello one")).unwrap().meta.id;
+    wait_status(&m, &a, Status::Idle).await;
+    // The summary takes a moment. A message sent in that moment is written before the summary's
+    // mark in the history, but Claude begins it after: Claude Code says when it begins each
+    // message, and the summary's mark is kept with what was still to begin.
+    m.send(&a, "/compact slowly").unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    m.send(&a, "hello during").unwrap();
+    wait_turns(&m, &a, 3).await;
+    wait_status(&m, &a, Status::Idle).await;
+    let seqs = user_seqs(&m, &a);
+    let boundary = m
+        .events(&a, 0)
+        .unwrap()
+        .into_iter()
+        .find_map(|e| match e.body {
+            EventBody::Claude { msg } if msg["subtype"] == "compact_boundary" => Some((e.seq, msg)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(seqs[2] < boundary.0, "the message was written before the summary's mark");
+    assert_eq!(boundary.1["hangar_unstarted"].as_array().map(Vec::len), Some(1), "{}", boundary.1);
+    // What came before the summary is refused; the message sent during it is not.
+    assert!(m.rewind(&a, seqs[0], Rewind::Preview).await.unwrap_err().to_string().contains("before Claude summarized"));
+    assert!(m.rewind(&a, seqs[1], Rewind::Preview).await.unwrap_err().to_string().contains("before Claude summarized"));
+    assert_eq!(m.rewind(&a, seqs[2], Rewind::Preview).await.unwrap()["can_restore"], true);
+    assert_eq!(m.rewind(&a, seqs[2], Rewind::Conversation).await.unwrap(), json!({"conversation": {"ok": true, "prefill": "hello during"}}));
+}

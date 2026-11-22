@@ -155,6 +155,8 @@ struct Fake {
     prompts: Vec<Prompt>,
     /// A request is waiting: a turn is running.
     waiting: bool,
+    /// The ids of the messages that arrived while a request was waiting.
+    held_ids: Vec<String>,
 }
 
 /// A message of the user's, as rewinding sees it.
@@ -199,6 +201,14 @@ impl Fake {
         };
         out(json!({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": body}}));
         true
+    }
+
+    /// Says what became of the messages that arrived while a request was waiting: `started`
+    /// when the turn takes them in, `cancelled` when it is stopped first.
+    fn release_held(&mut self, state: &str) {
+        for uuid in std::mem::take(&mut self.held_ids) {
+            out(json!({"type": "command_lifecycle", "command_uuid": uuid, "state": state, "session_id": self.session_id}));
+        }
     }
 
     /// Where what rewinding needs is kept between processes of one conversation.
@@ -552,17 +562,21 @@ impl Fake {
                 if stops_asker || !self.control(&v) {
                     out(json!({"type": "control_response", "response": {"subtype": "success", "request_id": v["request_id"], "response": {}}}));
                     out(json!({"type": "control_cancel_request", "request_id": request_id}));
+                    self.release_held("cancelled");
                     return Decision::Interrupted;
                 }
             } else if v["type"] == "user" {
                 let text = v["message"]["content"].as_str().unwrap_or_default().to_string();
                 // Taken into the running turn: part of the conversation, without a checkpoint of its own.
                 if let Some(uuid) = v["uuid"].as_str() {
+                    out(json!({"type": "command_lifecycle", "command_uuid": uuid, "state": "queued", "session_id": self.session_id}));
+                    self.held_ids.push(uuid.to_string());
                     self.prompts.push(Prompt { uuid: uuid.to_string(), text: text.clone(), gone: false, changed: Vec::new(), checkpoint: false });
                     self.remember();
                 }
                 self.held.push(text);
             } else if v["type"] == "control_response" && v["response"]["request_id"] == request_id {
+                self.release_held("started");
                 let r = &v["response"]["response"];
                 return if r["behavior"] == "allow" {
                     Decision::Allow(r.clone())
@@ -631,6 +645,7 @@ fn main() {
         checkpoints: std::env::var("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING").is_ok(),
         prompts: Vec::new(),
         waiting: false,
+        held_ids: Vec::new(),
     };
     // Only a conversation that is resumed remembers its messages. A fresh one starts clean,
     // whatever a run long ago left under the same name (process ids are used again).
@@ -847,14 +862,18 @@ fn main() {
                     fake.done("The helper planned the work, with a helper of its own.");
                     continue;
                 }
-                if text.trim() == "/compact" {
+                if text.trim() == "/compact" || text.trim() == "/compact slowly" {
                     // Claude summarizes the conversation. What came before can no longer be gone back to.
+                    // (`slowly`: it takes 0.6 s, in which a message can be sent that is begun after it.)
                     for p in &mut fake.prompts {
                         p.gone = true;
                         p.checkpoint = false;
                     }
                     fake.remember();
                     fake.system("status", json!({"status": "compacting"}));
+                    if text.contains("slowly") {
+                        std::thread::sleep(std::time::Duration::from_millis(600));
+                    }
                     fake.system("status", json!({"status": null, "compact_result": "success"}));
                     fake.system(
                         "compact_boundary",

@@ -170,7 +170,9 @@ fn spawn_detached_daemon(home: &Path) -> Result<()> {
     // HANGAR_UI_PORT: the port the app is served on, instead of 7317 (0: any
     // free one). For a second hangar beside the usual one, a test's for one:
     // it must not take the usual port while the usual hangar is stopped.
-    if let Some(port) = std::env::var("HANGAR_UI_PORT").ok().and_then(|p| p.trim().parse::<u16>().ok()) {
+    if let Ok(port) = std::env::var("HANGAR_UI_PORT") {
+        // A value that is no port must not end in the usual port after all.
+        let port: u16 = port.trim().parse().map_err(|_| anyhow::anyhow!("HANGAR_UI_PORT must be a port number (0 for any free port), not {port:?}"))?;
         cmd.args(["--ui-port", &port.to_string()]);
     }
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());

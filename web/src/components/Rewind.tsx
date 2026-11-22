@@ -31,6 +31,8 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
   const [preview, setPreview] = useState<RewindPreview | null>(null);
   const [asking, setAsking] = useState(false);
   const [focus, setFocus] = useState(-1);
+  // The message the list's highlight is on; null for "(current)".
+  const [onMessage, setOnMessage] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [problems, setProblems] = useState<string[]>([]);
   const box = useRef<HTMLDivElement>(null);
@@ -82,8 +84,12 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
   // Claude Code starts on "both" when code can be restored, else on "conversation".
   const chosen: RewindChoice = focus >= 0 && focus < choices.length ? choices[focus].value : canRestoreCode(preview) ? "both" : "conversation";
   const chosenAt = choices.findIndex((c) => c.value === chosen);
-  // The list ends in "(current)", where it starts.
-  const listAt = focus >= 0 && focus <= points.length ? focus : points.length;
+  // The list ends in "(current)", where it starts. The highlight belongs to a message, not to a
+  // place: a message that arrives meanwhile (from another window) must not move it to another row.
+  const listAt = (() => {
+    const at = onMessage === null ? -1 : points.findIndex((p) => p.seq === onMessage && p.canRewind);
+    return at >= 0 ? at : points.length;
+  })();
 
   const run = async (choice: RewindChoice) => {
     if (!picked || busy) return;
@@ -136,7 +142,8 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
         next = (next + (e.key === "ArrowDown" ? 1 : count - 1)) % count;
         if (picked || next === points.length || points[next].canRewind) break;
       }
-      setFocus(next);
+      if (picked) setFocus(next);
+      else setOnMessage(next === points.length ? null : points[next].seq);
     } else if (picked && !asking && /^[1-9]$/.test(e.key) && Number(e.key) <= choices.length) {
       // A number chooses that line, as in Claude Code's lists.
       e.preventDefault();
@@ -150,6 +157,8 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
 
   // Restoring the conversation stops agents still at work: Claude Code will not take it back while one runs.
   const agentsRunning = (session.agents ?? []).length > 0;
+  // Stopping a turn ends the agents inside it. Those in the background go on unless the conversation goes back.
+  const inBackground = (session.agents ?? []).some((a) => a.background);
   const [conversationLine, codeLine] = choiceLines(chosen, preview);
   return (
     <div className="animate-fade fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-[14vh]" onMouseDown={(e) => e.target === e.currentTarget && back()}>
@@ -178,8 +187,8 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                   aria-selected={i === listAt}
                   aria-disabled={!p.canRewind}
                   data-rewind-point={p.seq}
-                  onMouseMove={() => p.canRewind && focus !== i && setFocus(i)}
-                  onFocus={() => p.canRewind && setFocus(i)}
+                  onMouseMove={() => p.canRewind && onMessage !== p.seq && setOnMessage(p.seq)}
+                  onFocus={() => p.canRewind && setOnMessage(p.seq)}
                   onClick={() => pick(p)}
                   className={cx("block w-full rounded-md px-3 py-2 text-left", i === listAt ? "bg-accent-soft" : "hover:bg-raised", !p.canRewind && "cursor-default opacity-50")}
                 >
@@ -191,8 +200,8 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                 role="option"
                 aria-selected={listAt === points.length}
                 data-rewind-current
-                onMouseMove={() => focus !== points.length && setFocus(points.length)}
-                onFocus={() => setFocus(points.length)}
+                onMouseMove={() => onMessage !== null && setOnMessage(null)}
+                onFocus={() => setOnMessage(null)}
                 onClick={onClose}
                 className={cx("block w-full rounded-md px-3 py-2 text-left text-[13px] text-muted", listAt === points.length ? "bg-accent-soft" : "hover:bg-raised")}
               >
@@ -249,7 +258,7 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                     The code cannot be restored: {visible(preview.error).slice(0, 300)}
                   </p>
                 )}
-                {chosen === "code" && agentsRunning && !session.in_turn && (
+                {chosen === "code" && inBackground && (
                   <p className="mt-2 text-[12px] text-s-needs" data-rewind-agents-go-on>
                     Agents that are still running are not stopped, and may change files again.
                   </p>

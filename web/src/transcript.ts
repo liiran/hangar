@@ -285,7 +285,11 @@ export function toRows(events: SessionEvent[]): Row[] {
         } else if (m.type === "system" && m.subtype === "compact_boundary") {
           // Claude summarized the conversation. What came before cannot be gone back to, except
           // what Claude Code says it kept word for word.
-          const keptWhole: unknown[] = Array.isArray(m.compact_metadata?.preserved_messages?.all_uuids) ? m.compact_metadata.preserved_messages.all_uuids : [];
+          // (Also what was sent but not begun when the summary was made: Claude takes that up after it.)
+          const keptWhole: unknown[] = [
+            ...(Array.isArray(m.compact_metadata?.preserved_messages?.all_uuids) ? m.compact_metadata.preserved_messages.all_uuids : []),
+            ...(Array.isArray(m.hangar_unstarted) ? m.hangar_unstarted : []),
+          ];
           for (const [uuid, row] of byUuid) if (!keptWhole.includes(uuid)) row.summarized = true;
           for (const r of rows) if (r.kind === "user" && !r.canRewind) r.summarized = true;
         } else if (m.type === "system" && typeof m.subtype === "string" && m.subtype.startsWith("task_")) {

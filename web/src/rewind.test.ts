@@ -63,6 +63,16 @@ describe("the messages that can be gone back to", () => {
       ["kept whole", true, "No edits"],
       ["after", true, "No edits"],
     ]);
+    // A message sent while the summary was being made is begun after it: it stays.
+    const during = [
+      ev({ kind: "user", text: "/compact", uuid: "c1" }),
+      ev({ kind: "user", text: "sent meanwhile", uuid: "m1" }),
+      ev({ kind: "claude", msg: { type: "system", subtype: "compact_boundary", compact_metadata: { preserved_messages: { all_uuids: [] } }, hangar_unstarted: ["m1"] } }),
+    ];
+    expect(rewindPoints(toRows(during), "C:\\app").map((p) => [p.text, p.canRewind])).toEqual([
+      ["/compact", false],
+      ["sent meanwhile", true],
+    ]);
     // A boundary that names nothing kept (an older Claude Code) leaves nothing before it.
     const bare = [ev({ kind: "user", text: "a", uuid: "u1" }), ev({ kind: "claude", msg: { type: "system", subtype: "compact_boundary" } }), ev({ kind: "user", text: "b", uuid: "u2" })];
     expect(rewindPoints(toRows(bare), "C:\\app").map((p) => p.canRewind)).toEqual([false, true]);
