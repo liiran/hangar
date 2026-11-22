@@ -175,11 +175,14 @@ async fn leaving_session_cancels_its_requests_upstream() {
     let d = start_daemon(&home, config(&[("fake", Share::Global)])).await;
     let a = client(&home, "fake", &[]).await;
     let b = client(&home, "fake", &[]).await;
-    a.send(&jsonrpc::request(json!(77), "tools/call", json!({"name": "slow", "arguments": {"ms": 3000}}))).await.unwrap();
+    // The call runs far longer than the two seconds the pool waits before it gives a session
+    // up, so it cannot end by itself before the pool cancels it, however busy the PC is. (With a
+    // 3 s call the margin was 0.8 s, and under load the call sometimes finished first.)
+    a.send(&jsonrpc::request(json!(77), "tools/call", json!({"name": "slow", "arguments": {"ms": 30000}}))).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
     a.close_stdin().await;
     let mut cancelled = Value::Null;
-    for _ in 0..40 {
+    for _ in 0..120 {
         cancelled = server_stats(&b).await["cancelled"].clone();
         if cancelled.as_array().is_some_and(|c| !c.is_empty()) {
             break;
@@ -216,7 +219,9 @@ async fn idle_shared_server_is_stopped() {
     let pid: u32 = tool(&a, "pid", json!({})).await.unwrap().parse().unwrap();
     a.close_stdin().await;
     let pool = d.pool.clone();
-    assert!(eventually(Duration::from_secs(10), || !hangar::procs::is_alive(pid)).await, "idle server stopped");
+    // Three seconds on a quiet PC (the wait for the session, then the idle time); a busy one
+    // once took more than ten.
+    assert!(eventually(Duration::from_secs(40), || !hangar::procs::is_alive(pid)).await, "idle server stopped");
     assert!(pool.stats().await.is_empty());
     // A new session starts it again.
     let b = client(&home, "fake", &[]).await;
