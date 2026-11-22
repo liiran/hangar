@@ -49,8 +49,8 @@ export function fileNames(files: string[]): string {
 
 /** Under a message in the list: what Claude edited in that turn. hangar's line, from the feed. */
 export function editedLine(point: RewindPoint): string {
-  // After a summary Claude Code can go back past it only now and then (not once its process has
-  // been restarted), and its own terminal does not list such messages: hangar offers none.
+  // After a summary Claude Code can go back past it only until its process is restarted, and
+  // hangar restarts processes as it sees fit. hangar's own rule: it offers none of them.
   if (point.summarized) return "Before Claude summarized the conversation";
   if (!point.canRewind) return "Sent before hangar could rewind";
   // Claude Code's words for a message it took into a running turn.

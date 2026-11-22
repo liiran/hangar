@@ -157,7 +157,8 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
 
   // Restoring the conversation stops agents still at work: Claude Code will not take it back while one runs.
   const agentsRunning = (session.agents ?? []).length > 0;
-  // Stopping a turn ends the agents inside it. Those in the background go on unless the conversation goes back.
+  // Stopping a turn ends every agent with it, those in the background too (seen on Claude Code
+  // 2.1.330). With no turn running, agents in the background go on unless the conversation goes back.
   const inBackground = (session.agents ?? []).some((a) => a.background);
   const [conversationLine, codeLine] = choiceLines(chosen, preview);
   return (
@@ -258,14 +259,18 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                     The code cannot be restored: {visible(preview.error).slice(0, 300)}
                   </p>
                 )}
-                {chosen === "code" && inBackground && (
+                {chosen === "code" && inBackground && !session.in_turn && (
                   <p className="mt-2 text-[12px] text-s-needs" data-rewind-agents-go-on>
                     Agents that are still running are not stopped, and may change files again.
                   </p>
                 )}
                 {chosen !== "nevermind" && (session.in_turn || (agentsRunning && chosen !== "code")) && (
                   <p className="mt-2 text-[12px] text-faint" data-rewind-stops>
-                    {session.in_turn ? "The turn that is running is stopped first." : "The agents that are running are stopped first."}
+                    {session.in_turn
+                      ? agentsRunning
+                        ? "The turn that is running is stopped first, and the agents with it."
+                        : "The turn that is running is stopped first."
+                      : "The agents that are running are stopped first."}
                   </p>
                 )}
                 <p className="mt-3 flex items-center gap-1.5 text-[11.5px] text-faint">

@@ -791,7 +791,7 @@ try {
   await composer.fill("");
 
   // After Claude has summarized the conversation, what came before is not offered: Claude Code
-  // can go back past a summary only until its process is restarted, and its terminal lists none.
+  // can go back past a summary only until its process is restarted (hangar's own, stricter rule).
   const sumId = await start("change before.ts, then summarize", "acceptEdits");
   await main.locator("text=changed before.ts").waitFor();
   await say("/compact");
@@ -871,6 +871,32 @@ try {
   check("Restore code left the agent running and the session working", wentOn.agents.length === 1 && wentOn.status === "working" && (await main.locator("[data-rewound]").count()) === 1, `${wentOn.status}, ${wentOn.agents.length} agent(s)`);
   await page.locator("header button", { hasText: "Stop" }).click();
   await idle(goOnId);
+
+  // A turn and an agent in the background both running: stopping the turn ends the agent with
+  // it (seen on Claude Code 2.1.330), so Restore code says that, and not that agents go on.
+  // (A session of its own: in the one above the code was just restored, so nothing is left to restore.)
+  const bothId = await start("change both.ts, then a turn and a helper", "acceptEdits");
+  await main.locator("text=changed both.ts").waitFor();
+  await idle(bothId);
+  await say("helper start");
+  await main.locator('[data-agent-state="running"]').waitFor();
+  await say("use tool with the helper behind it");
+  await main.locator("text=Claude wants to use Bash").waitFor();
+  await main.locator("[data-rewind-to]").first().click();
+  await dialog.locator('[data-rewind-choice="both"]').waitFor();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  check(
+    "with a turn and an agent both running, Restore code says the turn is stopped and the agents with it",
+    (await dialog.locator('[data-rewind-choice][aria-selected="true"]').getAttribute("data-rewind-choice")) === "code" &&
+      (await flat(dialog.locator("[data-rewind-stops]"))) === "The turn that is running is stopped first, and the agents with it." &&
+      (await dialog.locator("[data-rewind-agents-go-on]").count()) === 0,
+  );
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "detached" });
+  await idle(bothId);
+  const bothStopped = await session(bothId);
+  check("…and that is what happens: the turn and the agent are both stopped", bothStopped.agents.length === 0 && bothStopped.status === "idle" && bothStopped.pending.length === 0, `${bothStopped.status}, ${bothStopped.agents.length} agent(s)`);
 
   // ================================================================ stopping hangar
   const other = await ctx.newPage(); // a second window on the same daemon

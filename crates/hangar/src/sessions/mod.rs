@@ -1201,10 +1201,11 @@ impl Manager {
         let uuid = uuid.context("this message was sent before hangar could rewind; only later ones can be gone back to")?;
         // Past a summary Claude Code goes back only while the process that
         // made the summary still runs; after a restart it has neither the
-        // message nor its file checkpoint (seen on 2.1.330). Its terminal
-        // does not list such messages at all. hangar restarts processes as
-        // it sees fit, so it offers none of them either, except those Claude
-        // Code said it kept word for word.
+        // message nor its file checkpoint (seen on 2.1.330). hangar restarts
+        // processes as it sees fit, so what worked would depend on that.
+        // hangar's own rule, stricter than Claude Code's: nothing from before
+        // a summary is offered, except what Claude Code said it kept word for
+        // word and what was sent but not begun when the summary was made.
         if let Some((at, kept_whole)) = &summarized
             && seq < *at
             && !kept_whole.contains(&uuid)
@@ -1244,8 +1245,12 @@ impl Manager {
     /// Stops what runs in a session and waits until nothing does: a turn,
     /// a turn that is about to begin (a message just sent, or the turn
     /// Claude Code starts by itself when an agent has reported), and with
-    /// `with_helpers` the helper agents too. Stop ends the turn; with no
-    /// turn left, it ends the helpers.
+    /// `with_helpers` the helper agents too.
+    ///
+    /// Stop ends a running turn and, with it or without one, every helper
+    /// in the background (seen on 2.1.330). So it is sent only for a turn
+    /// that runs or for helpers that must go: a turn that is only about
+    /// to begin is waited for, or helpers that may stay would be ended.
     async fn quiet(&self, id: &str, with_helpers: bool, give_up: Instant) -> Result<()> {
         let busy = || {
             self.inner.locked().sessions.get(id).is_some_and(|s| {
@@ -1256,9 +1261,11 @@ impl Manager {
                 })
             })
         };
+        let to_stop =
+            || self.inner.locked().sessions.get(id).is_some_and(|s| s.run.as_ref().is_some_and(|r| r.turn || (with_helpers && !r.helpers.is_empty())));
         let mut asked: Option<Instant> = None;
         while busy() {
-            if asked.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+            if to_stop() && asked.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
                 self.interrupt(id)?;
                 asked = Some(Instant::now());
             }

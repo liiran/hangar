@@ -14,7 +14,7 @@
 //!   `task_notification`; its own messages carry `parent_tool_use_id` and
 //!   `agent_id`, and so does a request it makes. One in the background is also
 //!   listed in `background_tasks_changed`, works on after the turn's `result`,
-//!   and is stopped by an interrupt. One stopped by itself (`stop_task`) with
+//!   and is stopped by an interrupt, with or without a turn running. One stopped by itself (`stop_task`) with
 //!   no turn running is followed by a turn in which Claude says so; a stop by
 //!   interrupt is followed by nothing (recorded from 2.1.329).
 //!
@@ -432,7 +432,7 @@ impl Fake {
             json!({"task_id": task, "run_id": format!("run-{task}"), "tool_use_id": tool_use, "description": doing, "subagent_type": "general-purpose", "usage": Self::usage(n + 1), "last_tool_name": name}),
         );
         if name == "Edit" && self.mode == "default" {
-            self.asking = Some(task);
+            self.asking = Some(task.clone());
             let decision = self.ask(
                 lines,
                 &format!("perm-{id}"),
@@ -442,6 +442,8 @@ impl Fake {
                 Some(json!([{"type": "setMode", "mode": "acceptEdits", "destination": "session"}])),
             );
             self.asking = None;
+            // An interrupt ends the other helpers too: this one may have moved up in the list.
+            let i = self.helpers.iter().position(|h| h.task == task).unwrap_or(i);
             match decision {
                 Decision::Allow(_) => {}
                 Decision::Deny { .. } => {
@@ -560,6 +562,19 @@ impl Fake {
                 let stops_asker = v["request"]["subtype"] == "stop_task" && self.asking.as_deref() == v["request"]["task_id"].as_str();
                 self.stopped_alone = stops_asker;
                 if stops_asker || !self.control(&v) {
+                    if !stops_asker {
+                        // An interrupt ends every helper with the turn, those in the background
+                        // too (seen on 2.1.330). The one that is asking is ended by its caller.
+                        let asker = self.asking.clone();
+                        let mut i = 0;
+                        while i < self.helpers.len() {
+                            if asker.as_deref() == Some(self.helpers[i].task.as_str()) {
+                                i += 1;
+                            } else {
+                                self.helper_end(i, "killed");
+                            }
+                        }
+                    }
                     out(json!({"type": "control_response", "response": {"subtype": "success", "request_id": v["request_id"], "response": {}}}));
                     out(json!({"type": "control_cancel_request", "request_id": request_id}));
                     self.release_held("cancelled");

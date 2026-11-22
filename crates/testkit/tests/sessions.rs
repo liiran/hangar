@@ -1620,3 +1620,39 @@ async fn a_message_sent_while_claude_summarizes_is_begun_after_the_summary_and_c
     assert_eq!(m.rewind(&a, seqs[2], Rewind::Preview).await.unwrap()["can_restore"], true);
     assert_eq!(m.rewind(&a, seqs[2], Rewind::Conversation).await.unwrap(), json!({"conversation": {"ok": true, "prefill": "hello during"}}));
 }
+
+#[tokio::test]
+async fn stop_during_a_turn_ends_the_helpers_in_the_background_with_it() {
+    let home = temp_home("sess-helper-stop-turn");
+    let m = manager(&home, Config::default());
+    let a = m.create(new(&home, "helper start")).unwrap().meta.id;
+    let s = wait_turns(&m, &a, 1).await;
+    assert_eq!(s.agents.len(), 1);
+    // A turn of Claude's own, waiting on a request, with the helper still at work behind it.
+    m.send(&a, "use tool").unwrap();
+    let s = wait_status(&m, &a, Status::NeedsYou).await;
+    assert!(s.in_turn && s.agents.len() == 1);
+    // Stop ends the turn and the helper (as Claude Code does), and nothing follows: idle at once.
+    let before = std::time::Instant::now();
+    m.interrupt(&a).unwrap();
+    let s = wait_status(&m, &a, Status::Idle).await;
+    assert!(before.elapsed() < Duration::from_secs(2), "{:?}", before.elapsed());
+    assert!(s.agents.is_empty() && s.pending.is_empty() && !s.in_turn);
+    assert!(texts(&m, &a).contains(&"interrupted".to_string()));
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    assert_eq!(get(&m, &a).meta.status, Status::Idle, "and it stays idle: no turn follows a Stop");
+
+    // Restore code with only a helper running and no turn: nothing is stopped, the helper goes on.
+    m.send(&a, "change base.ts").unwrap();
+    wait_turns(&m, &a, 3).await;
+    wait_status(&m, &a, Status::Idle).await;
+    let base = *user_seqs(&m, &a).last().unwrap();
+    m.send(&a, "helper start").unwrap();
+    let s = wait_turns(&m, &a, 4).await;
+    assert_eq!(s.agents.len(), 1);
+    assert_eq!(m.rewind(&a, base, Rewind::Code).await.unwrap()["code"]["ok"], true);
+    let s = get(&m, &a);
+    assert_eq!((s.agents.len(), s.meta.status), (1, Status::Working), "Restore code alone stops no helper");
+    m.interrupt(&a).unwrap();
+    wait_status(&m, &a, Status::Idle).await;
+}
