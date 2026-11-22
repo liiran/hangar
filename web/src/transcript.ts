@@ -183,6 +183,7 @@ export function toRows(events: SessionEvent[]): Row[] {
   const perms = new Map<string, Extract<Row, { kind: "permission" }>>();
   // The user's messages by their number, for the row that says which one was gone back to.
   const prompts = new Map<number, string>();
+  const byUuid = new Map<string, Extract<Row, { kind: "user" }>>();
   // A helper agent's steps are kept with the Agent call that started it.
   const owner = new Map<string, ToolRow>();
   const byTask = new Map<string, ToolRow>();
@@ -194,16 +195,31 @@ export function toRows(events: SessionEvent[]): Row[] {
   for (const e of events) {
     const key = String(e.seq);
     switch (e.kind) {
-      case "user":
-        rows.push({ kind: "user", key, text: e.text, ts: e.ts, seq: e.seq, canRewind: typeof e.uuid === "string" });
+      case "user": {
+        const row = { kind: "user" as const, key, text: e.text, ts: e.ts, seq: e.seq, canRewind: typeof e.uuid === "string" };
+        rows.push(row);
         prompts.set(e.seq, e.text);
+        if (typeof e.uuid === "string") byUuid.set(e.uuid, row);
+        break;
+      }
+      case "unsent":
+        // Messages that never reached Claude: the session was stopped first.
+        for (const u of e.uuids ?? []) {
+          const row = byUuid.get(u);
+          if (row) row.canRewind = false;
+        }
         break;
       case "rewind": {
         // The conversation went back: the message and all after it are gone, as in Claude
-        // Code's terminal. Every row's key starts with the number of the event it came from.
+        // Code's terminal, up to what was sent while the rewind ran (`until`). Every row's
+        // key starts with the number of the event it came from.
         if (e.conversation) {
-          const cut = rows.findIndex((r) => Number(r.key.split(".")[0]) >= e.to);
-          if (cut >= 0) rows.length = cut;
+          const kept = rows.filter((r) => {
+            const n = Number(r.key.split(".")[0]);
+            return n < e.to || (e.until != null && n >= e.until);
+          });
+          rows.length = 0;
+          rows.push(...kept);
         }
         rows.push({ kind: "rewind", key, text: prompts.get(e.to) ?? "", code: e.code ?? undefined, conversation: !!e.conversation });
         break;

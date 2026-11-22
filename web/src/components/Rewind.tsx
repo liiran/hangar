@@ -103,6 +103,26 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
 
   const onKey = (e: React.KeyboardEvent) => {
     if (busy || problems.length > 0) return;
+    // A key held down does not confirm what it has not seen.
+    if (e.repeat && (e.key === "Enter" || /^[0-9]$/.test(e.key))) return e.preventDefault();
+    // Enter on a button reached with Tab does that button, not the highlighted line.
+    const target = e.target as HTMLElement;
+    if (e.key === "Enter" && target.dataset?.rewindChoice) {
+      e.preventDefault();
+      if (!asking) run(target.dataset.rewindChoice as RewindChoice);
+      return;
+    }
+    if (e.key === "Enter" && target.dataset?.rewindPoint) {
+      e.preventDefault();
+      const point = points.find((p) => String(p.seq) === target.dataset.rewindPoint);
+      if (point) pick(point);
+      return;
+    }
+    if (e.key === "Enter" && target.dataset?.rewindCurrent !== undefined) {
+      e.preventDefault();
+      onClose();
+      return;
+    }
     const count = picked ? choices.length : points.length + 1;
     const at = picked ? chosenAt : listAt;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -126,7 +146,8 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
     }
   };
 
-  const working = session.in_turn || (session.agents ?? []).length > 0;
+  // Restoring the conversation stops agents still at work: Claude Code will not take it back while one runs.
+  const agentsRunning = (session.agents ?? []).length > 0;
   const [conversationLine, codeLine] = choiceLines(chosen, preview);
   return (
     <div className="animate-fade fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-[14vh]" onMouseDown={(e) => e.target === e.currentTarget && back()}>
@@ -156,6 +177,7 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                   aria-disabled={!p.canRewind}
                   data-rewind-point={p.seq}
                   onMouseEnter={() => p.canRewind && setFocus(i)}
+                  onFocus={() => p.canRewind && setFocus(i)}
                   onClick={() => pick(p)}
                   className={cx("block w-full rounded-md px-3 py-2 text-left", i === listAt ? "bg-accent-soft" : "hover:bg-raised", !p.canRewind && "cursor-default opacity-50")}
                 >
@@ -168,6 +190,7 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                 aria-selected={listAt === points.length}
                 data-rewind-current
                 onMouseEnter={() => setFocus(points.length)}
+                onFocus={() => setFocus(points.length)}
                 onClick={onClose}
                 className={cx("block w-full rounded-md px-3 py-2 text-left text-[13px] text-muted", listAt === points.length ? "bg-accent-soft" : "hover:bg-raised")}
               >
@@ -205,6 +228,7 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                       data-rewind-choice={c.value}
                       disabled={busy}
                       onMouseEnter={() => setFocus(i)}
+                      onFocus={() => setFocus(i)}
                       onClick={() => run(c.value)}
                       className={cx("flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-left text-[13px]", i === chosenAt ? "bg-accent-soft text-fg" : "text-muted hover:bg-raised", busy && "opacity-60")}
                     >
@@ -223,7 +247,7 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                     The code cannot be restored: {visible(preview.error).slice(0, 300)}
                   </p>
                 )}
-                {working && chosen !== "nevermind" && (
+                {chosen !== "nevermind" && (session.in_turn || (agentsRunning && chosen !== "code")) && (
                   <p className="mt-2 text-[12px] text-faint" data-rewind-stops>
                     {session.in_turn ? "The turn that is running is stopped first." : "The agents that are running are stopped first."}
                   </p>

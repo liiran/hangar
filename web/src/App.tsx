@@ -53,6 +53,8 @@ export function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
+      // The Rewind dialog keeps the keyboard while it is open, as Claude Code's does.
+      if (overlay === "rewind") return;
       if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
         if (overlay !== "new") open(overlay === "palette" ? null : "palette");

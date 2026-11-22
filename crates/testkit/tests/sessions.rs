@@ -1214,7 +1214,7 @@ fn rewinds(m: &Manager, id: &str) -> Vec<(u64, Option<Value>, bool)> {
         .unwrap()
         .into_iter()
         .filter_map(|e| match e.body {
-            EventBody::Rewind { to, code, conversation } => Some((to, code, conversation)),
+            EventBody::Rewind { to, code, conversation, .. } => Some((to, code, conversation)),
             _ => None,
         })
         .collect()
@@ -1410,4 +1410,84 @@ async fn rewinding_works_after_a_restart_puts_the_mode_back_and_stops_agents_fir
     let full = user_seqs(&m, &a).into_iter().rev().nth(1).unwrap();
     assert_eq!(m.rewind(&a, full, Rewind::Conversation).await.unwrap(), json!({"conversation": {"ok": true, "prefill": "sent with full access"}}));
     assert_eq!(get(&m, &a).meta.permission_mode, "default");
+}
+
+#[tokio::test]
+async fn rewinding_refuses_what_it_cannot_do_safely_and_runs_one_restore_at_a_time() {
+    let home = temp_home("sess-rewind-safe");
+    let m = manager(&home, Config::default());
+
+    // One place for sessions, and idle ones are not paused for another: a message to a stopped
+    // session then waits in the queue.
+    let busy_home = temp_home("sess-rewind-safe-q");
+    let mut cfg = Config::default();
+    cfg.budget.max_sessions = 1;
+    cfg.budget.reclaim_idle_after_secs = 3600;
+    let q = manager(&busy_home, cfg);
+    let x = q.create(new(&busy_home, "hello x one")).unwrap().meta.id;
+    wait_status(&q, &x, Status::Idle).await;
+    q.send(&x, "hello x two").unwrap();
+    wait_turns(&q, &x, 2).await;
+    wait_status(&q, &x, Status::Idle).await;
+    q.stop(&x).unwrap();
+    wait_status(&q, &x, Status::Stopped).await;
+    let holder = q.create(new(&busy_home, "hello holder")).unwrap().meta.id;
+    wait_status(&q, &holder, Status::Idle).await;
+
+    // X has a message waiting to be sent. Going back would start it past the budget and send
+    // the message first: it is refused, and X stays in the queue.
+    q.send(&x, "hello x dropped").unwrap();
+    assert_eq!(get(&q, &x).meta.status, Status::Queued);
+    let seqs = user_seqs(&q, &x);
+    let refused = q.rewind(&x, seqs[0], Rewind::Preview).await.unwrap_err().to_string();
+    assert!(refused.contains("messages waiting to be sent"), "{refused}");
+    assert_eq!(get(&q, &x).meta.status, Status::Queued, "not started past the budget");
+
+    // Stop drops that message. It never reached Claude: it cannot be gone back to, and it does
+    // not count as the newest message Claude has (Claude Code would refuse the rewind if named).
+    q.stop(&x).unwrap();
+    wait_status(&q, &x, Status::Stopped).await;
+    assert!(q.rewind(&x, seqs[2], Rewind::Preview).await.unwrap_err().to_string().contains("not in the conversation"));
+    q.stop(&holder).unwrap();
+    wait_status(&q, &holder, Status::Stopped).await;
+    assert_eq!(q.rewind(&x, seqs[1], Rewind::Conversation).await.unwrap(), json!({"conversation": {"ok": true, "prefill": "hello x two"}}));
+
+    // A session stopped before it ever started has no conversation: it is not started for a rewind.
+    let never = q.create(new(&busy_home, "hello never")).unwrap().meta.id;
+    q.stop(&never).unwrap();
+    wait_status(&q, &never, Status::Stopped).await;
+    let first_of_never = user_seqs(&q, &never)[0];
+    assert!(q.rewind(&never, first_of_never, Rewind::Preview).await.is_err());
+    assert!(get(&q, &never).pid.is_none());
+
+    let a = m.create(new(&home, "hello one")).unwrap().meta.id;
+    wait_status(&m, &a, Status::Idle).await;
+    m.send(&a, "hello two").unwrap();
+    wait_turns(&m, &a, 2).await;
+    wait_status(&m, &a, Status::Idle).await;
+
+    // A restore right after a message was sent: the turn it starts is waited for (and stopped), so
+    // Claude Code is not asked while it is starting it.
+    m.send(&a, "slow hello three").unwrap();
+    let now = user_seqs(&m, &a);
+    let three = now[now.len() - 1];
+    let one = now[0];
+    assert_eq!(m.rewind(&a, three, Rewind::Conversation).await.unwrap()["conversation"], json!({"ok": true, "prefill": "slow hello three"}));
+    wait_status(&m, &a, Status::Idle).await;
+    m.send(&a, "recall").unwrap();
+    let s = wait_turns(&m, &a, 4).await;
+    assert_eq!(texts(&m, &a).last().unwrap(), "I remember: hello one | hello two | recall", "{:?}", s.meta.status);
+    wait_status(&m, &a, Status::Idle).await;
+
+    // One restore at a time: a second one, asked while the first runs, is refused.
+    m.send(&a, "use tool now").unwrap();
+    wait_status(&m, &a, Status::NeedsYou).await;
+    let tool = *user_seqs(&m, &a).last().unwrap();
+    let (first_try, second_try) = tokio::join!(m.rewind(&a, tool, Rewind::Conversation), async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        m.rewind(&a, one, Rewind::Conversation).await
+    });
+    assert_eq!(first_try.unwrap()["conversation"]["ok"], true);
+    assert!(second_try.unwrap_err().to_string().contains("already going back"));
+    wait_status(&m, &a, Status::Idle).await;
 }

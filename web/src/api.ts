@@ -100,7 +100,8 @@ export interface DecisionExtra {
 
 export type EventBody =
   | { kind: "user"; text: string; uuid?: string; mode?: string }
-  | { kind: "rewind"; to: number; code?: RewindRestored | null; conversation: boolean }
+  | { kind: "rewind"; to: number; code?: RewindRestored | null; conversation: boolean; until?: number | null }
+  | { kind: "unsent"; uuids: string[] }
   | { kind: "claude"; msg: any }
   | { kind: "permission"; request_id: string; tool_name: string; input: any; suggestions?: unknown; description?: string | null; agent_id?: string | null }
   | { kind: "decision"; request_id: string; behavior: Decision; detail?: DecisionDetail | null }

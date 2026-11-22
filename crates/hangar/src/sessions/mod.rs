@@ -233,6 +233,15 @@ pub enum EventBody {
         code: Option<Value>,
         #[serde(default)]
         conversation: bool,
+        /// The history's next number when Claude Code was asked: what came
+        /// after (a message sent while the rewind ran) is not taken back.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<u64>,
+    },
+    /// Messages that never reached Claude: they were waiting to be sent when
+    /// the session was stopped. They cannot be gone back to.
+    Unsent {
+        uuids: Vec<String>,
     },
     /// A stream-json message from Claude Code (assistant, user/tool results,
     /// result, system). Results carry `turn_cost_usd`, the cost of that turn.
@@ -565,6 +574,8 @@ struct Run {
     unconfirmed: Vec<(String, String)>,
     /// Requests to Claude Code whose answers someone waits for, by request id.
     waiting: HashMap<String, oneshot::Sender<Result<Value, String>>>,
+    /// A message was sent and its turn has not begun yet (`init` not seen).
+    awaiting_turn: bool,
     asked: u64,
     /// Last cumulative `total_cost_usd` reported by this process.
     cost_seen: f64,
@@ -704,6 +715,8 @@ struct Session {
     /// What rewinding to a message would put back in the files, as last
     /// previewed: the message's `seq` and Claude Code's answer.
     preview: Option<(u64, Value)>,
+    /// A restore is under way: a second one waits for it to end.
+    rewinding: bool,
 }
 
 impl Session {
@@ -719,6 +732,7 @@ impl Session {
             mcp: Vec::new(),
             stopping: None,
             preview: None,
+            rewinding: false,
         }
     }
 
@@ -1000,6 +1014,7 @@ impl Manager {
         match s.run.as_mut().filter(|_| deliverable) {
             Some(run) => {
                 run.driver.send_user(&uuid, text);
+                run.awaiting_turn = true;
                 if !run.initialized {
                     run.unconfirmed.push((uuid.clone(), text.to_string()));
                 }
@@ -1086,7 +1101,7 @@ impl Manager {
     }
 
     /// Sends Claude Code a request and returns where its answer will arrive.
-    fn ask(&self, id: &str, request: Value) -> Result<oneshot::Receiver<Result<Value, String>>> {
+    fn ask(&self, id: &str, request: Value) -> Result<(String, oneshot::Receiver<Result<Value, String>>)> {
         let mut inner = self.inner.locked();
         let s = inner.sessions.get_mut(id).context("no such session")?;
         if s.stopping.is_some() {
@@ -1098,17 +1113,22 @@ impl Manager {
         let (tx, rx) = oneshot::channel();
         run.waiting.insert(request_id.clone(), tx);
         run.driver.request(&request_id, request);
-        Ok(rx)
+        Ok((request_id, rx))
     }
 
     /// Claude Code's answer to `request`. An error is its refusal, in its words.
     async fn answer(&self, id: &str, request: Value) -> Result<Value> {
-        let waiting = self.ask(id, request)?;
+        let (request_id, waiting) = self.ask(id, request)?;
         match tokio::time::timeout(Duration::from_secs(60), waiting).await {
             Ok(Ok(Ok(answer))) => Ok(answer),
             Ok(Ok(Err(refusal))) => bail!("{refusal}"),
             Ok(Err(_)) => bail!("the session's process ended before it answered"),
-            Err(_) => bail!("Claude Code did not answer in time"),
+            Err(_) => {
+                if let Some(run) = self.inner.locked().sessions.get_mut(id).and_then(|s| s.run.as_mut()) {
+                    run.waiting.remove(&request_id);
+                }
+                bail!("Claude Code did not answer in time")
+            }
         }
     }
 
@@ -1136,7 +1156,8 @@ impl Manager {
                 EventBody::Decision { detail: Some(d), .. } if d["note_id"].is_string() => {
                     kept.push((e.seq, d["note_id"].as_str().map(String::from), false, None))
                 }
-                EventBody::Rewind { to, conversation: true, .. } => kept.retain(|(k, ..)| *k < to),
+                EventBody::Rewind { to, conversation: true, until, .. } => kept.retain(|(k, ..)| *k < to || until.is_some_and(|u| *k >= u)),
+                EventBody::Unsent { uuids } => kept.retain(|(_, u, ..)| !u.as_ref().is_some_and(|u| uuids.contains(u))),
                 _ => {}
             }
         }
@@ -1159,6 +1180,13 @@ impl Manager {
         if s.run.is_some() {
             return Ok(());
         }
+        // Starting it would send them, and they belong after whatever is gone back to.
+        if !s.meta.outbox.is_empty() {
+            bail!("this session has messages waiting to be sent; go back once they have reached Claude");
+        }
+        if s.meta.claude_session_id.is_none() {
+            bail!("this session has no conversation with Claude to go back in");
+        }
         inner.queue.retain(|q| q != id);
         self.launch(&mut inner, id);
         let s = inner.sessions.get(id).context("no such session")?;
@@ -1179,6 +1207,30 @@ impl Manager {
     /// skipped, for the conversation the message's text to put back in the
     /// message box. A part that failed carries Claude Code's own `error`.
     pub async fn rewind(self: &Arc<Self>, id: &str, seq: u64, what: Rewind) -> Result<Value> {
+        let restore = what != Rewind::Preview;
+        if restore {
+            let mut inner = self.inner.locked();
+            let s = inner.sessions.get_mut(id).context("no such session")?;
+            if s.rewinding {
+                bail!("this session is already going back; wait for that to finish");
+            }
+            s.rewinding = true;
+        }
+        // The work runs on by itself: a window closed in the middle must not
+        // leave Claude Code's conversation gone back with nothing recorded.
+        let me = Arc::clone(self);
+        let session = id.to_string();
+        let work = tokio::spawn(async move {
+            let done = me.rewind_now(&session, seq, what).await;
+            if restore && let Some(s) = me.inner.locked().sessions.get_mut(&session) {
+                s.rewinding = false;
+            }
+            done
+        });
+        work.await.map_err(|e| anyhow::anyhow!("the rewind stopped: {e}"))?
+    }
+
+    async fn rewind_now(self: &Arc<Self>, id: &str, seq: u64, what: Rewind) -> Result<Value> {
         let RewindTarget { uuid, newest, mode, text } = self.rewind_target(id, seq)?;
         self.wake(id)?;
         if what == Rewind::Preview {
@@ -1201,7 +1253,14 @@ impl Manager {
         // are stopped for it too. Stop ends the turn; with no turn left, it
         // ends the helpers.
         let with_helpers = matches!(what, Rewind::Conversation | Rewind::Both);
-        let busy = || self.inner.locked().sessions.get(id).is_some_and(|s| s.run.as_ref().is_some_and(|r| r.turn || (with_helpers && !r.helpers.is_empty())));
+        // A message just sent counts as a turn: Claude Code is about to start it.
+        let busy = || {
+            self.inner
+                .locked()
+                .sessions
+                .get(id)
+                .is_some_and(|s| s.run.as_ref().is_some_and(|r| r.turn || r.awaiting_turn || (with_helpers && !r.helpers.is_empty())))
+        };
         let give_up = Instant::now() + Duration::from_secs(20);
         let mut asked: Option<Instant> = None;
         while busy() {
@@ -1225,7 +1284,9 @@ impl Manager {
         // one failure after which Claude Code's terminal leaves the
         // conversation alone too: a second try will do both.
         let try_again = out["code"]["error"].as_str().is_some_and(|e| e.contains("still being copied"));
+        let mut until = None;
         if matches!(what, Rewind::Conversation | Rewind::Both) && !try_again {
+            until = self.inner.locked().sessions.get(id).map(|s| s.next_seq);
             let mut request = json!({"subtype": "rewind_conversation", "target_message_uuid": uuid});
             if let Some(newest) = &newest {
                 request["last_seen_user_message_uuid"] = json!(newest);
@@ -1274,7 +1335,7 @@ impl Manager {
                     // The reply the session list showed is gone with the rest.
                     s.meta.preview = truncate(&format!("Rewound to before: {text}"), 160);
                 }
-                self.push_event(&mut inner, id, EventBody::Rewind { to: seq, code: restored, conversation });
+                self.push_event(&mut inner, id, EventBody::Rewind { to: seq, code: restored, conversation, until: until.filter(|_| conversation) });
                 self.save(&inner, id);
                 self.broadcast_session(&inner, id);
             }
@@ -1301,12 +1362,15 @@ impl Manager {
         inner.queue.retain(|q| q != id);
         let s = inner.sessions.get_mut(id).context("no such session")?;
         s.meta.outbox.clear();
-        s.meta.outbox_ids.clear();
+        let unsent = std::mem::take(&mut s.meta.outbox_ids);
         if let Some(run) = &s.run {
             s.stopping = Some(Status::Stopped);
             run.driver.kill();
         } else {
             set_status(&mut inner, id, Status::Stopped, None);
+        }
+        if !unsent.is_empty() {
+            self.push_event(&mut inner, id, EventBody::Unsent { uuids: unsent });
         }
         self.save(&inner, id);
         self.broadcast_session(&inner, id);
@@ -1519,6 +1583,7 @@ impl Manager {
                 s.run = Some(Run {
                     driver,
                     initialized: false,
+                    awaiting_turn: !outbox.is_empty(),
                     unconfirmed: outbox,
                     waiting: HashMap::new(),
                     asked: 0,
@@ -1605,6 +1670,7 @@ impl Manager {
                 // Every turn opens with `init`, also one Claude Code starts by
                 // itself when a helper has reported back.
                 run.turn = true;
+                run.awaiting_turn = false;
                 run.settle = None;
                 run.report_due = false;
                 if matches!(s.meta.status, Status::Starting | Status::Idle) {
@@ -2319,7 +2385,8 @@ mod tests {
                 agent_id: Some("a".into()),
             },
             EventBody::Decision { request_id: "r".into(), behavior: "allow".into(), detail: Some(json!({"mode": "default"})) },
-            EventBody::Rewind { to: 3, code: Some(json!({"files": ["a.txt"]})), conversation: true },
+            EventBody::Rewind { to: 3, code: Some(json!({"files": ["a.txt"]})), conversation: true, until: Some(9) },
+            EventBody::Unsent { uuids: vec!["u".into()] },
             EventBody::Status { status: Status::Idle, detail: None },
             EventBody::Error { message: "x".into() },
         ];

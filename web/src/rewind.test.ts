@@ -77,6 +77,20 @@ describe("the feed after a rewind", () => {
     expect(last.kind === "rewind" && [last.text, last.conversation, last.code]).toEqual(["two", false, { files: ["C:\\app\\a.ts"], insertions: 1, deletions: 2, skipped: 0 }]);
   });
 
+  it("keeps what was sent while the rewind ran: only rows from the message up to that point go", () => {
+    const { b, events } = story();
+    const during = user("sent meanwhile");
+    const record = ev({ kind: "rewind", to: b.seq, conversation: true, until: during.seq });
+    expect(kinds([...events, during, record])).toEqual(["user:one", "text:did one", "user:sent meanwhile", "rewind:two"]);
+  });
+
+  it("marks messages that never reached Claude: they cannot be gone back to", () => {
+    const sent = user("sent", "u1");
+    const dropped = user("dropped", "u2");
+    const rows = toRows([sent, dropped, ev({ kind: "unsent", uuids: ["u2"] })]);
+    expect(rows.map((r) => r.kind === "user" && r.canRewind)).toEqual([true, false]);
+  });
+
   it("goes back further on a second rewind, taking an earlier rewind's row with it", () => {
     const { a, b, events } = story();
     const twice = [...events, ev({ kind: "rewind", to: b.seq, conversation: true }), user("again"), ev({ kind: "rewind", to: a.seq, conversation: true })];

@@ -731,9 +731,19 @@ try {
     (await rwLines()) === "The conversation goes back to before this message. The code will be restored +1 -1 in paused.ts." && woken.pid != null && (await userMessages()) === 1,
     `${await rwLines()} | ${woken.status}`,
   );
-  await dialog.locator('[data-rewind-choice="nevermind"]').click();
+  // The dialog keeps the keyboard: Ctrl K does not open the palette over it.
+  await page.keyboard.press("Control+k");
+  check("while Rewind is open, Ctrl K does not take over", (await page.locator('[role="option"]', { hasText: "Stop hangar" }).count()) === 0 && (await dialog.count()) === 1);
+  // Never mind reached with Tab while "both" is highlighted: Enter does what has the focus.
+  const rewindsBefore = await main.locator("[data-rewound]").count();
+  check("…and \"both\" is the highlighted line", (await dialog.locator('[data-rewind-choice][aria-selected="true"]').getAttribute("data-rewind-choice")) === "both");
+  await dialog.locator('[data-rewind-choice="nevermind"]').focus();
+  await page.keyboard.press("Enter");
   await dialog.waitFor({ state: "detached" });
-  check("Never mind, on a dialog opened from a message, closes it; the session is idle", (await idle(pausedId)) && (await composer.inputValue()) === "");
+  check(
+    "Enter on Never mind, reached with Tab, closes it and restores nothing; the session is idle",
+    (await idle(pausedId)) && (await composer.inputValue()) === "" && (await main.locator("[data-rewound]").count()) === rewindsBefore && (await main.locator("text=changed paused.ts").count()) === 1,
+  );
 
   // A turn is running (its request waits). A restore stops it first, as Claude Code does.
   await say("use tool and then rewind");
