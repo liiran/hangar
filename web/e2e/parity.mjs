@@ -38,7 +38,9 @@ const shot = async (target, name) => {
 };
 
 // The temp folder is the user's home too, so nothing reads the real one.
-const env = { ...process.env, HANGAR_HOME: home, HANGAR_CLAUDE: fakeClaude, USERPROFILE: tmp, HOME: tmp };
+// HANGAR_UI_PORT=0: any free port. Without it this hangar would take 7317, the usual hangar's
+// port, whenever that one is stopped.
+const env = { ...process.env, HANGAR_HOME: home, HANGAR_UI_PORT: "0", HANGAR_CLAUDE: fakeClaude, USERPROFILE: tmp, HOME: tmp };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const up = () => execFileSync(hangar, ["up", "--no-open"], { env, encoding: "utf8" }).trim().split(/\r?\n/).pop();
 const errors = [];

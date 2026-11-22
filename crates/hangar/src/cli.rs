@@ -167,6 +167,12 @@ fn spawn_detached_daemon(home: &Path) -> Result<()> {
     hangar_shim::keep_std_handles_private();
     let mut cmd = std::process::Command::new(std::env::current_exe()?);
     cmd.args(["daemon", "--quiet"]).env(hangar::proto::ENV_HOME, home);
+    // HANGAR_UI_PORT: the port the app is served on, instead of 7317 (0: any
+    // free one). For a second hangar beside the usual one, a test's for one:
+    // it must not take the usual port while the usual hangar is stopped.
+    if let Some(port) = std::env::var("HANGAR_UI_PORT").ok().and_then(|p| p.trim().parse::<u16>().ok()) {
+        cmd.args(["--ui-port", &port.to_string()]);
+    }
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {

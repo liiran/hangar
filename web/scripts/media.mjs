@@ -240,7 +240,7 @@ fs.writeFileSync(
   `@echo off\r\nset "USERPROFILE=${os.homedir()}"\r\nset "HOME=${os.homedir()}"\r\n"${findClaude()}" %* --strict-mcp-config --mcp-config "${mcpConfig}" --settings "${settings}"\r\n`,
 );
 
-const env = { ...process.env, HANGAR_HOME: state, HANGAR_CLAUDE: wrapper, USERPROFILE: home, HOME: home };
+const env = { ...process.env, HANGAR_HOME: state, HANGAR_UI_PORT: "0", HANGAR_CLAUDE: wrapper, USERPROFILE: home, HOME: home };
 const up = () => execFileSync(hangar, ["up", "--no-open"], { env, encoding: "utf8" }).trim().split(/\r?\n/).pop();
 
 // ------------------------------------------------------------ helpers

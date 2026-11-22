@@ -37,7 +37,9 @@ const claudeJson = path.join(tmp, ".claude.json");
 const ENV_SECRET = "k-ENVSECRET-7781";
 fs.writeFileSync(claudeJson, JSON.stringify({ mcpServers: { "docs-lookup": { command: "node", args: ["docs.js"], env: { DOCS_API_KEY: ENV_SECRET } } } }));
 const argvLog = path.join(tmp, "argv.log");
-const env = { ...process.env, HANGAR_HOME: home, HANGAR_CLAUDE: fakeClaude, USERPROFILE: tmp, HOME: tmp, FAKE_CLAUDE_LOG: argvLog };
+// HANGAR_UI_PORT=0: any free port. Without it this hangar would take 7317, the usual hangar's
+// port, whenever that one is stopped.
+const env = { ...process.env, HANGAR_HOME: home, HANGAR_UI_PORT: "0", HANGAR_CLAUDE: fakeClaude, USERPROFILE: tmp, HOME: tmp, FAKE_CLAUDE_LOG: argvLog };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0;

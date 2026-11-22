@@ -21,7 +21,12 @@ const proj = path.join(tmp, "proj");
 fs.mkdirSync(home);
 fs.mkdirSync(proj);
 fs.writeFileSync(path.join(proj, "README.md"), "# scratch project for hangar's end-to-end check\n");
-const env = { ...process.env, HANGAR_HOME: home };
+// HANGAR_UI_PORT=0: any free port. Without it this hangar would take 7317, the usual hangar's
+// port, whenever that one is stopped.
+const env = { ...process.env, HANGAR_HOME: home, HANGAR_UI_PORT: "0" };
+// Real sessions take about half a gigabyte each. On a PC that is short of free memory the default
+// reserve would hold them in the queue; the memory budget itself is tested elsewhere.
+fs.writeFileSync(path.join(home, "config.toml"), ["[budget]", "reserve_mb = 512", "initial_estimate_mb = 400", ""].join(String.fromCharCode(10)));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 const check = (name, ok, detail = "") => {
