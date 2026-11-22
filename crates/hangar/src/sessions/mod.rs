@@ -222,6 +222,10 @@ pub enum EventBody {
         /// back to before the message puts that mode back.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
+        /// Sent while a turn was running: Claude Code took it into that turn
+        /// and kept no file checkpoint for it ("No code restore").
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mid_turn: bool,
     },
     /// The user went back to before their message number `to` (Claude
     /// Code's rewind). `code` says what was put back in the files, if they
@@ -993,7 +997,7 @@ impl Manager {
             let uuid = meta.outbox_ids.first().cloned();
             let mode = Some(meta.permission_mode.clone());
             inner.sessions.insert(id.clone(), Session::new(meta, 1));
-            self.push_event(&mut inner, &id, EventBody::User { text: prompt, uuid, mode });
+            self.push_event(&mut inner, &id, EventBody::User { text: prompt, uuid, mode, mid_turn: false });
             inner.queue.push(id.clone());
             self.save(&inner, &id);
         }
@@ -1011,6 +1015,7 @@ impl Manager {
         let s = inner.sessions.get_mut(id).context("no such session")?;
         let deliverable = s.stopping.is_none() && s.meta.status.is_live();
         let uuid = crate::util::uuid();
+        let mid_turn = deliverable && s.run.as_ref().is_some_and(|r| r.turn);
         match s.run.as_mut().filter(|_| deliverable) {
             Some(run) => {
                 run.driver.send_user(&uuid, text);
@@ -1041,7 +1046,7 @@ impl Manager {
             }
         }
         let mode = inner.sessions.get(id).map(|s| s.meta.permission_mode.clone());
-        self.push_event(&mut inner, id, EventBody::User { text: text.to_string(), uuid: Some(uuid), mode });
+        self.push_event(&mut inner, id, EventBody::User { text: text.to_string(), uuid: Some(uuid), mode, mid_turn });
         self.save(&inner, id);
         self.broadcast_session(&inner, id);
         drop(inner);
@@ -1146,7 +1151,7 @@ impl Manager {
         let mut text = String::new();
         for e in self.events(id, 0)? {
             match e.body {
-                EventBody::User { uuid, mode, text: said } => {
+                EventBody::User { uuid, mode, text: said, .. } => {
                     if e.seq == seq {
                         text = said;
                     }
@@ -1291,7 +1296,17 @@ impl Manager {
             if let Some(newest) = &newest {
                 request["last_seen_user_message_uuid"] = json!(newest);
             }
-            out["conversation"] = match self.answer(id, request).await {
+            // Claude Code may still count a turn as running a moment after its
+            // end reached hangar: then it is asked again, within the same limit.
+            let mut answer = self.answer(id, request.clone()).await;
+            while let Ok(a) = &answer
+                && matches!(a["reason"].as_str(), Some("turn_running" | "prompt_pending" | "commands_queued"))
+                && Instant::now() < give_up
+            {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                answer = self.answer(id, request.clone()).await;
+            }
+            out["conversation"] = match answer {
                 Ok(answer) if answer["rewound"] == true => json!({"ok": true, "prefill": answer["prefillText"]}),
                 Ok(answer) => {
                     json!({"ok": false, "error": answer["error"].as_str().unwrap_or("Claude Code did not rewind the conversation"), "reason": answer["reason"]})
@@ -1746,6 +1761,9 @@ impl Manager {
                     s.meta.preview = truncate(msg["result"].as_str().unwrap_or(if stopped { "Stopped" } else { "the turn failed" }), 160);
                 }
                 run.turn = false;
+                // A message sent while the turn ran was taken into it (no turn of
+                // its own starts: seen on 2.1.329), so nothing is about to start now.
+                run.awaiting_turn = false;
                 // A helper in the foreground runs inside the turn: it cannot
                 // have outlived it, whatever was or was not said about its end.
                 run.helpers.retain(|h| h.background || h.depth > 1);
@@ -2374,7 +2392,7 @@ mod tests {
         // An event is stored as one object: its own number and time beside the fields of what
         // happened. A field of that name inside would be written twice and not read back.
         let bodies = vec![
-            EventBody::User { text: "hi".into(), uuid: Some("u".into()), mode: Some("default".into()) },
+            EventBody::User { text: "hi".into(), uuid: Some("u".into()), mode: Some("default".into()), mid_turn: true },
             EventBody::Claude { msg: json!({"type": "result"}) },
             EventBody::Permission {
                 request_id: "r".into(),

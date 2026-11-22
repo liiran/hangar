@@ -14,6 +14,8 @@ export interface RewindPoint {
   canRewind: boolean;
   /** The files Claude edited while answering it, as the feed shows them (not counting helper agents, which rewind does not cover). */
   edited: string[];
+  /** Sent while a turn ran: Claude Code kept no file checkpoint for it. */
+  midTurn: boolean;
 }
 
 const EDITS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
@@ -22,7 +24,7 @@ const EDITS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 export function rewindPoints(rows: Row[], cwd: string): RewindPoint[] {
   const points: RewindPoint[] = [];
   for (const r of rows) {
-    if (r.kind === "user") points.push({ seq: r.seq, text: r.text, ts: r.ts, canRewind: r.canRewind, edited: [] });
+    if (r.kind === "user") points.push({ seq: r.seq, text: r.text, ts: r.ts, canRewind: r.canRewind, edited: [], midTurn: !!r.midTurn });
     else if (r.kind === "tool" && EDITS.has(r.name) && r.result && !r.result.isError && points.length > 0) {
       const path = r.input?.file_path ?? r.input?.notebook_path;
       const name = typeof path === "string" ? relative(path, cwd) : "";
@@ -46,6 +48,8 @@ export function fileNames(files: string[]): string {
 /** Under a message in the list: what Claude edited in that turn. hangar's line, from the feed. */
 export function editedLine(point: RewindPoint): string {
   if (!point.canRewind) return "Sent before hangar could rewind";
+  // Claude Code's words for a message it took into a running turn.
+  if (point.midTurn) return "⚠ No code restore";
   if (point.edited.length === 0) return "No edits";
   return point.edited.length === 1 ? `Edited ${base(point.edited[0])}` : `Edited ${point.edited.length} files`;
 }

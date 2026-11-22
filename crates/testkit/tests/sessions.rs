@@ -1491,3 +1491,41 @@ async fn rewinding_refuses_what_it_cannot_do_safely_and_runs_one_restore_at_a_ti
     assert!(second_try.unwrap_err().to_string().contains("already going back"));
     wait_status(&m, &a, Status::Idle).await;
 }
+
+#[tokio::test]
+async fn a_message_typed_while_a_turn_runs_can_be_gone_back_to_and_does_not_hold_up_a_rewind() {
+    let home = temp_home("sess-rewind-midturn");
+    let m = manager(&home, Config::default());
+    let a = m.create(new(&home, "hello one")).unwrap().meta.id;
+    wait_status(&m, &a, Status::Idle).await;
+    m.send(&a, "use tool please").unwrap();
+    let s = wait_status(&m, &a, Status::NeedsYou).await;
+    // Typed while the turn waits on a request. Claude Code takes it into that turn: no turn of its own starts.
+    m.send(&a, "hello typed meanwhile").unwrap();
+    m.decide(&a, &s.pending[0].request_id, allow()).unwrap();
+    wait_status(&m, &a, Status::Idle).await;
+    let s = get(&m, &a);
+    assert!(!s.in_turn);
+    let typed = *user_seqs(&m, &a).last().unwrap();
+    let marked: Vec<bool> = m
+        .events(&a, 0)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::User { mid_turn, .. } => Some(mid_turn),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(marked, vec![false, false, true], "the message typed during the turn is marked so");
+
+    // Claude Code keeps no file checkpoint for such a message; the preview says so in its words.
+    let p = m.rewind(&a, typed, Rewind::Preview).await.unwrap();
+    assert_eq!((p["can_restore"].clone(), p["error"].clone()), (json!(false), json!("No file checkpoint found for this message.")));
+    // Its conversation can go back, at once: nothing is taken for a turn about to start.
+    let started = std::time::Instant::now();
+    assert_eq!(m.rewind(&a, typed, Rewind::Conversation).await.unwrap(), json!({"conversation": {"ok": true, "prefill": "hello typed meanwhile"}}));
+    assert!(started.elapsed() < Duration::from_secs(3), "took {:?}", started.elapsed());
+    m.send(&a, "recall").unwrap();
+    wait_turns(&m, &a, 3).await;
+    assert_eq!(texts(&m, &a).last().unwrap(), "I remember: hello one | use tool please | recall");
+}

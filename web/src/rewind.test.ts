@@ -45,6 +45,11 @@ describe("the messages that can be gone back to", () => {
     expect(editedLine(point)).toBe("Edited mine.ts");
   });
 
+  it("marks a message typed while a turn ran as Claude Code does: no code restore", () => {
+    const [point] = rewindPoints(toRows([ev({ kind: "user", text: "and also", uuid: "u9", mid_turn: true })]), "C:\\app");
+    expect([point.canRewind, editedLine(point)]).toEqual([true, "⚠ No code restore"]);
+  });
+
   it("marks a message sent before hangar gave messages an id: it cannot be gone back to", () => {
     const [point] = rewindPoints(toRows([user("old", null)]), "C:\\app");
     expect(point.canRewind).toBe(false);

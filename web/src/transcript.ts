@@ -14,6 +14,8 @@ export type Row =
       seq: number;
       /** It went to Claude with an id, so Claude Code can go back to before it. */
       canRewind: boolean;
+      /** Sent while a turn ran: Claude Code kept no file checkpoint for it. */
+      midTurn?: boolean;
     }
   /** The user went back to before a message: what was restored, and the message's text. */
   | { kind: "rewind"; key: string; text: string; code?: RewindRestored; conversation: boolean }
@@ -196,7 +198,7 @@ export function toRows(events: SessionEvent[]): Row[] {
     const key = String(e.seq);
     switch (e.kind) {
       case "user": {
-        const row = { kind: "user" as const, key, text: e.text, ts: e.ts, seq: e.seq, canRewind: typeof e.uuid === "string" };
+        const row = { kind: "user" as const, key, text: e.text, ts: e.ts, seq: e.seq, canRewind: typeof e.uuid === "string", midTurn: e.mid_turn === true };
         rows.push(row);
         prompts.set(e.seq, e.text);
         if (typeof e.uuid === "string") byUuid.set(e.uuid, row);

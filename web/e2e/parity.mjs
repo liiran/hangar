@@ -762,6 +762,32 @@ try {
   );
   await composer.fill("");
 
+  // A message typed while a turn runs is taken into that turn by Claude Code, which keeps no file
+  // checkpoint for it. The list marks it as Claude Code's does; its conversation can still go back.
+  const midId = await start("use tool, then type more", "default");
+  await main.locator("text=Claude wants to use Bash").waitFor();
+  await say("hello, one more thing");
+  await main.locator("button", { hasText: /^\s*Allow$/ }).first().click();
+  await idle(midId);
+  await composer.focus();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor();
+  check("a message typed during a turn is marked as Claude Code marks it", (await flat(dialog.locator("[data-rewind-point]").last())) === "hello, one more thing ⚠ No code restore", await flat(dialog.locator("[data-rewind-point]").last()));
+  await dialog.locator("[data-rewind-point]").last().click();
+  await dialog.locator("[data-rewind-choice]").first().waitFor();
+  check(
+    "picked, it offers only the conversation, with Claude Code's reason for the code",
+    JSON.stringify((await dialog.locator("[data-rewind-choice]").allInnerTexts()).map((x) => x.replace(/\s+/g, " ").trim())) === JSON.stringify(["1 Restore conversation", "2 Never mind"]) &&
+      (await flat(dialog.locator("[data-rewind-no-code]"))) === "The code cannot be restored: No file checkpoint found for this message.",
+  );
+  const quick = Date.now();
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "detached" });
+  for (let i = 0; i < 40 && (await composer.inputValue()) === ""; i++) await sleep(50);
+  check("…and going back to before it is quick and puts it back in the box", (await composer.inputValue()) === "hello, one more thing" && Date.now() - quick < 3000, `${Date.now() - quick} ms`);
+  await composer.fill("");
+
   // ================================================================ stopping hangar
   const other = await ctx.newPage(); // a second window on the same daemon
   watch(other);

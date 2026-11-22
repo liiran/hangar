@@ -39,6 +39,11 @@ export function App() {
   const list = useVisible();
   const session = selected ? sessions[selected] : undefined;
 
+  // Rewind belongs to the open session: if that session goes (deleted), so does the dialog.
+  useEffect(() => {
+    if (overlay === "rewind" && !session) open(null);
+  }, [overlay, session, open]);
+
   // A dialog left open when the daemon stops must not still be there when it is back.
   useEffect(() => {
     if (conn === "stopped") open(null);

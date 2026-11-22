@@ -158,6 +158,9 @@ struct Prompt {
     gone: bool,
     /// The files changed while answering it, with lines added and removed. Emptied when they are put back.
     changed: Vec<(String, u64, u64)>,
+    /// It started a turn of its own. One sent while a turn ran is taken into that turn and gets
+    /// no file checkpoint (seen on 2.1.329: "No file checkpoint found for this message.").
+    checkpoint: bool,
 }
 
 fn path(name: &str) -> String {
@@ -197,7 +200,8 @@ impl Fake {
     }
 
     fn remember(&self) {
-        let prompts: Vec<Value> = self.prompts.iter().map(|p| json!({"uuid": p.uuid, "text": p.text, "gone": p.gone, "changed": p.changed})).collect();
+        let prompts: Vec<Value> =
+            self.prompts.iter().map(|p| json!({"uuid": p.uuid, "text": p.text, "gone": p.gone, "changed": p.changed, "checkpoint": p.checkpoint})).collect();
         let _ = std::fs::write(self.memory(), serde_json::to_vec(&prompts).unwrap_or_default());
     }
 
@@ -211,6 +215,7 @@ impl Fake {
                 text: p["text"].as_str().unwrap_or_default().to_string(),
                 gone: p["gone"] == true,
                 changed: serde_json::from_value(p["changed"].clone()).unwrap_or_default(),
+                checkpoint: p["checkpoint"] != false,
             })
             .collect();
     }
@@ -222,7 +227,7 @@ impl Fake {
         let at = self.prompts.iter().position(|p| request["user_message_id"] == p.uuid.as_str());
         let refusal = if !self.checkpoints {
             Some("File rewinding is not enabled.".to_string())
-        } else if at.is_none() {
+        } else if at.is_none_or(|i| !self.prompts[i].checkpoint) {
             Some("No file checkpoint found for this message.".to_string())
         } else if !dry && self.prompts[at.unwrap()..].iter().any(|p| p.changed.iter().any(|c| c.0 == "locked.txt")) {
             Some("Failed to rewind: No files were restored: 1 file(s) failed (backup missing, or the file could not be updated)".to_string())
@@ -543,7 +548,13 @@ impl Fake {
                     return Decision::Interrupted;
                 }
             } else if v["type"] == "user" {
-                self.held.push(v["message"]["content"].as_str().unwrap_or_default().to_string());
+                let text = v["message"]["content"].as_str().unwrap_or_default().to_string();
+                // Taken into the running turn: part of the conversation, without a checkpoint of its own.
+                if let Some(uuid) = v["uuid"].as_str() {
+                    self.prompts.push(Prompt { uuid: uuid.to_string(), text: text.clone(), gone: false, changed: Vec::new(), checkpoint: false });
+                    self.remember();
+                }
+                self.held.push(text);
             } else if v["type"] == "control_response" && v["response"]["request_id"] == request_id {
                 let r = &v["response"]["response"];
                 return if r["behavior"] == "allow" {
@@ -652,7 +663,7 @@ fn main() {
                 let text = msg["message"]["content"].as_str().unwrap_or_default().to_string();
                 if let Some(uuid) = msg["uuid"].as_str() {
                     out(json!({"type": "command_lifecycle", "command_uuid": uuid, "state": "started", "session_id": fake.session_id}));
-                    fake.prompts.push(Prompt { uuid: uuid.to_string(), text: text.clone(), gone: false, changed: Vec::new() });
+                    fake.prompts.push(Prompt { uuid: uuid.to_string(), text: text.clone(), gone: false, changed: Vec::new(), checkpoint: true });
                     fake.remember();
                 }
                 fake.init();

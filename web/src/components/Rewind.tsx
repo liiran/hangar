@@ -76,6 +76,8 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
   });
   useEffect(() => box.current?.focus(), [picked, asking]);
 
+  // The highlight follows the pointer only when the pointer moves: lines that appear under a
+  // pointer that is standing still do not take the highlight from Claude Code's default.
   const choices = rewindChoices(preview);
   // Claude Code starts on "both" when code can be restored, else on "conversation".
   const chosen: RewindChoice = focus >= 0 && focus < choices.length ? choices[focus].value : canRestoreCode(preview) ? "both" : "conversation";
@@ -176,7 +178,7 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                   aria-selected={i === listAt}
                   aria-disabled={!p.canRewind}
                   data-rewind-point={p.seq}
-                  onMouseEnter={() => p.canRewind && setFocus(i)}
+                  onMouseMove={() => p.canRewind && focus !== i && setFocus(i)}
                   onFocus={() => p.canRewind && setFocus(i)}
                   onClick={() => pick(p)}
                   className={cx("block w-full rounded-md px-3 py-2 text-left", i === listAt ? "bg-accent-soft" : "hover:bg-raised", !p.canRewind && "cursor-default opacity-50")}
@@ -189,7 +191,7 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                 role="option"
                 aria-selected={listAt === points.length}
                 data-rewind-current
-                onMouseEnter={() => setFocus(points.length)}
+                onMouseMove={() => focus !== points.length && setFocus(points.length)}
                 onFocus={() => setFocus(points.length)}
                 onClick={onClose}
                 className={cx("block w-full rounded-md px-3 py-2 text-left text-[13px] text-muted", listAt === points.length ? "bg-accent-soft" : "hover:bg-raised")}
@@ -227,7 +229,7 @@ export function Rewind({ session, at, onClose }: { session: Session; at: number 
                       aria-selected={i === chosenAt}
                       data-rewind-choice={c.value}
                       disabled={busy}
-                      onMouseEnter={() => setFocus(i)}
+                      onMouseMove={() => focus !== i && setFocus(i)}
                       onFocus={() => setFocus(i)}
                       onClick={() => run(c.value)}
                       className={cx("flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-left text-[13px]", i === chosenAt ? "bg-accent-soft text-fg" : "text-muted hover:bg-raised", busy && "opacity-60")}
